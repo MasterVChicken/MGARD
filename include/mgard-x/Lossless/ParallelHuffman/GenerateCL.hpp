@@ -45,7 +45,7 @@ public:
       SubArray<1, int, DeviceType> copyIsLeaf,
       SubArray<1, int, DeviceType> copyIndex,
       SubArray<1, uint32_t, DeviceType> diagonal_path_intersections,
-      SubArray<1, int, DeviceType> status)
+      SubArray<1, int, DeviceType, false, true> status)
       : histogram(histogram), CL(CL), dict_size(dict_size),
         lNodesFreq(lNodesFreq), lNodesLeader(lNodesLeader),
         iNodesFreq(iNodesFreq), iNodesLeader(iNodesLeader), tempFreq(tempFreq),
@@ -760,7 +760,7 @@ private:
   SubArray<1, int, DeviceType> copyIsLeaf;
   SubArray<1, int, DeviceType> copyIndex;
   SubArray<1, uint32_t, DeviceType> diagonal_path_intersections;
-  SubArray<1, int, DeviceType> status;
+  SubArray<1, int, DeviceType, false, true> status;
 
   int32_t *x_top;
   int32_t *y_top;
@@ -802,7 +802,7 @@ public:
       SubArray<1, int, DeviceType> copyIsLeaf,
       SubArray<1, int, DeviceType> copyIndex,
       SubArray<1, uint32_t, DeviceType> diagonal_path_intersections,
-      SubArray<1, int, DeviceType> status)
+      SubArray<1, int, DeviceType, false, true> status)
       : histogram(histogram), CL(CL), dict_size(dict_size),
         lNodesFreq(lNodesFreq), lNodesLeader(lNodesLeader),
         iNodesFreq(iNodesFreq), iNodesLeader(iNodesLeader), tempFreq(tempFreq),
@@ -868,7 +868,7 @@ private:
   SubArray<1, int, DeviceType> copyIsLeaf;
   SubArray<1, int, DeviceType> copyIndex;
   SubArray<1, uint32_t, DeviceType> diagonal_path_intersections;
-  SubArray<1, int, DeviceType> status;
+  SubArray<1, int, DeviceType, false, true> status;
 };
 
 #undef MOD
