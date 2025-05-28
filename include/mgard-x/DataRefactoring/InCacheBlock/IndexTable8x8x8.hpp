@@ -5,6 +5,9 @@
  * Date: Jan. 15, 2023
  */
 
+#ifndef MGARD_X_MULTI_DIMENSION_8x8x8_TABLE_TEMPLATE
+#define MGARD_X_MULTI_DIMENSION_8x8x8_TABLE_TEMPLATE
+
 namespace mgard_x {
 // clang-format off
 
@@ -2499,3 +2502,5 @@ MGARDX_EXEC int Coeff_Offset_8x8x8(SIZE i) {
 
 // clang-format on
 } // namespace mgard_x
+
+#endif

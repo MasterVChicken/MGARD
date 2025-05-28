@@ -11,6 +11,7 @@
 #include "Autocorrelation8x8x8.hpp"
 #include "DataRefactoring.h"
 #include "MultiDimension8x8x8.hpp"
+#include "RecompMultiDimension8x8x8.hpp"
 
 #include <iostream>
 
@@ -58,6 +59,10 @@ void recompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
                SubArray<1, T, DeviceType> coeff, int queue_idx) {
 
   if constexpr (D <= 3) {
+    DeviceLauncher<DeviceType>::Execute(
+      RecompMultiDimension8x8x8Kernel<D, T, DECOMPOSE, DeviceType>(v, coarse,
+                                                             coeff),
+      queue_idx);
   }
 }
 
