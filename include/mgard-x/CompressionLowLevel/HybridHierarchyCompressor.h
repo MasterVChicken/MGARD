@@ -92,6 +92,7 @@ public:
   Array<1, T, DeviceType> decomposed_array;
   Array<D, QUANTIZED_INT, DeviceType> quantized_array;
   Array<1, QUANTIZED_INT, DeviceType> hybrid_quantized_array;
+  Array<1, T, DeviceType> hybrid_dequantized_array;
   DataRefactorType refactor;
   HybridHierarchyDataRefactorType hybrid_refactor;
   LinearQuantizerType quantizer;

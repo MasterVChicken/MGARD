@@ -11,11 +11,10 @@
 #include <numeric>
 #include <vector>
 
-#include "../Utilities/Types.h"
-
 #include "../Config/Config.h"
 #include "../Hierarchy/Hierarchy.h"
 #include "../RuntimeX/RuntimeX.h"
+#include "../Utilities/Types.h"
 #include "CompressorCache.hpp"
 #include "HybridHierarchyCompressor.h"
 
@@ -33,11 +32,14 @@ HybridHierarchyCompressor<D, T, DeviceType>::HybridHierarchyCompressor()
 template <DIM D, typename T, typename DeviceType>
 HybridHierarchyCompressor<D, T, DeviceType>::HybridHierarchyCompressor(
     Hierarchy<D, T, DeviceType> &hierarchy, Config config)
-    : initialized(true), hierarchy(&hierarchy), config(config),
-      refactor(hierarchy, config), hybrid_refactor(hierarchy, config),
+    : initialized(true),
+      hierarchy(&hierarchy),
+      config(config),
+      refactor(hierarchy, config),
+      hybrid_refactor(hierarchy, config),
       lossless_compressor(hierarchy.total_num_elems(), config),
-      quantizer(hierarchy, config), hybrid_quantizer(hierarchy, config) {
-
+      quantizer(hierarchy, config),
+      hybrid_quantizer(hierarchy, config) {
   norm_array = Array<1, T, DeviceType>({1});
   // Reuse workspace. Warning:
   if (sizeof(QUANTIZED_INT) <= sizeof(T)) {
@@ -58,6 +60,7 @@ HybridHierarchyCompressor<D, T, DeviceType>::HybridHierarchyCompressor(
   decomposed_array = Array<1, T, DeviceType>({decomposed_size});
   hybrid_quantized_array =
       Array<1, QUANTIZED_INT, DeviceType>({decomposed_size});
+  hybrid_dequantized_array = Array<1, T, DeviceType>({decomposed_size});
 }
 
 template <DIM D, typename T, typename DeviceType>
@@ -90,6 +93,7 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Adapt(
 
   decomposed_array.resize({decomposed_size}, queue_idx);
   hybrid_quantized_array.resize({decomposed_size}, queue_idx);
+  hybrid_dequantized_array.resize({decomposed_size}, queue_idx);
 }
 
 template <DIM D, typename T, typename DeviceType>
@@ -203,14 +207,14 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Deserialize(
 template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::Recompose(
     Array<D, T, DeviceType> &decompressed_data, int queue_idx) {
-  refactor.Recompose(decompressed_data, true, queue_idx);
+  hybrid_refactor.Recompose(decompressed_data, hybrid_dequantized_array, queue_idx);
 }
 
 template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::Dequantize(
     Array<D, T, DeviceType> &decompressed_data, enum error_bound_type ebtype,
     T tol, T s, T norm, int queue_idx) {
-  quantizer.Dequantize(decompressed_data, ebtype, tol, s, norm, quantized_array,
+  hybrid_quantizer.Dequantize(hybrid_dequantized_array, ebtype, tol, s, norm, hybrid_quantized_array,
                        lossless_compressor, queue_idx);
 }
 
@@ -218,8 +222,7 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::LosslessDecompress(
     Array<1, Byte, DeviceType> &compressed_data, int queue_idx) {
   Array<1, QUANTIZED_INT, DeviceType> quantized_liearized_data(
-      {hierarchy->total_num_elems()},
-      (QUANTIZED_INT *)quantized_array.data());
+      {hierarchy->total_num_elems()}, (QUANTIZED_INT *)quantized_array.data());
   lossless_compressor.Decompress(compressed_data, quantized_liearized_data,
                                  queue_idx);
 }
@@ -228,7 +231,6 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::Compress(
     Array<D, T, DeviceType> &original_data, enum error_bound_type ebtype, T tol,
     T s, T &norm, Array<1, Byte, DeviceType> &compressed_data, int queue_idx) {
-
   config.apply();
 
   DeviceRuntime<DeviceType>::SelectDevice(config.dev_id);
@@ -237,19 +239,22 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Compress(
   for (int d = D - 1; d >= 0; d--) {
     if (hierarchy->level_shape(hierarchy->l_target(), d) !=
         original_data.shape(d)) {
-      log::err("The shape of input array does not match the shape initilized "
-               "in hierarchy!");
+      log::err(
+          "The shape of input array does not match the shape initilized "
+          "in hierarchy!");
       return;
     }
   }
 
-  if (log::level & log::TIME)
-    timer_total.start();
+  if (log::level & log::TIME) timer_total.start();
 
   CalculateNorm(original_data, ebtype, s, norm, queue_idx);
   Decompose(original_data, queue_idx);
+  // PrintSubarray("Original", SubArray(original_data));
+  // PrintSubarray("Decomposed", SubArray(decomposed_array));
   Quantize(original_data, ebtype, tol, s, norm, queue_idx);
-  LosslessCompress(compressed_data, queue_idx);
+  // PrintSubarray("Quantized", SubArray(hybrid_quantized_array));
+  // LosslessCompress(compressed_data, queue_idx);
   if (config.compress_with_dryrun) {
     Dequantize(original_data, ebtype, tol, s, norm, queue_idx);
     Recompose(original_data, queue_idx);
@@ -279,13 +284,14 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Decompress(
   log::info("Select device: " + DeviceRuntime<DeviceType>::GetDeviceName());
   Timer timer_total, timer_each;
 
-  if (log::level & log::TIME)
-    timer_total.start();
+  if (log::level & log::TIME) timer_total.start();
 
   decompressed_data.resize(hierarchy->level_shape(hierarchy->l_target()));
-  LosslessDecompress(compressed_data, queue_idx);
+  // LosslessDecompress(compressed_data, queue_idx);
   Dequantize(decompressed_data, ebtype, tol, s, norm, queue_idx);
+  // PrintSubarray("Dequantized", SubArray(hybrid_quantized_array));
   Recompose(decompressed_data, queue_idx);
+  // PrintSubarray("Recomposed", SubArray(decompressed_data));
 
   if (log::level & log::TIME) {
     DeviceRuntime<DeviceType>::SyncQueue(0);
@@ -300,6 +306,6 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Decompress(
   }
 }
 
-} // namespace mgard_x
+}  // namespace mgard_x
 
 #endif
