@@ -5,5 +5,7 @@ list(APPEND MGARD_X_HEADER
     ${CMAKE_CURRENT_SOURCE_DIR}/DataRefactorInterface.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/HybridHierarchyDataRefactor.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/HybridHierarchyDataRefactorInterface.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/BlockLocalHierarchyDataRefactor.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/BlockLocalHierarchyDataRefactorInterface.hpp
     )
 set(MGARD_X_HEADER ${MGARD_X_HEADER} PARENT_SCOPE)

@@ -10,8 +10,7 @@
 
 #include "../RuntimeX/RuntimeXPublic.h"
 
-#include "../DataRefactoring/DataRefactor.hpp"
-#include "../DataRefactoring/HybridHierarchyDataRefactor.hpp"
+#include "../DataRefactoring/BlockLocalHierarchyDataRefactor.hpp"
 
 // #include "CompressionLowLevelWorkspace.hpp"
 
@@ -20,8 +19,8 @@
 #include "../Hierarchy/Hierarchy.h"
 
 #include "../Lossless/Lossless.hpp"
-#include "../Quantization/HybridHierarchyLinearQuantization.hpp"
-#include "../Quantization/LinearQuantization.hpp"
+
+#include "../Quantization/LocalQuantization.hpp"
 
 #include "LossyCompressorInterface.hpp"
 
@@ -32,15 +31,11 @@ class HybridHierarchyCompressor
     : public LossyCompressorInterface<D, T, DeviceType> {
 public:
   using HierarchyType = Hierarchy<D, T, DeviceType>;
-  using DataRefactorType = data_refactoring::DataRefactor<D, T, DeviceType>;
-  using HybridHierarchyDataRefactorType =
-      data_refactoring::HybridHierarchyDataRefactor<D, T, DeviceType>;
+  using BlockLocalHierarchyDataRefactorType = data_refactoring::BlockLocalHierarchyDataRefactor<D,T,DeviceType>;
   using LosslessCompressorType =
       ComposedLosslessCompressor<QUANTIZED_INT, HUFFMAN_CODE,
                                  DeviceType>;
-  using LinearQuantizerType = LinearQuantizer<D, T, QUANTIZED_INT, DeviceType>;
-  using HybridHierarchyLinearQuantizerType =
-      HybridHierarchyLinearQuantizer<D, T, QUANTIZED_INT, DeviceType>;
+  using LocalQuantizerType = LocalQuantizer<D, T, QUANTIZED_INT, DeviceType>;
 
   HybridHierarchyCompressor();
 
@@ -89,14 +84,10 @@ public:
   Config config;
   Array<1, T, DeviceType> norm_tmp_array;
   Array<1, T, DeviceType> norm_array;
-  Array<1, T, DeviceType> decomposed_array;
-  Array<D, QUANTIZED_INT, DeviceType> quantized_array;
-  Array<1, QUANTIZED_INT, DeviceType> hybrid_quantized_array;
-  Array<1, T, DeviceType> hybrid_dequantized_array;
-  DataRefactorType refactor;
-  HybridHierarchyDataRefactorType hybrid_refactor;
-  LinearQuantizerType quantizer;
-  HybridHierarchyLinearQuantizerType hybrid_quantizer;
+  Array<1, T, DeviceType> local_decomposed_array;
+  Array<1, QUANTIZED_INT, DeviceType> local_quantized_array;
+  BlockLocalHierarchyDataRefactorType local_refactor;
+  LocalQuantizerType local_quantizer;
   LosslessCompressorType lossless_compressor;
 };
 

@@ -48,6 +48,11 @@ class QuantizeLevelFunctor : public Functor<DeviceType> {
         // read quantized value
         quantized_data = *quantized_v(idx);
         *v(idx) = (quantizer * volume) * (T)quantized_data;
+        // T t = *v(idx);
+        // printf(
+        //     "Dequantized value: %.6f, Quantizer: %.6f, Quantized data (as int): "
+        //     "%ld\n",
+        //     (double)t, (double)quantizer, (long)quantized_data);
       }
     }
   }
@@ -113,8 +118,9 @@ class HybridHierarchyLinearQuantizer
                                  Config config)
       : initialized(true),
         hierarchy(&hierarchy),
-        config(config),
-        global_quantizer(hierarchy, config) {
+        config(config)
+        // ,global_quantizer(hierarchy, config) 
+        {
     coarse_shape = hierarchy.level_shape(hierarchy.l_target());
     // If we do at least one level of local refactoring
     if (config.num_local_refactoring_level > 0) {
@@ -132,8 +138,8 @@ class HybridHierarchyLinearQuantizer
     }
 
     global_hierarchy = Hierarchy<D, T, DeviceType>(coarse_shape, config);
-    global_quantizer =
-        LinearQuantizer<D, T, Q, DeviceType>(global_hierarchy, config);
+    // global_quantizer =
+    //     LinearQuantizer<D, T, Q, DeviceType>(global_hierarchy, config);
   }
 
   void Adapt(Hierarchy<D, T, DeviceType> &hierarchy, Config config,
@@ -161,7 +167,7 @@ class HybridHierarchyLinearQuantizer
     }
 
     global_hierarchy = Hierarchy<D, T, DeviceType>(coarse_shape, config);
-    global_quantizer.Adapt(global_hierarchy, config, queue_idx);
+    // global_quantizer.Adapt(global_hierarchy, config, queue_idx);
   }
 
   void CalcQuantizers(size_t dof, enum error_bound_type type, T tol, T s,
@@ -179,8 +185,8 @@ class HybridHierarchyLinearQuantizer
     if (s == std::numeric_limits<T>::infinity()) {
       quantizer = (abs_tol) / (total_num_levels * (1 + std::pow(3, D)));
       // std::cout << "quantizer: " << quantizer << "\n";
-      coarse_abs_tol =
-          (quantizer * (global_l_target + 1) * (1 + std::pow(3, D))) / 2;
+      // coarse_abs_tol =
+      //     (quantizer * (global_l_target + 1) * (1 + std::pow(3, D))) / 2;
       // std::cout << "coarse_abs_tol: " << coarse_abs_tol << "\n";
       if (reciprocal) quantizer = 1.0f / quantizer;
     } else {  // s != inf
@@ -206,8 +212,6 @@ class HybridHierarchyLinearQuantizer
         if (reciprocal) quantizer = 1.0f / quantizer;
       }
     }
-
-    printf("[HybridHierarchyLinearQuantizer] Final quantizer = %.8e, coarse_abs_tol = %.8e\n", quantizer, coarse_abs_tol);
   }
 
   static size_t EstimateMemoryFootprint(std::vector<SIZE> shape) {
@@ -231,9 +235,9 @@ class HybridHierarchyLinearQuantizer
                 enum error_bound_type ebtype, T tol, T s, T norm,
                 SubArray<1, Q, DeviceType> quantized_data,
                 LosslessCompressorType &lossless, int queue_idx) {
-    Array<D, T, DeviceType> coarse_data(coarse_shape, original_data.data());
-    Array<D, Q, DeviceType> coarse_quantized_data(coarse_shape,
-                                                  quantized_data.data());
+    // Array<D, T, DeviceType> coarse_data(coarse_shape, original_data.data());
+    // Array<D, Q, DeviceType> coarse_quantized_data(coarse_shape,
+    //                                               quantized_data.data());
 
     T quantizer, coarse_abs_tol;
     CalcQuantizers(hierarchy->total_num_elems(), ebtype, tol, s, norm,
@@ -244,40 +248,41 @@ class HybridHierarchyLinearQuantizer
     log::info("coarse_abs_tol: " + std::to_string(coarse_abs_tol));
     log::info("local quantizer: " + std::to_string(quantizer));
 
-    global_quantizer.Quantize(coarse_data, error_bound_type::ABS,
-                              coarse_abs_tol, s, norm, coarse_quantized_data,
-                              lossless, queue_idx);
+    // Direct Copy
+    // global_quantizer.Quantize(coarse_data, error_bound_type::ABS,
+    //                           coarse_abs_tol, s, norm, coarse_quantized_data,
+    //                           lossless, queue_idx);
 
     SIZE L = config.num_local_refactoring_level;
     SIZE total_len = original_data.shape(0);
 
-    SIZE sum_local = 0;
-    for (int l = 0; l < (int)L; l++) {
-      sum_local += local_coeff_size[l];
-    }
-
     // Calculate offsets for each level
     local_offset.resize(L);
     SIZE accum = 0;
-    for (int l = L - 1; l >= 0; l--) {
-      local_offset[l] = accum;
+    for (SIZE l = 0; l < L; l++) {
       accum += local_coeff_size[l];
+      local_offset[l] = total_len - accum;
     }
 
     // Quantize each level
-    for (int l = 0; l < (int)L; l++) {
-      SIZE this_len = local_coeff_size[l];
-      SIZE this_off = local_offset[l];
+    for (SIZE l = 0; l < L; l++) {
+      SIZE len = local_coeff_size[l];
+      SIZE offset = local_offset[l];
 
-      SubArray<1, T, DeviceType> level_v({this_len},
-                                         original_data.data() + this_off);
-      SubArray<1, Q, DeviceType> level_qv({this_len},
-                                          quantized_data.data() + this_off);
+      SubArray<1, T, DeviceType> level_v({len},
+                                         original_data.data() + offset);
+      SubArray<1, Q, DeviceType> level_qv({len},
+                                          quantized_data.data() + offset);
 
       DeviceLauncher<DeviceType>::Execute(
           QuantizeLevelKernel<D, T, Q, MGARDX_QUANTIZE, DeviceType>(
               quantizer, level_v, level_qv),
           queue_idx);
+
+      // queue_idx causes an error
+      // DeviceLauncher<DeviceType>::Execute(
+      //     QuantizeLevelKernel<D, T, Q, MGARDX_QUANTIZE, DeviceType>(
+      //         quantizer, level_v, level_qv));
     }
   }
 
@@ -289,43 +294,50 @@ class HybridHierarchyLinearQuantizer
     bool prep_huffman =
         config.lossless != lossless_type::CPU_Lossless;  // always do Huffman
 
-    Array<D, T, DeviceType> coarse_data(coarse_shape, original_data.data());
-    Array<D, Q, DeviceType> coarse_quantized_data(coarse_shape,
-                                                  quantized_data.data());
+    // Array<D, T, DeviceType> coarse_data(coarse_shape, original_data.data());
+    // Array<D, Q, DeviceType> coarse_quantized_data(coarse_shape,
+    //                                               quantized_data.data());
 
     T quantizer, coarse_abs_tol;
     CalcQuantizers(hierarchy->total_num_elems(), ebtype, tol, s, norm,
                    global_hierarchy.l_target(),
                    config.num_local_refactoring_level, config.decomposition,
-                   true, quantizer, coarse_abs_tol);
+                   false, quantizer, coarse_abs_tol);
 
-    global_quantizer.Dequantize(coarse_data, error_bound_type::ABS,
-                                coarse_abs_tol, s, norm, coarse_quantized_data,
-                                lossless, queue_idx);
+    // global_quantizer.Dequantize(coarse_data, error_bound_type::ABS,
+    //                             coarse_abs_tol, s, norm, coarse_quantized_data,
+    //                             lossless, queue_idx);
 
     SIZE L = config.num_local_refactoring_level;
     SIZE total_len = original_data.shape(0);
 
+    // Calculate offsets for each level
     local_offset.resize(L);
     SIZE accum = 0;
-    for (int l = L - 1; l >= 0; l--) {
-      local_offset[l] = accum;
+    for (SIZE l = 0; l < L; l++) {
       accum += local_coeff_size[l];
+      local_offset[l] = total_len - accum;
     }
 
-    for (int l = 0; l < (int)L; l++) {
-      SIZE this_len = local_coeff_size[l];
-      SIZE this_off = local_offset[l];
+    // Quantize each level
+    for (SIZE l = 0; l < L; l++) {
+      SIZE len = local_coeff_size[l];
+      SIZE offset = local_offset[l];
 
-      SubArray<1, T, DeviceType> level_v({this_len},
-                                         original_data.data() + this_off);
-      SubArray<1, Q, DeviceType> level_qv({this_len},
-                                          quantized_data.data() + this_off);
+      SubArray<1, T, DeviceType> level_v({len},
+                                         original_data.data() + offset);
+      SubArray<1, Q, DeviceType> level_qv({len},
+                                          quantized_data.data() + offset);
 
       DeviceLauncher<DeviceType>::Execute(
           QuantizeLevelKernel<D, T, Q, MGARDX_DEQUANTIZE, DeviceType>(
               quantizer, level_v, level_qv),
           queue_idx);
+
+      // queue_idx causes an error
+      // DeviceLauncher<DeviceType>::Execute(
+      //     QuantizeLevelKernel<D, T, Q, MGARDX_DEQUANTIZE, DeviceType>(
+      //         quantizer, level_v, level_qv));
     }
   }
 
@@ -335,7 +347,7 @@ class HybridHierarchyLinearQuantizer
   Config config;
   std::vector<SIZE> coarse_shape;
   std::vector<SIZE> coarse_num_elems;
-  LinearQuantizer<D, T, Q, DeviceType> global_quantizer;
+  // LinearQuantizer<D, T, Q, DeviceType> global_quantizer;
   std::vector<std::vector<SIZE>> coarse_shapes;
   std::vector<SIZE> local_coeff_size;
 

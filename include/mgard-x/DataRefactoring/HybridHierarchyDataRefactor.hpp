@@ -5,10 +5,8 @@
  * Date: March 17, 2022
  */
 
-#include "DataRefactor.hpp"
+// #include "DataRefactor.hpp"
 #include "HybridHierarchyDataRefactorInterface.hpp"
-// #include "DataRefactoringWorkspace.hpp"
-// #include "../Linearization/LevelLinearizer.hpp"
 #include "InCacheBlock/DataRefactoring.h"
 #include "MultiDimension/DataRefactoring.h"
 #include "SingleDimension/DataRefactoring.h"
@@ -119,7 +117,7 @@ class HybridHierarchyDataRefactor
     // size calculation may be incorrect
     size_t coarse_data_num = 1;
     for (DIM d = 0; d < D; d++) {
-      coarse_data_num *= coarse_shapes[0][d];
+      coarse_data_num *= coarse_shapes[config.num_local_refactoring_level - 1][d];
     }
     coeff_size += coarse_data_num;
 
@@ -188,10 +186,6 @@ class HybridHierarchyDataRefactor
 
     // multi_dimension::CopyND(data, global_coeff_subarray, queue_idx);
 
-    size_t coarse_elems = 1;
-    for (DIM d = 0; d < D; ++d) {
-      coarse_elems *= coarse_shapes[0][d];
-    }
     SubArray<D, T, DeviceType> out_coarse(coarse_shapes[0],
                                           decomposed_data((IDX)0));
     multi_dimension::CopyND(data, out_coarse, queue_idx);
