@@ -6,16 +6,12 @@ namespace data_refactoring {
 
 template <DIM D, typename T, typename DeviceType>
 class BlockLocalHierarchyDataRefactor {
-  virtual void Decompose(SubArray<D, T, DeviceType> data,
-                         SubArray<1, T, DeviceType> decomposed_data,
-                         int queue_idx) = 0;
-  virtual void Recompose(SubArray<D, T, DeviceType> data,
-                         SubArray<1, T, DeviceType> decomposed_data,
-                         int queue_idx) = 0;
+  virtual void Decompose(SubArray<D, T, DeviceType> data, int queue_idx) = 0;
+  virtual void Recompose(SubArray<D, T, DeviceType> data, int queue_idx) = 0;
 };
 
-} // namespace data_refactoring
+}  // namespace data_refactoring
 
-} // namespace mgard_x
+}  // namespace mgard_x
 
 #endif

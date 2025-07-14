@@ -93,8 +93,7 @@ class BlockLocalHierarchyDataRefactor{
     return coeff_size;
   }
 
-  void Decompose(SubArray<D, T, DeviceType> data,
-                 SubArray<1, T, DeviceType> decomposed_data, int queue_idx) {
+  void Decompose(SubArray<D, T, DeviceType> data, int queue_idx) {
     SubArray<D, T, DeviceType> w_subarray(w_array);
     SIZE accumulated_local_coeff_size = 0;
     if (config.num_local_refactoring_level > 0) {
@@ -125,8 +124,7 @@ class BlockLocalHierarchyDataRefactor{
     multi_dimension::CopyND(out_coarse, data, queue_idx);
   }
 
-  void Recompose(SubArray<D, T, DeviceType> data,
-                 SubArray<1, T, DeviceType> decomposed_data, int queue_idx) {
+  void Recompose(SubArray<D, T, DeviceType> data, int queue_idx) {
     SubArray<D, T, DeviceType> in_coarse(
         {coarse_shapes[config.num_local_refactoring_level - 1]},
         decomposed_data((IDX)0));
@@ -160,6 +158,7 @@ class BlockLocalHierarchyDataRefactor{
   std::vector<std::vector<SIZE>> coarse_shapes;
   std::vector<SIZE> local_coeff_size;
   Array<D, T, DeviceType> w_array;
+  Array<D, T, DeviceType> b_array;
 };
 
 }  // namespace data_refactoring

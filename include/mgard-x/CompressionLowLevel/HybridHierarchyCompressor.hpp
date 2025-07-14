@@ -124,7 +124,7 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::Decompose(
     Array<D, T, DeviceType> &original_data, int queue_idx) {
   // hybrid_refactor.Decompose(original_data, decomposed_array, queue_idx);
-  local_refactor.Decompose(original_data, local_decomposed_array, queue_idx);
+  local_refactor.Decompose(SubArray(original_data), queue_idx);
 }
 
 template <DIM D, typename T, typename DeviceType>
@@ -206,8 +206,7 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Deserialize(
 template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::Recompose(
     Array<D, T, DeviceType> &decompressed_data, int queue_idx) {
-  local_refactor.Recompose(decompressed_data, local_quantized_array,
-                           queue_idx);
+  local_refactor.Recompose(SubArray(decompressed_data), queue_idx);
 }
 
 template <DIM D, typename T, typename DeviceType>
