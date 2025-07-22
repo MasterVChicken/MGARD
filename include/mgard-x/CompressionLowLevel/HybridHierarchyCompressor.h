@@ -8,33 +8,28 @@
 #ifndef MGARD_X_HYBRID_HIERARCHY_COMPRESSOR_H
 #define MGARD_X_HYBRID_HIERARCHY_COMPRESSOR_H
 
-#include "../RuntimeX/RuntimeXPublic.h"
-
 #include "../DataRefactoring/BlockLocalHierarchyDataRefactor.hpp"
+#include "../RuntimeX/RuntimeXPublic.h"
 
 // #include "CompressionLowLevelWorkspace.hpp"
 
-#include "NormCalculator.hpp"
-
 #include "../Hierarchy/Hierarchy.h"
-
 #include "../Lossless/Lossless.hpp"
-
 #include "../Quantization/LocalQuantization.hpp"
-
 #include "LossyCompressorInterface.hpp"
+#include "NormCalculator.hpp"
 
 namespace mgard_x {
 
 template <DIM D, typename T, typename DeviceType>
 class HybridHierarchyCompressor
     : public LossyCompressorInterface<D, T, DeviceType> {
-public:
+ public:
   using HierarchyType = Hierarchy<D, T, DeviceType>;
-  using BlockLocalHierarchyDataRefactorType = data_refactoring::BlockLocalHierarchyDataRefactor<D,T,DeviceType>;
+  using BlockLocalHierarchyDataRefactorType =
+      data_refactoring::BlockLocalHierarchyDataRefactor<D, T, DeviceType>;
   using LosslessCompressorType =
-      ComposedLosslessCompressor<QUANTIZED_INT, HUFFMAN_CODE,
-                                 DeviceType>;
+      ComposedLosslessCompressor<QUANTIZED_INT, HUFFMAN_CODE, DeviceType>;
   using LocalQuantizerType = LocalQuantizer<D, T, QUANTIZED_INT, DeviceType>;
 
   HybridHierarchyCompressor();
@@ -91,6 +86,6 @@ public:
   LosslessCompressorType lossless_compressor;
 };
 
-} // namespace mgard_x
+}  // namespace mgard_x
 
 #endif
