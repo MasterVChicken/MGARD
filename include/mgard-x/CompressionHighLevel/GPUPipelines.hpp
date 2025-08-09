@@ -6,8 +6,7 @@ enum compress_status_type compress_pipeline_gpu(
     Config &config, Byte *compressed_subdomain_data,
     SIZE &compressed_subdomain_size) {
   Timer timer_series;
-  if (log::level & log::TIME)
-    timer_series.start();
+  if (log::level & log::TIME) timer_series.start();
 
   using Cache = CompressorCache<D, T, DeviceType, CompressorType>;
   using HierarchyType = typename CompressorType::HierarchyType;
@@ -33,8 +32,7 @@ enum compress_status_type compress_pipeline_gpu(
   std::vector<SIZE> shape =
       domain_decomposer.subdomain_shape(domain_decomposer.largest_subdomain());
   SIZE num_elements = 1;
-  for (int i = 0; i < shape.size(); i++)
-    num_elements *= shape[i];
+  for (int i = 0; i < shape.size(); i++) num_elements *= shape[i];
   device_subdomain_buffer[0].resize(shape);
   device_subdomain_buffer[1].resize(shape);
   device_compressed_buffer[0].resize(
@@ -137,23 +135,23 @@ enum compress_status_type compress_pipeline_gpu(
     double CR = (double)compressor.hierarchy->total_num_elems() * sizeof(T) /
                 compressed_size;
     log::info("Subdomain CR: " + std::to_string(CR));
-    if (CR < 1.0) {
-      log::info("Using uncompressed data instead");
-      domain_decomposer.copy_subdomain(
-          device_subdomain_buffer[current_buffer], curr_subdomain_id,
-          subdomain_copy_direction::OriginalToSubdomain, current_queue);
-      SIZE linearized_width = 1;
-      for (DIM d = 0; d < D - 1; d++)
-        linearized_width *= device_subdomain_buffer[current_buffer].shape(d);
-      MemoryManager<DeviceType>::CopyND(
-          device_compressed_buffer[current_buffer].data(),
-          device_subdomain_buffer[current_buffer].shape(D - 1) * sizeof(T),
-          (Byte *)device_subdomain_buffer[current_buffer].data(),
-          device_subdomain_buffer[current_buffer].ld(D - 1) * sizeof(T),
-          device_subdomain_buffer[current_buffer].shape(D - 1) * sizeof(T),
-          linearized_width, current_queue);
-      compressed_size = compressor.hierarchy->total_num_elems() * sizeof(T);
-    }
+    // if (CR < 1.0) {
+    //   log::info("Using uncompressed data instead");
+    //   domain_decomposer.copy_subdomain(
+    //       device_subdomain_buffer[current_buffer], curr_subdomain_id,
+    //       subdomain_copy_direction::OriginalToSubdomain, current_queue);
+    //   SIZE linearized_width = 1;
+    //   for (DIM d = 0; d < D - 1; d++)
+    //     linearized_width *= device_subdomain_buffer[current_buffer].shape(d);
+    //   MemoryManager<DeviceType>::CopyND(
+    //       device_compressed_buffer[current_buffer].data(),
+    //       device_subdomain_buffer[current_buffer].shape(D - 1) * sizeof(T),
+    //       (Byte *)device_subdomain_buffer[current_buffer].data(),
+    //       device_subdomain_buffer[current_buffer].ld(D - 1) * sizeof(T),
+    //       device_subdomain_buffer[current_buffer].shape(D - 1) * sizeof(T),
+    //       linearized_width, current_queue);
+    //   compressed_size = compressor.hierarchy->total_num_elems() * sizeof(T);
+    // }
 
     if (profile) {
       DeviceRuntime<DeviceType>::SyncDevice();
@@ -177,6 +175,13 @@ enum compress_status_type compress_pipeline_gpu(
                               1e9) +
                " GB)");
       return compress_status_type::OutputTooLargeFailure;
+      // log::info("Output too large due to no lossless");
+      // log::info("Compressed Size:"+std::to_string(compressed_size));
+      // log::info("Original
+      // Size:"+std::to_string(compressor.hierarchy->total_num_elems() *
+      // sizeof(T))); log::info("Compressed Subdomain
+      // Size:"+std::to_string(compressed_subdomain_size)); log::info("Byte
+      // Offset:"+std::to_string(byte_offset));
     }
 
     if (profile) {
@@ -186,9 +191,11 @@ enum compress_status_type compress_pipeline_gpu(
     }
     Serialize<SIZE, DeviceType>(compressed_subdomain_data, &compressed_size, 1,
                                 byte_offset, current_queue);
+    log::info("After Serial1");
     Serialize<Byte, DeviceType>(compressed_subdomain_data,
                                 device_compressed_buffer[current_buffer].data(),
                                 compressed_size, byte_offset, current_queue);
+    log::info("After Serial2");
     if (profile) {
       DeviceRuntime<DeviceType>::SyncDevice();
       timer_profile.end();
@@ -205,8 +212,7 @@ enum compress_status_type compress_pipeline_gpu(
   }
 
   SIZE total_size = 0;
-  for (auto t : size)
-    total_size += t;
+  for (auto t : size) total_size += t;
 
   if (profile_e2e) {
     DeviceRuntime<DeviceType>::SyncDevice();
@@ -219,26 +225,22 @@ enum compress_status_type compress_pipeline_gpu(
   if (profile) {
     std::cout << "comp: "
               << "\n";
-    for (float t : comp)
-      std::cout << t << ", ";
+    for (float t : comp) std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "h2d: "
               << "\n";
-    for (float t : h2d)
-      std::cout << t << ", ";
+    for (float t : h2d) std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "d2h: "
               << "\n";
-    for (float t : d2h)
-      std::cout << t << ", ";
+    for (float t : d2h) std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "size: "
               << "\n";
-    for (SIZE t : size)
-      std::cout << t << ", ";
+    for (SIZE t : size) std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "comp_speed: "
@@ -264,8 +266,7 @@ enum compress_status_type decompress_pipeline_gpu(
     T local_tol, T s, T norm, enum error_bound_type local_ebtype,
     Config &config, Byte *compressed_subdomain_data) {
   Timer timer_series;
-  if (log::level & log::TIME)
-    timer_series.start();
+  if (log::level & log::TIME) timer_series.start();
 
   SIZE byte_offset = 0;
   using Cache = CompressorCache<D, T, DeviceType, CompressorType>;
@@ -293,8 +294,7 @@ enum compress_status_type decompress_pipeline_gpu(
   std::vector<SIZE> shape =
       domain_decomposer.subdomain_shape(domain_decomposer.largest_subdomain());
   SIZE num_elements = 1;
-  for (int i = 0; i < shape.size(); i++)
-    num_elements *= shape[i];
+  for (int i = 0; i < shape.size(); i++) num_elements *= shape[i];
   device_subdomain_buffer[0].resize(shape);
   device_subdomain_buffer[1].resize(shape);
   device_compressed_buffer[0].resize(
@@ -448,29 +448,35 @@ enum compress_status_type decompress_pipeline_gpu(
       timer_profile.clear();
       timer_profile.start();
     }
-    if (CR > 1.0) {
-      compressor.LosslessDecompress(device_compressed_buffer[current_buffer],
-                                    current_queue);
-      compressor.Dequantize(device_subdomain_buffer[current_buffer],
-                            local_ebtype, local_tol, s, norm, current_queue);
-      compressor.Recompose(device_subdomain_buffer[current_buffer],
-                           current_queue);
-    } else {
-      log::info("Skipping decompression as original data was saved instead");
-      device_subdomain_buffer[current_buffer].resize(
-          {compressor.hierarchy->level_shape(
-              compressor.hierarchy->l_target())});
-      SIZE linearized_width = 1;
-      for (DIM d = 0; d < D - 1; d++)
-        linearized_width *= device_subdomain_buffer[current_buffer].shape(d);
-      MemoryManager<DeviceType>::CopyND(
-          device_subdomain_buffer[current_buffer].data(),
-          device_subdomain_buffer[current_buffer].ld(D - 1),
-          (T *)device_compressed_buffer[current_buffer].data(),
-          device_subdomain_buffer[current_buffer].shape(D - 1),
-          device_subdomain_buffer[current_buffer].shape(D - 1),
-          linearized_width, current_queue);
-    }
+    // TODO: Uncomment back
+    // if (CR > 1.0) {
+    //   compressor.LosslessDecompress(device_compressed_buffer[current_buffer],
+    //                                 current_queue);
+    //   compressor.Dequantize(device_subdomain_buffer[current_buffer],
+    //                         local_ebtype, local_tol, s, norm, current_queue);
+    //   compressor.Recompose(device_subdomain_buffer[current_buffer],
+    //                        current_queue);
+    // } else {
+    //   log::info("Skipping decompression as original data was saved instead");
+    //   device_subdomain_buffer[current_buffer].resize(
+    //       {compressor.hierarchy->level_shape(
+    //           compressor.hierarchy->l_target())});
+    //   SIZE linearized_width = 1;
+    //   for (DIM d = 0; d < D - 1; d++)
+    //     linearized_width *= device_subdomain_buffer[current_buffer].shape(d);
+    //   MemoryManager<DeviceType>::CopyND(
+    //       device_subdomain_buffer[current_buffer].data(),
+    //       device_subdomain_buffer[current_buffer].ld(D - 1),
+    //       (T *)device_compressed_buffer[current_buffer].data(),
+    //       device_subdomain_buffer[current_buffer].shape(D - 1),
+    //       device_subdomain_buffer[current_buffer].shape(D - 1),
+    //       linearized_width, current_queue);
+    // }
+    compressor.Dequantize(device_subdomain_buffer[current_buffer], local_ebtype,
+                          local_tol, s, norm, current_queue);
+    // // log::info("Only call recompose");
+    compressor.Recompose(device_subdomain_buffer[current_buffer],
+                         current_queue);
 
     if (profile) {
       DeviceRuntime<DeviceType>::SyncDevice();
@@ -501,8 +507,7 @@ enum compress_status_type decompress_pipeline_gpu(
       subdomain_copy_direction::SubdomainToOriginal, previous_queue);
 
   SIZE total_size = 0;
-  for (auto t : size)
-    total_size += t;
+  for (auto t : size) total_size += t;
 
   if (profile) {
     DeviceRuntime<DeviceType>::SyncDevice();
@@ -528,26 +533,22 @@ enum compress_status_type decompress_pipeline_gpu(
     // GB/s)"<< "\n";
     std::cout << "comp: "
               << "\n";
-    for (float t : comp)
-      std::cout << t << ", ";
+    for (float t : comp) std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "h2d: "
               << "\n";
-    for (float t : h2d)
-      std::cout << t << ", ";
+    for (float t : h2d) std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "d2h: "
               << "\n";
-    for (float t : d2h)
-      std::cout << t << ", ";
+    for (float t : d2h) std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "size: "
               << "\n";
-    for (SIZE t : size)
-      std::cout << t << ", ";
+    for (SIZE t : size) std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "comp_speed: "
@@ -565,4 +566,4 @@ enum compress_status_type decompress_pipeline_gpu(
   }
   return compress_status_type::Success;
 }
-} // namespace mgard_x
+}  // namespace mgard_x

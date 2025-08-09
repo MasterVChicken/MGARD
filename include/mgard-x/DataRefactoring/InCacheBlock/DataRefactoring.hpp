@@ -5,15 +5,14 @@
  * Date: March 17, 2022
  */
 
+#include <iostream>
+
 #include "../../Hierarchy/Hierarchy.h"
 #include "../../RuntimeX/RuntimeX.h"
-
 #include "Autocorrelation8x8x8.hpp"
 #include "DataRefactoring.h"
-#include "MultiDimension8x8x8.hpp"
-#include "RecompMultiDimension8x8x8.hpp"
-
-#include <iostream>
+#include "Decompose8x8x8.hpp"
+#include "Recompose8x8x8.hpp"
 
 #ifndef MGARD_X_IN_CACHE_BLOCK_DATA_REFACTORING_HPP
 #define MGARD_X_IN_CACHE_BLOCK_DATA_REFACTORING_HPP
@@ -29,9 +28,7 @@ void decompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
                SubArray<1, T, DeviceType> coeff, int queue_idx) {
   if constexpr (D <= 3) {
     DeviceLauncher<DeviceType>::Execute(
-        MultiDimension8x8x8Kernel<D, T, DECOMPOSE, DeviceType>(v, coarse,
-                                                               coeff),
-        queue_idx);
+        Decompose8x8x8Kernel<D, T, DeviceType>(v, coarse, coeff), queue_idx);
 
     // Array<D, T, DeviceType> ac_x({(v.shape(0)-1)/8+1, (v.shape(1)-1)/8+1,
     // (v.shape(2)-1)/8+1}, false, false); Array<D, T, DeviceType>
@@ -57,19 +54,16 @@ void decompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
 template <DIM D, typename T, typename DeviceType>
 void recompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
                SubArray<1, T, DeviceType> coeff, int queue_idx) {
-
   if constexpr (D <= 3) {
     DeviceLauncher<DeviceType>::Execute(
-      RecompMultiDimension8x8x8Kernel<D, T, DECOMPOSE, DeviceType>(v, coarse,
-                                                             coeff),
-      queue_idx);
+        Recompose8x8x8Kernel<D, T, DeviceType>(v, coarse, coeff), queue_idx);
   }
 }
 
-} // namespace in_cache_block
+}  // namespace in_cache_block
 
-} // namespace data_refactoring
+}  // namespace data_refactoring
 
-} // namespace mgard_x
+}  // namespace mgard_x
 
 #endif

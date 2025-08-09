@@ -59,7 +59,6 @@ class QuantizeLocalLevelFunctor : public Functor<DeviceType> {
 template <typename T, typename Q, OPTION OP, typename DeviceType>
 class QuantizeLocalLevelKernel : public Kernel {
  public:
-  // Not sure if needed for auto-tuning
   constexpr static bool EnableAutoTuning() { return false; }
   constexpr static std::string_view Name = "lvl_qk";
   MGARDX_CONT
@@ -100,6 +99,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   LocalQuantizer() : initialized(false) {}
   LocalQuantizer(Hierarchy<D, T, DeviceType>& hierarchy, Config config)
       : initialized(true), hierarchy(&hierarchy), config(config) {
+    this->L = config.num_local_refactoring_level;
     compute_local_ranges();
     prepare_layers();
   }
@@ -109,6 +109,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     this->initialized = true;
     this->hierarchy = &hierarchy;
     this->config = config;
+    this->L = config.num_local_refactoring_level;
     compute_local_ranges();
     layer_len.clear();
     layer_off.clear();
@@ -121,28 +122,40 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   }
 
   void compute_local_ranges() {
-    SIZE L = config.num_local_refactoring_level;
     coarse_shape = hierarchy->level_shape(hierarchy->l_target());
+    // for (int d = 0; d < coarse_shape.size(); d++) {
+    //   log::info("Dim " + std::to_string(d) + " : " +
+    //             std::to_string(coarse_shape[d]));
+    // }
 
+    fine_num_elems.clear();
     coarse_num_elems.clear();
     local_coeff_size.clear();
 
-    for (int l = 0; l < L; ++l) {
+    // In that way we can have coarse_shape[0] store transformed 8x8x8 original
+    // data
+    for (int l = 0; l < this->L; ++l) {
       SIZE last_level_size = 1, curr_level_size = 1;
       for (DIM d = 0; d < D; ++d) {
+        coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 8;
         last_level_size *= coarse_shape[d];
         coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 5;
         curr_level_size *= coarse_shape[d];
       }
-      coarse_num_elems.push_back(last_level_size);
+      fine_num_elems.push_back(last_level_size);
+      coarse_num_elems.push_back(curr_level_size);
       local_coeff_size.push_back(last_level_size - curr_level_size);
+      // log::info("L = " + std::to_string(l) +
+      //           ", fine_num_elems = " + std::to_string(fine_num_elems[l])
+      //           +
+      //           ", local_coeff_size = " +
+      //           std::to_string(local_coeff_size[l]));
     }
   }
 
   void prepare_layers() {
-    SIZE L = config.num_local_refactoring_level;
-    layer_len.assign(L + 1, 0);
-    layer_off.assign(L + 1, 0);
+    layer_len.assign(this->L + 1, 0);
+    layer_off.assign(this->L + 1, 0);
 
     // The length of coarsest layer
     layer_len[0] = coarse_num_elems.back();
@@ -150,8 +163,8 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
 
     SIZE accum = layer_len[0];
 
-    for (SIZE l = 1; l <= L; ++l) {
-      layer_len[l] = local_coeff_size[l - 1];
+    for (SIZE l = 1; l <= this->L; ++l) {
+      layer_len[l] = local_coeff_size[this->L - l];
       layer_off[l] = accum;
       accum += layer_len[l];
     }
@@ -166,7 +179,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     }
     abs_tol *= 2;
     if (s == std::numeric_limits<T>::infinity()) {
-      // Use ben's quantizer for now
+      // ben
       for (int l = 0; l < l_target + 1; l++) {
         quantizers[l] = (abs_tol) / (l_target + 1) * (1 + std::pow(3, D));
         if (reciprocal) {
@@ -175,42 +188,69 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
       }
     } else {
       // warning for un-inf
-      
+      log::err("Only L-inf supported");
+      exit(-1);
     }
   }
 
   void Quantize(SubArray<D, T, DeviceType> original_data,
                 enum error_bound_type ebtype, T tol, T s, T norm,
-                SubArray<D, Q, DeviceType> quantized_data,
-                int queue_idx){}
+                SubArray<D, Q, DeviceType> quantized_data, int queue_idx) {}
 
   void Dequantize(SubArray<D, T, DeviceType> original_data,
                   enum error_bound_type ebtype, T tol, T s, T norm,
-                  SubArray<D, Q, DeviceType> quantized_data,
-                  int queue_idx){}
+                  SubArray<D, Q, DeviceType> quantized_data, int queue_idx) {}
 
   template <typename LosslessCompressorType>
   void Quantize(SubArray<1, T, DeviceType> original_data,
                 enum error_bound_type ebtype, T tol, T s, T norm,
                 SubArray<1, Q, DeviceType> quantized_data,
-                LosslessCompressorType& lossless, int queue_idx){
-    SIZE L = hierarchy->l_target();
-    std::vector<T> quantizers_buf(L + 1);
-    CalcQuantizers(hierarchy->total_num_elems(), quantizers_buf.data(), ebtype,
-                   tol, s, norm, L, config.decomposition, true);
-    SubArray<1,T,DeviceType> quantizers_array({L+1},quantizers_buf.data());
+                LosslessCompressorType& lossless, int queue_idx) {
+    T* host_quantizers = new T[this->L + 1];
+    CalcQuantizers(hierarchy->total_num_elems(), host_quantizers, ebtype, tol,
+                   s, norm, this->L, config.decomposition, true);
 
-    for (SIZE l = 0; l <= L; ++l) {
+    // Debug for quantizers
+    // After examination CalcQuantizers() is correct
+    // for (int i = 0; i < quantizers_buf.size(); i++) {
+    //   log::info("Quantizer[" + std::to_string(i) +
+    //             "]: " + std::to_string(quantizers_buf[i]));
+    // }
+
+    // log::info("=== LocalQuantizer Debug ===");
+    // log::info("original_data.shape(0): " +
+    //           std::to_string(original_data.shape(0)));
+    // log::info("L: " + std::to_string(this->L));
+
+    for (SIZE l = 0; l <= this->L; ++l) {
+      // log::info("Layer " + std::to_string(l) + ":");
+      // log::info("  layer_len[" + std::to_string(l) +
+      //           "]: " + std::to_string(layer_len[l]));
+      // log::info("  layer_off[" + std::to_string(l) +
+      //           "]: " + std::to_string(layer_off[l]));
+      // log::info("  access range: " + std::to_string(layer_off[l]) + " to " +
+      //           std::to_string(layer_off[l] + layer_len[l] - 1));
+
+      if (layer_off[l] + layer_len[l] > original_data.shape(0)) {
+        log::err("*** BOUNDARY VIOLATION ***");
+        log::err("Trying to access beyond array bounds!");
+        log::err("Array size: " + std::to_string(original_data.shape(0)));
+        log::err("Access end: " + std::to_string(layer_off[l] + layer_len[l]));
+        return;
+      }
       SubArray<1, T, DeviceType> v_in({layer_len[l]},
-                                      original_data.data() + layer_off[l]);
-      SubArray<1, Q, DeviceType> v_out = quantized_data;
-      SubArray<1, QUANTIZED_INT, DeviceType> qv = quantized_data;
+                                      original_data((IDX)layer_off[l]));
+      SubArray<1, Q, DeviceType> qv({layer_len[l]},
+                                    quantized_data((IDX)layer_off[l]));
       // Launch
-      T quantizer = *quantizers_array(l);
+      T quantizer = host_quantizers[l];
       DeviceLauncher<DeviceType>::Execute(
-          QuantizeLocalLevelKernel<T, Q, MGARDX_QUANTIZE, DeviceType>(
-              quantizer, v_in, qv),
+          QuantizeLocalLevelKernel<T, Q, MGARDX_QUANTIZE, DeviceType>(quantizer,
+                                                                      v_in, qv),
           queue_idx);
+      // PrintSubarray("Oringal data before quantizer:", v_in);
+      // log::info("Quantizer: " + std::to_string(quantizer));
+      // PrintSubarray("Quantized Array: ", qv);
     }
   }
 
@@ -218,34 +258,52 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   void Dequantize(SubArray<1, T, DeviceType> original_data,
                   enum error_bound_type ebtype, T tol, T s, T norm,
                   SubArray<1, Q, DeviceType> quantized_data,
-                  LosslessCompressorType& lossless, int queue_idx){
-    SIZE L = hierarchy->l_target();
-    std::vector<T> quantizers_buf(L + 1);
-    CalcQuantizers(hierarchy->total_num_elems(), quantizers_buf.data(), ebtype,
-                   tol, s, norm, L, config.decomposition, true);
-    SubArray<1,T,DeviceType> quantizers_array({L+1},quantizers_buf.data());
-    
+                  LosslessCompressorType& lossless, int queue_idx) {
+    T* host_quantizers = new T[this->L + 1];
+    CalcQuantizers(hierarchy->total_num_elems(), host_quantizers, ebtype, tol,
+                   s, norm, this->L, config.decomposition, false);
 
-    for (SIZE l = 0; l <= L; ++l) {
+    for (SIZE l = 0; l <= this->L; ++l) {
+      // log::info("Layer " + std::to_string(l) + ":");
+      // log::info("  layer_len[" + std::to_string(l) +
+      //           "]: " + std::to_string(layer_len[l]));
+      // log::info("  layer_off[" + std::to_string(l) +
+      //           "]: " + std::to_string(layer_off[l]));
+      // log::info("  access range: " + std::to_string(layer_off[l]) + " to " +
+      //           std::to_string(layer_off[l] + layer_len[l] - 1));
+
+      if (layer_off[l] + layer_len[l] > original_data.shape(0)) {
+        log::err("*** BOUNDARY VIOLATION ***");
+        log::err("Trying to access beyond array bounds!");
+        log::err("Array size: " + std::to_string(original_data.shape(0)));
+        log::err("Access end: " + std::to_string(layer_off[l] + layer_len[l]));
+        return;
+      }
       SubArray<1, T, DeviceType> v_in({layer_len[l]},
-                                      original_data.data() + layer_off[l]);
-      SubArray<1, QUANTIZED_INT, DeviceType> qv = quantized_data;
+                                      original_data((IDX)layer_off[l]));
+      SubArray<1, Q, DeviceType> qv({layer_len[l]},
+                                    quantized_data((IDX)layer_off[l]));
       // Launch
-      T quantizer = *quantizers_array(l);
+      T quantizer = host_quantizers[l];
       DeviceLauncher<DeviceType>::Execute(
           QuantizeLocalLevelKernel<T, Q, MGARDX_DEQUANTIZE, DeviceType>(
               quantizer, v_in, qv),
           queue_idx);
+      // PrintSubarray("Quantized data before dequantization:", qv);
+      // log::info("Quantizer: " + std::to_string(quantizer));
+      // PrintSubarray("Dequantized Array: ", v_in);
     }
   }
 
   bool initialized;
+  SIZE L;
   Hierarchy<D, T, DeviceType>* hierarchy;
   Config config;
   std::vector<SIZE> layer_len;
   // change off to offset
   std::vector<SIZE> layer_off;
 
+  std::vector<SIZE> fine_num_elems;
   std::vector<SIZE> coarse_num_elems;
   std::vector<SIZE> local_coeff_size;
   std::vector<SIZE> coarse_shape;

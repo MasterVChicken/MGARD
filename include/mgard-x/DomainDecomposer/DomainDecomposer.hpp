@@ -10,6 +10,7 @@
 
 #include "../Config/Config.h"
 #include "../Hierarchy/Hierarchy.hpp"
+#include "cuda_runtime.h"
 
 namespace mgard_x {
 
@@ -20,7 +21,7 @@ enum class subdomain_copy_direction : uint8_t {
 
 template <DIM D, typename T, typename OperatorType, typename DeviceType>
 class DomainDecomposer {
-public:
+ public:
   size_t EstimateMemoryFootprint(std::vector<SIZE> shape,
                                  bool enable_prefetch) {
     size_t estimate_memory_usgae = 0;
@@ -34,8 +35,7 @@ public:
     }
 
     SIZE num_elements = 1;
-    for (int i = 0; i < shape.size(); i++)
-      num_elements *= shape[i];
+    for (int i = 0; i < shape.size(); i++) num_elements *= shape[i];
     size_t output_space = 0;
     output_space += num_elements * sizeof(HUFFMAN_CODE);
     output_space += config.estimate_outlier_ratio * sizeof(QUANTIZED_INT);
@@ -117,8 +117,8 @@ public:
 
   std::vector<SIZE> subdomain_shape(int subdomain_id) {
     if (subdomain_id >= _num_subdomains) {
-      log::err("DomainDecomposer::subdomain_shape wrong subdomain_id.");
-      exit(-1);
+      throw std::runtime_error(
+          "DomainDecomposer: subdomain_shape wrong subdomain_id.");
     }
     if (!_domain_decomposed) {
       return shape;
@@ -155,8 +155,7 @@ public:
             _domain_decomposed_sizes[subdomain_id];
         return chunk_shape;
       } else {
-        log::err("Wrong domain decomposition type.");
-        exit(-1);
+        throw std::runtime_error("Wrong domain decomposition type.");
         return shape;
       }
     }
@@ -182,8 +181,7 @@ public:
   SIZE subdomain_compressed_buffer_size(int subdomain_id) {
     std::vector<SIZE> shape = subdomain_shape(subdomain_id);
     SIZE num_elements = 1;
-    for (int i = 0; i < shape.size(); i++)
-      num_elements *= shape[i];
+    for (int i = 0; i < shape.size(); i++) num_elements *= shape[i];
     SIZE size = 0;
     size += num_elements * sizeof(HUFFMAN_CODE);
     size += config.estimate_outlier_ratio * sizeof(QUANTIZED_INT);
@@ -223,9 +221,8 @@ public:
     return true;
   }
 
-  bool
-  generate_block_domain_decomposition_strategy(std::vector<SIZE> shape,
-                                               SIZE &_domain_decomposed_size) {
+  bool generate_block_domain_decomposition_strategy(
+      std::vector<SIZE> shape, SIZE &_domain_decomposed_size) {
     std::vector<SIZE> chunk_shape(D, _domain_decomposed_size);
 
     int curr_num_subdomains = 1;
@@ -286,12 +283,10 @@ public:
         }
         Hierarchy<D, T, DeviceType> hierarchy(chunk_shape, chunk_coords,
                                               config);
-        for (int d = D - 1; d >= 0; d--)
-          delete[] chunk_coords[d];
+        for (int d = D - 1; d >= 0; d--) delete[] chunk_coords[d];
         return hierarchy;
       } else {
-        log::err("Wrong domain decomposition type.");
-        exit(-1);
+        throw std::runtime_error("Wrong domain decomposition type.");
       }
     }
   }
@@ -300,7 +295,9 @@ public:
 
   // Find domain decomposion method
   DomainDecomposer(std::vector<SIZE> shape, Config config)
-      : original_data(nullptr), shape(shape), config(config),
+      : original_data(nullptr),
+        shape(shape),
+        config(config),
         keep_original_data_decomposed(false) {
     if (!need_domain_decomposition(shape, false) &&
         config.domain_decomposition != domain_decomposition_type::Block &&
@@ -349,8 +346,7 @@ public:
                   std::to_string(this->_num_subdomains) +
                   " subdomains using Variable method");
       } else {
-        log::err("Wrong domain decomposition type.");
-        exit(-1);
+        throw std::runtime_error("Wrong domain decomposition type.");
       }
     }
 
@@ -360,7 +356,10 @@ public:
   // Find domain decomposion method
   DomainDecomposer(std::vector<SIZE> shape, Config config,
                    std::vector<T *> coords)
-      : original_data(nullptr), shape(shape), config(config), coords(coords),
+      : original_data(nullptr),
+        shape(shape),
+        config(config),
+        coords(coords),
         keep_original_data_decomposed(false) {
     if (!need_domain_decomposition(shape, false) &&
         config.domain_decomposition != domain_decomposition_type::Block &&
@@ -409,8 +408,7 @@ public:
                   std::to_string(this->_num_subdomains) +
                   " subdomains using Variable method");
       } else {
-        log::err("Wrong domain decomposition type.");
-        exit(-1);
+        throw std::runtime_error("Wrong domain decomposition type.");
       }
     }
 
@@ -421,10 +419,12 @@ public:
   DomainDecomposer(std::vector<SIZE> shape, bool _domain_decomposed,
                    DIM _domain_decomposed_dim, SIZE _domain_decomposed_size,
                    Config config)
-      : original_data(nullptr), shape(shape),
+      : original_data(nullptr),
+        shape(shape),
         _domain_decomposed_dim(_domain_decomposed_dim),
         _domain_decomposed_size(_domain_decomposed_size),
-        _domain_decomposed(_domain_decomposed), config(config),
+        _domain_decomposed(_domain_decomposed),
+        config(config),
         keep_original_data_decomposed(false) {
     if (!this->_domain_decomposed) {
       this->_domain_decomposed_dim = 0;
@@ -464,8 +464,7 @@ public:
                   std::to_string(this->_num_subdomains) +
                   " subdomains using Variable method");
       } else {
-        log::err("Wrong domain decomposition type.");
-        exit(-1);
+        throw std::runtime_error("Wrong domain decomposition type.");
       }
     }
 
@@ -476,10 +475,13 @@ public:
   DomainDecomposer(std::vector<SIZE> shape, bool _domain_decomposed,
                    DIM _domain_decomposed_dim, SIZE _domain_decomposed_size,
                    Config config, std::vector<T *> coords)
-      : original_data(nullptr), shape(shape),
+      : original_data(nullptr),
+        shape(shape),
         _domain_decomposed_dim(_domain_decomposed_dim),
         _domain_decomposed_size(_domain_decomposed_size),
-        _domain_decomposed(_domain_decomposed), config(config), coords(coords),
+        _domain_decomposed(_domain_decomposed),
+        config(config),
+        coords(coords),
         keep_original_data_decomposed(false) {
     if (!this->_domain_decomposed) {
       this->_domain_decomposed_dim = 0;
@@ -519,8 +521,7 @@ public:
                   std::to_string(this->_num_subdomains) +
                   " subdomains using Variable method");
       } else {
-        log::err("Wrong domain decomposition type.");
-        exit(-1);
+        throw std::runtime_error("Wrong domain decomposition type.");
       }
     }
 
@@ -606,7 +607,7 @@ public:
         // for (int d = D - 1; d > (int)_domain_decomposed_dim; d--) {
         //   offset *= shape[d];
         // }
-        return original_data + offset; // * subdomain_id;
+        return original_data + offset;  // * subdomain_id;
       } else {
         return decomposed_original_data[subdomain_id];
       }
@@ -619,8 +620,7 @@ public:
         return decomposed_original_data[subdomain_id];
       }
     } else {
-      log::err("Wrong domain decomposition type.");
-      exit(-1);
+      throw std::runtime_error("Wrong domain decomposition type.");
     }
   }
 
@@ -635,14 +635,14 @@ public:
   void copy_subdomain(Array<D, T, DeviceType> &subdomain_data, int subdomain_id,
                       enum subdomain_copy_direction direction, int queue_idx) {
     if (subdomain_id >= _num_subdomains) {
-      log::err("DomainDecomposer::copy_subdomain wrong subdomain_id.");
-      exit(-1);
+      throw std::runtime_error(
+          "DomainDecomposer::copy_subdomain wrong subdomain_id.");
     }
 
     if (!_domain_decomposed) {
       // if (keep_original_data_decomposed) {
-      //   log::err("Do not support restoring to decomposed data when no domain
-      //   decomposition was used."); exit(-1);
+      //   throw std::runtime_error("Do not support restoring to decomposed data
+      //   when no domain decomposition was used.");
       // }
 
       if (direction == subdomain_copy_direction::OriginalToSubdomain) {
@@ -666,9 +666,9 @@ public:
       if (config.domain_decomposition == domain_decomposition_type::MaxDim ||
           config.domain_decomposition == domain_decomposition_type::Variable) {
         if (keep_original_data_decomposed) {
-          log::err("Do not support restoring to decomposed data when using "
-                   "MaxDim or Variable");
-          exit(-1);
+          throw std::runtime_error(
+              "Do not support restoring to decomposed data when using "
+              "MaxDim or Variable");
         }
         T *data = original_data_ptr(subdomain_id);
         if (direction == subdomain_copy_direction::OriginalToSubdomain) {
@@ -816,12 +816,11 @@ public:
             }
           }
         } else {
-          log::err("Copy subdomain does not support higher than 5D data.");
-          exit(-1);
+          throw std::runtime_error(
+              "Copy subdomain does not support higher than 5D data.");
         }
       } else {
-        log::err("Wrong domain decomposition type.");
-        exit(-1);
+        throw std::runtime_error("Wrong domain decomposition type.");
       }
     }
   }
@@ -860,6 +859,6 @@ public:
   std::vector<T *> coords;
 };
 
-} // namespace mgard_x
+}  // namespace mgard_x
 
 #endif

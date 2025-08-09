@@ -22,11 +22,13 @@
 
 using namespace std::chrono;
 
+ 
 void print_usage_message(std::string error) {
   if (error.compare("") != 0) {
     std::cout << mgard_x::log::log_err << error << std::endl;
   }
-  printf("Options\n\
+  printf(
+      "Options\n\
 \t -z / --compress: compress mode\n\
 \t\t -i / --input <path to original data>\n\
 \t\t -o / --output <path to compressed data>\n\
@@ -51,7 +53,8 @@ void print_usage_message(std::string error) {
   exit(0);
 }
 
-template <typename T> void min_max(size_t n, T *in_buff) {
+template <typename T>
+void min_max(size_t n, T *in_buff) {
   T min = std::numeric_limits<T>::infinity();
   T max = 0;
   for (size_t i = 0; i < n; i++) {
@@ -65,7 +68,8 @@ template <typename T> void min_max(size_t n, T *in_buff) {
   printf("Min: %f, Max: %f\n", min, max);
 }
 
-template <typename T> size_t readfile(const char *input_file, T *&in_buff) {
+template <typename T>
+size_t readfile(const char *input_file, T *&in_buff) {
   std::cout << mgard_x::log::log_info << "Loading file: " << input_file << "\n";
 
   FILE *pFile;
@@ -96,8 +100,7 @@ void print_statistics(double s, enum mgard_x::error_bound_type mode,
                       std::vector<mgard_x::SIZE> shape, T *original_data,
                       T *decompressed_data, T tol, bool normalize_coordinates) {
   mgard_x::SIZE n = 1;
-  for (mgard_x::DIM d = 0; d < shape.size(); d++)
-    n *= shape[d];
+  for (mgard_x::DIM d = 0; d < shape.size(); d++) n *= shape[d];
   T actual_error = 0.0;
   std::cout << std::scientific;
   if (s == std::numeric_limits<T>::infinity()) {
@@ -173,12 +176,12 @@ int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
                     std::string domain_decomposition, mgard_x::SIZE block_size,
                     enum mgard_x::device_type dev_type, int verbose,
                     mgard_x::SIZE max_memory_footprint) {
-
   mgard_x::Config config;
   config.log_level = verbose_to_log_level(verbose);
-  config.decomposition = mgard_x::decomposition_type::MultiDim;
-  // config.decomposition = mgard_x::decomposition_type::Hybrid;
-  // config.num_local_refactoring_level = 1;
+  // config.decomposition = mgard_x::decomposition_type::MultiDim;
+  config.decomposition = mgard_x::decomposition_type::Hybrid;
+  config.num_local_refactoring_level = 1;
+  // config.compress_with_dryrun = true;
 
   // config.max_larget_level = 1;
 
@@ -234,8 +237,7 @@ int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
   }
 
   size_t original_size = 1;
-  for (mgard_x::DIM i = 0; i < D; i++)
-    original_size *= shape[i];
+  for (mgard_x::DIM i = 0; i < D; i++) original_size *= shape[i];
   T *original_data = (T *)malloc(original_size * sizeof(T));
   size_t in_size = 0;
   if (std::string(input_file).compare("random") == 0) {
@@ -283,6 +285,13 @@ int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
   mgard_x::pin_memory(decompressed_data, original_size * sizeof(T), config);
   mgard_x::decompress(compressed_data, compressed_size, decompressed_data,
                       config, true);
+
+  // // Print for debug
+  // T *decompressed_typed = (T *)decompressed_data;  
+  // for (int i = 0; i < 8 * 8 * 8; i++) {
+  //   std::cout << "Index " << i << " : " << "Original: " << original_data[i]
+  //             << ", Decompressed: " << decompressed_typed[i] << std::endl;
+  // }
 
   print_statistics<T>(s, mode, shape, original_data, (T *)decompressed_data,
                       tol, config.normalize_coordinates);
@@ -333,8 +342,7 @@ int launch_decompress(const char *input_file, const char *output_file,
 }
 
 bool try_compression(int argc, char *argv[]) {
-  if (!has_arg(argc, argv, "-z", "--compress"))
-    return false;
+  if (!has_arg(argc, argv, "-z", "--compress")) return false;
   mgard_x::log::info("mode: compress", true);
   std::string input_file =
       get_arg<std::string>(argc, argv, "Original data", "-i", "--input");
@@ -344,7 +352,7 @@ bool try_compression(int argc, char *argv[]) {
   std::vector<mgard_x::SIZE> shape =
       get_args<mgard_x::SIZE>(argc, argv, "Dimensions", "-dim", "--dimension");
   enum mgard_x::error_bound_type mode =
-      get_error_bound_mode(argc, argv); // REL or ABS
+      get_error_bound_mode(argc, argv);  // REL or ABS
   double tol =
       get_arg<double>(argc, argv, "Error bound", "-e", "--error-bound");
   double s = get_arg<double>(argc, argv, "Smoothness", "-s", "--smoothness");
@@ -388,8 +396,7 @@ bool try_compression(int argc, char *argv[]) {
 }
 
 bool try_decompression(int argc, char *argv[]) {
-  if (!has_arg(argc, argv, "-x", "--decompress"))
-    return false;
+  if (!has_arg(argc, argv, "-x", "--decompress")) return false;
   mgard_x::log::info("mode: decompress", true);
   std::string input_file =
       get_arg<std::string>(argc, argv, "Compressed data", "-i", "--input");
@@ -406,7 +413,6 @@ bool try_decompression(int argc, char *argv[]) {
 }
 
 int main(int argc, char *argv[]) {
-
   if (!try_compression(argc, argv) && !try_decompression(argc, argv)) {
     print_usage_message("");
   }

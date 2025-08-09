@@ -87,6 +87,7 @@ public:
   }
 
   void Serialize(Array<1, Byte, DeviceType> &compressed_data, int queue_idx) {
+    log::info("Am i here?");
     if (config.lossless == lossless_type::Huffman) {
       huffman.Serialize(compressed_data, queue_idx);
     }

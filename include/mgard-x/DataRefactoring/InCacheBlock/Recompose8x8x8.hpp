@@ -5,18 +5,18 @@
  * Date: Jan. 15, 2023
  */
 
-#ifndef MGARD_X_RECOMP_MULTI_DIMENSION_8x8x8_KERNEL_TEMPLATE
-#define MGARD_X_RECOMP_MULTI_DIMENSION_8x8x8_KERNEL_TEMPLATE
+#ifndef MGARD_X_RECOMPOSE_8x8x8_KERNEL_TEMPLATE
+#define MGARD_X_RECOMPOSE_8x8x8_KERNEL_TEMPLATE
 
 #include "../../RuntimeX/RuntimeX.h"
-#include "../MultiDimension/Correction/IPKFunctor.h"
+
 #include "../MultiDimension/Correction/LPKFunctor.h"
+
+#include "../MultiDimension/Correction/IPKFunctor.h"
+
 #include "IndexTable3x3x3.hpp"
 #include "IndexTable5x5x5.hpp"
 #include "IndexTable8x8x8.hpp"
-
-#define DECOMPOSE 0
-#define RECOMPOSE 1
 
 namespace mgard_x {
 
@@ -37,14 +37,13 @@ c8(512) c5( 98)  x( 18)  y( 12)  z( 8)
 c8(512) c5( 98)  c3(19)  c2( 8)
 */
 
-template <DIM D, typename T, SIZE Z, SIZE Y, SIZE X, OPTION OP,
-          typename DeviceType>
-class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
- public:
-  MGARDX_CONT RecompMultiDimension8x8x8Functor() {}
-  MGARDX_CONT RecompMultiDimension8x8x8Functor(
-      SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
-      SubArray<1, T, DeviceType> coeff)
+template <DIM D, typename T, SIZE Z, SIZE Y, SIZE X, typename DeviceType>
+class Recompose8x8x8Functor : public Functor<DeviceType> {
+public:
+  MGARDX_CONT Recompose8x8x8Functor() {}
+  MGARDX_CONT Recompose8x8x8Functor(SubArray<D, T, DeviceType> v,
+                                    SubArray<D, T, DeviceType> coarse,
+                                    SubArray<1, T, DeviceType> coeff)
       : v(v), coarse(coarse), coeff(coeff) {
     Functor<DeviceType>();
   }
@@ -80,7 +79,7 @@ class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
     sm_c2 = sm_c3 + 3 * 3 * 3;
   }
 
-  // Interpolation
+  // Load data
   MGARDX_EXEC void Operation1() {
     initialize_sm_8x8x8();
     x = FunctorBase<DeviceType>::GetThreadIdX();
@@ -97,13 +96,9 @@ class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
     bid = z_tb * FunctorBase<DeviceType>::GetGridDimX() *
               FunctorBase<DeviceType>::GetGridDimY() +
           y_tb * FunctorBase<DeviceType>::GetGridDimX() + x_tb;
-    if (z == 0 && y == 0 && x == 0) sm_v[zero_const_offset] = (T)0;
+    if (z == 0 && y == 0 && x == 0)
+      sm_v[zero_const_offset] = (T)0;
 
-    offset = get_idx(ld1, ld2, z, y, x);
-    sm_v[offset] = 0.0;
-  }
-
-  MGARDX_EXEC void Operation2() {
     if (tid < 125) {
       int const *index = Coarse_Reorder_8x8x8(tid);
       sm_v[Coarse_Offset_8x8x8(tid)] = *coarse(
@@ -111,11 +106,36 @@ class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
     } else {
       int op_tid = tid - 125;
       sm_v[Coeff_Offset_8x8x8(op_tid)] = *coeff(bid * 387 + op_tid);
+      // if (bid == 0 && op_tid == 0) {
+      //   for (int i = 0; i < 387; i++) {
+      //     printf("%f ", sm_v[Coeff_Offset_8x8x8(i)]);
+      //   }
+      //   printf("\n");
+      // }
     }
   }
 
   // MassTransX
-  MGARDX_EXEC void Operation3() {
+  MGARDX_EXEC void Operation2() {
+
+    // #ifdef MGARDX_COMPILE_CUDA
+    // __syncthreads();
+    // if (tid == 0) {
+    //   printf("int\n");
+    //   for (int i = 0; i < 8; i++) {
+    //     printf("sm[i = %d]\n", i);
+    //     for (int j = 0; j < 8; j++) {
+    //       for (int k = 0; k < 8; k++) {
+    //         printf("%.6f ", sm_v[get_idx(8, 8, i, j, k)]);
+    //       }
+    //       printf("\n");
+    //     }
+    //     printf("\n");
+    //   }
+    // }
+    // __syncthreads();
+    // #endif
+
     if (tid < 320) {
       int const *index = MassTrans_X_Offset_8x8x8(tid);
       T a = sm_v[index[0]];
@@ -127,10 +147,28 @@ class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
       sm_x[index[5]] =
           a * dist[0] + b * dist[1] + c * dist[2] + d * dist[3] + e * dist[4];
     }
+
+    // #ifdef MGARDX_COMPILE_CUDA
+    // __syncthreads();
+    // if (tid == 5) {
+    //   printf("tra - x\n");
+    //   for (int i = 0; i < 8; i++) {
+    //     printf("sm[i = %d]\n", i);
+    //     for (int j = 0; j < 8; j++) {
+    //       for (int k = 0; k < 5; k++) {
+    //         printf("%.6f ", sm_x[get_idx(5, 8, i, j, k)]);
+    //       }
+    //       printf("\n");
+    //     }
+    //     printf("\n");
+    //   }
+    // }
+    // __syncthreads();
+    // #endif
   }
 
   // MassTransY
-  MGARDX_EXEC void Operation4() {
+  MGARDX_EXEC void Operation3() {
     if (tid < 200) {
       int const *index = MassTrans_Y_Offset_8x8x8(tid);
       T a = sm_x[index[0]];
@@ -142,10 +180,28 @@ class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
       sm_y[index[5]] =
           a * dist[0] + b * dist[1] + c * dist[2] + d * dist[3] + e * dist[4];
     }
+
+    // #ifdef MGARDX_COMPILE_CUDA
+    // __syncthreads();
+    // if (tid == 0) {
+    //   printf("tra - y\n");
+    //   for (int i = 0; i < 8; i++) {
+    //     printf("sm[i = %d]\n", i);
+    //     for (int j = 0; j < 5; j++) {
+    //       for (int k = 0; k < 5; k++) {
+    //         printf("%.6f ", sm_y[get_idx(5, 5, i, j, k)]);
+    //       }
+    //       printf("\n");
+    //     }
+    //     printf("\n");
+    //   }
+    // }
+    // __syncthreads();
+    // #endif
   }
 
   // MassTransZ
-  MGARDX_EXEC void Operation5() {
+  MGARDX_EXEC void Operation4() {
     if (tid < 125) {
       int const *index = MassTrans_Z_Offset_8x8x8(tid);
       T a = sm_y[index[0]];
@@ -157,10 +213,28 @@ class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
       sm_z[index[5]] =
           a * dist[0] + b * dist[1] + c * dist[2] + d * dist[3] + e * dist[4];
     }
+
+    // #ifdef MGARDX_COMPILE_CUDA
+    // __syncthreads();
+    // if (tid == 0) {
+    //   printf("tra - z\n");
+    //   for (int i = 0; i < 5; i++) {
+    //     printf("sm[i = %d]\n", i);
+    //     for (int j = 0; j < 5; j++) {
+    //       for (int k = 0; k < 5; k++) {
+    //         printf("%.6f ", sm_z[get_idx(5, 5, i, j, k)]);
+    //       }
+    //       printf("\n");
+    //     }
+    //     printf("\n");
+    //   }
+    // }
+    // __syncthreads();
+    // #endif
   }
 
   // TriadiagX
-  MGARDX_EXEC void Operation6() {
+  MGARDX_EXEC void Operation5() {
     if (tid < 25) {
       int const *index = TriDiag_X_Offset_8x8x8(tid);
       T a = sm_z[index[0]];
@@ -187,10 +261,28 @@ class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
       sm_z[index[3]] = d;
       sm_z[index[4]] = e;
     }
+
+    // #ifdef MGARDX_COMPILE_CUDA
+    // __syncthreads();
+    // if (tid == 0) {
+    //   printf("tri - x\n");
+    //   for (int i = 0; i < 5; i++) {
+    //     printf("sm[i = %d]\n", i);
+    //     for (int j = 0; j < 5; j++) {
+    //       for (int k = 0; k < 5; k++) {
+    //         printf("%.6f ", sm_z[get_idx(5, 5, i, j, k)]);
+    //       }
+    //       printf("\n");
+    //     }
+    //     printf("\n");
+    //   }
+    // }
+    // __syncthreads();
+    // #endif
   }
 
   // TriadiagY
-  MGARDX_EXEC void Operation7() {
+  MGARDX_EXEC void Operation6() {
     if (tid < 25) {
       int const *index = TriDiag_Y_Offset_8x8x8(tid);
       T a = sm_z[index[0]];
@@ -217,10 +309,27 @@ class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
       sm_z[index[3]] = d;
       sm_z[index[4]] = e;
     }
+    // #ifdef MGARDX_COMPILE_CUDA
+    // __syncthreads();
+    // if (tid == 0) {
+    //   printf("tri - y\n");
+    //   for (int i = 0; i < 5; i++) {
+    //     printf("sm[i = %d]\n", i);
+    //     for (int j = 0; j < 5; j++) {
+    //       for (int k = 0; k < 5; k++) {
+    //         printf("%.6f ", sm_z[get_idx(5, 5, i, j, k)]);
+    //       }
+    //       printf("\n");
+    //     }
+    //     printf("\n");
+    //   }
+    // }
+    // __syncthreads();
+    // #endif
   }
 
   // TriadiagZ
-  MGARDX_EXEC void Operation8() {
+  MGARDX_EXEC void Operation7() {
     if (tid < 25) {
       int const *index = TriDiag_Z_Offset_8x8x8(tid);
       T a = sm_z[index[0]];
@@ -247,21 +356,43 @@ class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
       sm_z[index[3]] = d;
       sm_z[index[4]] = e;
     }
+    // #ifdef MGARDX_COMPILE_CUDA
+    // __syncthreads();
+    // if (bid == 0 && tid == 0) {
+    //   printf("tri - z\n");
+    //   for (int i = 0; i < 5; i++) {
+    //     printf("sm[i = %d]\n", i);
+    //     for (int j = 0; j < 5; j++) {
+    //       for (int k = 0; k < 5; k++) {
+    //         printf("%10.2f ", sm_z[get_idx(5, 5, i, j, k)]);
+    //       }
+    //       printf("\n");
+    //     }
+    //     printf("\n");
+    //   }
+    // }
+    // __syncthreads();
+    // #endif
   }
 
-  // Deapply Correction
-  MGARDX_EXEC void Operation9() {
+  // Subtract correction
+  MGARDX_EXEC void Operation8() {
     if (tid < 125) {
       sm_v[Coarse_Offset_8x8x8(tid)] -= sm_z[tid];
-    } 
+    }
   }
 
-  MGARDX_EXEC void Operation10(){
+  MGARDX_EXEC void Operation9() {
+    // #ifdef MGARDX_COMPILE_CUDA
+    // start = clock();
+    // #endif
+
     op_tid = tid;
     if (tid < 225) {
       left = sm_v[Coeff1D_L_Offset_8x8x8(op_tid)];
       right = sm_v[Coeff1D_R_Offset_8x8x8(op_tid)];
       middle = sm_v[Coeff1D_M_Offset_8x8x8(op_tid)];
+      // printf("l %f, r %f, m %f\n", left, right, middle);
       middle = middle + (left + right) * (T)0.5;
       sm_v[Coeff1D_M_Offset_8x8x8(op_tid)] = middle;
     } else if (tid >= 256 && tid < 256 + 135) {
@@ -287,13 +418,30 @@ class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
       c111 += (c000 + c002 + c020 + c022 + c200 + c202 + c220 + c222) / 8;
       sm_v[Coeff3D_MMM_Offset_8x8x8(op_tid)] = c111;
     }
+//             #ifdef MGARDX_COMPILE_CUDA
+//     __syncthreads();
+//     if (bid == 0 && tid == 0) {
+//       for (int i = 0; i < 8; i++) {
+//         printf("sm[i = %d]\n", i);
+//         for (int j = 0; j < 8; j++) {
+//           for (int k = 0; k < 8; k++) {
+//             printf("%10.2f ", sm_v[get_idx(8, 8, i, j, k)]);
+//           }
+//           printf("\n");
+//         }
+//         printf("\n");
+//       }
+//     }
+//     __syncthreads();
+// #endif
   }
 
-  MGARDX_EXEC void Operation11(){
-    if (z_gl < v.shape(D - 3) && y_gl < v.shape(D - 2) &&
-        x_gl < v.shape(D - 1)) {
-       *v(z_gl, y_gl, x_gl) = sm_v[offset];
-    }
+  // store data
+  MGARDX_EXEC void Operation10() {
+    offset = get_idx(ld1, ld2, z, y, x);
+    *v(z_gl, y_gl, x_gl) = sm_v[offset];
+    // printf("v[%d, %d, %d] = %f\n", z_gl, y_gl, x_gl, sm_v[offset]);
+    // }
   }
 
   MGARDX_CONT size_t shared_memory_size() {
@@ -303,7 +451,7 @@ class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
     return size * sizeof(T);
   }
 
- private:
+private:
   SubArray<D, T, DeviceType> v;
   SubArray<D, T, DeviceType> coarse;
   SubArray<1, T, DeviceType> coeff;
@@ -317,24 +465,25 @@ class RecompMultiDimension8x8x8Functor : public Functor<DeviceType> {
   int zero_const_offset = (Z * Y * X) + Z * Y * (X / 2 + 1) +
                           Z * (Y / 2 + 1) * (X / 2 + 1) +
                           (Z / 2 + 1) * (Y / 2 + 1) * (X / 2 + 1);
+  // #ifdef MGARDX_COMPILE_CUDA
+  // clock_t start, end;
+  // #endif
 };
 
-template <DIM D, typename T, OPTION OP, typename DeviceType>
-class RecompMultiDimension8x8x8Kernel : public Kernel {
- public:
+template <DIM D, typename T, typename DeviceType>
+class Recompose8x8x8Kernel : public Kernel {
+public:
   constexpr static bool EnableAutoTuning() { return false; }
   constexpr static std::string_view Name = "lwpk";
   MGARDX_CONT
-  RecompMultiDimension8x8x8Kernel(SubArray<D, T, DeviceType> v,
-                                  SubArray<D, T, DeviceType> coarse,
-                                  SubArray<1, T, DeviceType> coeff)
+  Recompose8x8x8Kernel(SubArray<D, T, DeviceType> v,
+                       SubArray<D, T, DeviceType> coarse,
+                       SubArray<1, T, DeviceType> coeff)
       : v(v), coarse(coarse), coeff(coeff) {}
 
-  MGARDX_CONT
-      Task<RecompMultiDimension8x8x8Functor<D, T, 8, 8, 8, OP, DeviceType>>
-      GenTask(int queue_idx) {
-    using FunctorType =
-        RecompMultiDimension8x8x8Functor<D, T, 8, 8, 8, OP, DeviceType>;
+  MGARDX_CONT Task<Recompose8x8x8Functor<D, T, 8, 8, 8, DeviceType>>
+  GenTask(int queue_idx) {
+    using FunctorType = Recompose8x8x8Functor<D, T, 8, 8, 8, DeviceType>;
     FunctorType functor(v, coarse, coeff);
 
     SIZE total_thread_z = v.shape(D - 3);
@@ -354,16 +503,16 @@ class RecompMultiDimension8x8x8Kernel : public Kernel {
                 std::string(Name));
   }
 
- private:
+private:
   SubArray<D, T, DeviceType> v;
   SubArray<D, T, DeviceType> coarse;
   SubArray<1, T, DeviceType> coeff;
 };
 
-}  // namespace in_cache_block
+} // namespace in_cache_block
 
-}  // namespace data_refactoring
+} // namespace data_refactoring
 
-}  // namespace mgard_x
+} // namespace mgard_x
 
 #endif

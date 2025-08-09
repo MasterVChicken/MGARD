@@ -8,8 +8,6 @@ namespace mgard_x {
 
 namespace data_refactoring {
 
-// Add temp space for further reuse
-
 template <DIM D, typename T, typename DeviceType>
 class BlockLocalHierarchyDataRefactor {
  public:
@@ -17,27 +15,11 @@ class BlockLocalHierarchyDataRefactor {
   BlockLocalHierarchyDataRefactor(Hierarchy<D, T, DeviceType> &hierarchy,
                                   Config config)
       : initialized(true), hierarchy(&hierarchy), config(config) {
-    // coarse_shape is intialized as the original data size
-    coarse_shape = hierarchy.level_shape(hierarchy.l_target());
-    if (config.num_local_refactoring_level > 0) {
-      for (int l = 0; l < config.num_local_refactoring_level; l++) {
-        SIZE last_level_size = 1;
-        SIZE cur_level_size = 1;
-        for (DIM d = 0; d < D; d++) {
-          coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 8;
-          last_level_size *= coarse_shape[d];
-          coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 5;
-          cur_level_size *= coarse_shape[d];
-        }
-        coarse_shapes.push_back(coarse_shape);
-        coarse_num_elems.push_back(last_level_size);
-        // Initialize the first coarse data shape
-        if (l == 0) {
-          w_array = Array<D, T, DeviceType>(coarse_shape);
-        }
-        local_coeff_size.push_back(last_level_size - cur_level_size);
-      }
-    }
+    this->L = config.num_local_refactoring_level;
+    compute_local_ranges();
+    prepare_layers();
+
+    w_array = Array<1, T, DeviceType>({fine_num_elems[0]});
   }
 
   void Adapt(Hierarchy<D, T, DeviceType> &hierarchy, Config config,
@@ -45,30 +27,13 @@ class BlockLocalHierarchyDataRefactor {
     this->initialized = true;
     this->hierarchy = &hierarchy;
     this->config = config;
-    coarse_shape = hierarchy.level_shape(hierarchy.l_target());
-    coarse_shapes.clear();
-    coarse_num_elems.clear();
-    local_coeff_size.clear();
+    this->L = config.num_local_refactoring_level;
+    compute_local_ranges();
+    layer_len.clear();
+    layer_off.clear();
+    prepare_layers();
 
-    if (config.num_local_refactoring_level > 0) {
-      for (int l = 0; l < config.num_local_refactoring_level; l++) {
-        SIZE last_level_size = 1;
-        SIZE cur_level_size = 1;
-        for (DIM d = 0; d < D; d++) {
-          coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 8;
-          last_level_size *= coarse_shape[d];
-          coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 5;
-          cur_level_size *= coarse_shape[d];
-        }
-        coarse_shapes.push_back(coarse_shape);
-        coarse_num_elems.push_back(last_level_size);
-        // Initialize the first coarse data shape
-        if (l == 0) {
-          w_array = Array<D, T, DeviceType>(coarse_shape);
-        }
-        local_coeff_size.push_back(last_level_size - cur_level_size);
-      }
-    }
+    w_array.resize({fine_num_elems[0]}, queue_idx);
   }
 
   static size_t EstimateMemoryFootprint(std::vector<SIZE> shape) {
@@ -77,103 +42,158 @@ class BlockLocalHierarchyDataRefactor {
       int dim8 = ((shape[d] - 1) / 8 + 1) * 8;
       size *= dim8;
     }
-    return size;
+    return size * sizeof(T);
   }
 
   size_t DecomposedDataSize() {
-    size_t coeff_size = 0;
+    return layer_off[this->L] + layer_len[this->L];
+  }
 
-    for (int l = 0; l < config.num_local_refactoring_level; l++) {
-      coeff_size += local_coeff_size[l];
+  void compute_local_ranges() {
+    coarse_shape = hierarchy->level_shape(hierarchy->l_target());
+    // for (int d = 0; d < coarse_shape.size(); d++) {
+    //   log::info("Dim " + std::to_string(d) + " : " +
+    //             std::to_string(coarse_shape[d]));
+    // }
+
+    fine_num_elems.clear();
+    coarse_num_elems.clear();
+    local_coeff_size.clear();
+    coarse_shapes.clear();
+    fine_shapes.clear();
+
+    for (int l = 0; l < this->L; ++l) {
+      SIZE last_level_size = 1, curr_level_size = 1;
+      std::vector<SIZE> fine_shape(D);
+      for (DIM d = 0; d < D; ++d) {
+        coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 8;
+        last_level_size *= coarse_shape[d];
+        coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 5;
+        curr_level_size *= coarse_shape[d];
+      }
+      for (DIM d = 0; d < D; ++d) {
+        fine_shape[d] = coarse_shape[d];
+        fine_shape[d] = ((fine_shape[d] - 1) / 5 + 1) * 8;
+      }
+      fine_num_elems.push_back(last_level_size);
+      coarse_num_elems.push_back(curr_level_size);
+      local_coeff_size.push_back(last_level_size - curr_level_size);
+      coarse_shapes.push_back(coarse_shape);
+      fine_shapes.push_back(fine_shape);
+      // log::info("L = " + std::to_string(l) +
+      //           ", fine_num_elems = " + std::to_string(fine_num_elems[l])
+      //           +
+      //           ", local_coeff_size = " +
+      //           std::to_string(local_coeff_size[l]));
     }
+  }
 
-    size_t coarse_data_num = 1;
-    for (DIM d = 0; d < D; d++) {
-      coarse_data_num *=
-          coarse_shapes[config.num_local_refactoring_level - 1][d];
+  void prepare_layers() {
+    layer_len.assign(this->L + 1, 0);
+    layer_off.assign(this->L + 1, 0);
+
+    // The length of coarsest layer
+    layer_len[0] = coarse_num_elems[this->L-1];
+    layer_off[0] = 0;
+
+    SIZE accum = layer_len[0];
+
+    for (SIZE l = 1; l <= this->L; ++l) {
+      layer_len[l] = local_coeff_size[this->L - l];
+      layer_off[l] = accum;
+      accum += layer_len[l];
     }
-    coeff_size += coarse_data_num;
-
-    return coeff_size;
   }
 
   void Decompose(SubArray<D, T, DeviceType> data, int queue_idx) {
-    // declare a subarray to manipulate array
-    SubArray<1, T, DeviceType> decomposed_data({coarse_num_elems[0]},
+    // log::info("Size of fine_num_elems[0]: " +
+    // std::to_string(fine_num_elems[0]));
+    SubArray<1, T, DeviceType> decomposed_data({fine_num_elems[0]},
                                                w_array.data());
-    SIZE accumulated_local_coeff_size = 0;
-    if (config.num_local_refactoring_level > 0) {
+    // Create a copy for data
+    SubArray<D, T, DeviceType> data_sub(fine_shapes[0], data.data());
+    for (int d = 0; d < D; ++d) {
+      data_sub.setLd(d, data.ld(d));
+    }
+
+    if (this->L > 0) {
+      accumulated_local_coeff_size = 0;
       // Here we initially process num_local_refactoring_level = 1
-      for (SIZE l = 0; l < config.num_local_refactoring_level; l++) {
+      for (SIZE l = 0; l < this->L; l++) {
         accumulated_local_coeff_size += local_coeff_size[l];
         SubArray<1, T, DeviceType> local_coeff(
             {local_coeff_size[l]},
             decomposed_data(decomposed_data.shape(0) -
                             accumulated_local_coeff_size));
 
-        // Not sure if 2nd param here has any problem?
         SubArray<D, T, DeviceType> coarse(coarse_shapes[l],
                                           decomposed_data((IDX)0));
         // The params sequence here is org, coarse, coeff, queue_idx
-        in_cache_block::decompose<D, T, DeviceType>(data, coarse, local_coeff,
-                                                    queue_idx);
+        in_cache_block::decompose<D, T, DeviceType>(data_sub, coarse,
+                                                    local_coeff, queue_idx);
+        // PrintSubarray("Data Sub: ", data_sub);
+        // PrintSubarray("Coarse: ", coarse);
+        // PrintSubarray("Local coeff: ", local_coeff);
 
         SubArray<D, T, DeviceType> tmp = coarse;
-        if (l + 1 < config.num_local_refactoring_level) {
+        if (l + 1 < this->L) {
           coarse = SubArray<D, T, DeviceType>(coarse_shapes[l + 1],
                                               decomposed_data((IDX)0));
         }
-        data = tmp;
+        data_sub = tmp;
       }
     }
 
-    // determine the coarsest shape
-    std::vector<SIZE> coarsest_shape =
-        hierarchy.level_shape(hierarchy->l_target());
-    for (DIM d = 0; d < D; d++) {
-      coarsest_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 8;
-    }
-    SubArray<D, T, DeviceType> out_coarse(coarsest_shape,
+    // Needs copy back
+    SubArray<D, T, DeviceType> decomposed_data_ND(fine_shapes[0],
                                           decomposed_data((IDX)0));
-
-    multi_dimension::CopyND(out_coarse, data, queue_idx);
+    multi_dimension::CopyND(decomposed_data_ND, data, queue_idx);
+    // PrintSubarray("data after CopyND:", data);
   }
 
   void Recompose(SubArray<D, T, DeviceType> data, int queue_idx) {
-    SubArray<1, T, DeviceType> decomposed_data({coarse_num_elems[0]},
-                                               w_array.data());
+    SubArray<D, T, DeviceType> decomposed_array(fine_shapes[0], data.data());
+    SubArray<D, T, DeviceType> recomposed_array(fine_shapes[0], w_array.data());
 
-    multi_dimension::CopyND(data, decomposed_data, queue_idx);
-   
-    SubArray<D, T, DeviceType> w_subarray(data);
-    SubArray<D, T, DeviceType> data_subarray(data);
-    SIZE coarse_offset = 1;
-    for (SIZE d = 0; d < D; d++) {
-      coarse_offset *= coarse_shapes[config.num_local_refactoring_level - 1][d];
-    }
-    if (config.num_local_refactoring_level > 0) {
-      for (SIZE l = 0; l < config.num_local_refactoring_level; l++) {
-        SIZE sz = local_coeff_size[config.num_local_refactoring_level - l - 1];
+    if (this->L > 0) {
+      SubArray<D, T, DeviceType> coarser(coarse_shapes[this->L-1], decomposed_array.data());
+      SubArray<D, T, DeviceType> finer(fine_shapes[this->L - 1],
+                                       decomposed_array.data());
+      for (SIZE l = 0; l < this->L; l++) {
         SubArray<1, T, DeviceType> local_coeff(
-            {sz}, decomposed_data((IDX)coarse_offset));
-        in_cache_block::recompose<D, T, DeviceType>(data_subarray, w_subarray,
-                                                    local_coeff, queue_idx);
+            {layer_len[l + 1]}, decomposed_array((IDX)layer_off[l + 1]));
 
-        w_subarray = data_subarray;
-        coarse_offset +=
-            local_coeff_size[config.num_local_refactoring_level - l - 1];
+        in_cache_block::recompose<D, T, DeviceType>(finer, coarser, local_coeff,
+                                                    queue_idx);
+        coarser = finer;
+        if (l + 1 < this->L) {
+          finer = SubArray<D, T, DeviceType>(fine_shapes[l + 1],
+                                             decomposed_array((IDX)0));
+        }
       }
     }
+    // PrintSubarray("Decomposed Array in Recompose():", decomposed_array);
+    // multi_dimension::CopyND(recomposed_array, decomposed_array, queue_idx);
+    // PrintSubarray("Decomposed Array in Recompose() after:", decomposed_array);
   }
 
+  std::vector<SIZE> coarse_shape;
+  SIZE accumulated_local_coeff_size = 0;
   bool initialized;
+  SIZE L;
   Hierarchy<D, T, DeviceType> *hierarchy;
   Config config;
-  std::vector<SIZE> coarse_shape;
+  std::vector<SIZE> layer_len;
+  // change off to offset
+  std::vector<SIZE> layer_off;
+
+  std::vector<SIZE> fine_num_elems;
   std::vector<SIZE> coarse_num_elems;
-  std::vector<std::vector<SIZE>> coarse_shapes;
   std::vector<SIZE> local_coeff_size;
-  Array<D, T, DeviceType> w_array;
+  std::vector<std::vector<SIZE>> coarse_shapes;
+  std::vector<std::vector<SIZE>> fine_shapes;
+
+  Array<1, T, DeviceType> w_array;
 };
 
 }  // namespace data_refactoring
