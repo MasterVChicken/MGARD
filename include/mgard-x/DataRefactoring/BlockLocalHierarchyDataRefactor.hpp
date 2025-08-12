@@ -50,12 +50,8 @@ class BlockLocalHierarchyDataRefactor {
   }
 
   void compute_local_ranges() {
+    // Get original shape from hierarchy
     coarse_shape = hierarchy->level_shape(hierarchy->l_target());
-    // for (int d = 0; d < coarse_shape.size(); d++) {
-    //   log::info("Dim " + std::to_string(d) + " : " +
-    //             std::to_string(coarse_shape[d]));
-    // }
-
     fine_num_elems.clear();
     coarse_num_elems.clear();
     local_coeff_size.clear();
@@ -80,11 +76,6 @@ class BlockLocalHierarchyDataRefactor {
       local_coeff_size.push_back(last_level_size - curr_level_size);
       coarse_shapes.push_back(coarse_shape);
       fine_shapes.push_back(fine_shape);
-      // log::info("L = " + std::to_string(l) +
-      //           ", fine_num_elems = " + std::to_string(fine_num_elems[l])
-      //           +
-      //           ", local_coeff_size = " +
-      //           std::to_string(local_coeff_size[l]));
     }
   }
 
@@ -93,7 +84,7 @@ class BlockLocalHierarchyDataRefactor {
     layer_off.assign(this->L + 1, 0);
 
     // The length of coarsest layer
-    layer_len[0] = coarse_num_elems[this->L-1];
+    layer_len[0] = coarse_num_elems[this->L - 1];
     layer_off[0] = 0;
 
     SIZE accum = layer_len[0];
@@ -106,14 +97,14 @@ class BlockLocalHierarchyDataRefactor {
   }
 
   void Decompose(SubArray<D, T, DeviceType> data, int queue_idx) {
-    // log::info("Size of fine_num_elems[0]: " +
-    // std::to_string(fine_num_elems[0]));
     SubArray<1, T, DeviceType> decomposed_data({fine_num_elems[0]},
                                                w_array.data());
+    log::info("Fine num" + std::to_string(fine_num_elems[0]));
     // Create a copy for data
     SubArray<D, T, DeviceType> data_sub(fine_shapes[0], data.data());
-    for (int d = 0; d < D; ++d) {
-      data_sub.setLd(d, data.ld(d));
+    for (DIM d = 0; d < D; d++) {
+      log::info("Dim" + std::to_string(d) + " : " +
+                std::to_string(fine_shapes[0][d]));
     }
 
     if (this->L > 0) {
@@ -127,54 +118,74 @@ class BlockLocalHierarchyDataRefactor {
                             accumulated_local_coeff_size));
 
         SubArray<D, T, DeviceType> coarse(coarse_shapes[l],
-                                          decomposed_data((IDX)0));
+                                          decomposed_data.data());
+
         // The params sequence here is org, coarse, coeff, queue_idx
         in_cache_block::decompose<D, T, DeviceType>(data_sub, coarse,
                                                     local_coeff, queue_idx);
-        // PrintSubarray("Data Sub: ", data_sub);
-        // PrintSubarray("Coarse: ", coarse);
-        // PrintSubarray("Local coeff: ", local_coeff);
+        // PrintSubarray("Original:", data_sub);
+        // PrintSubarray("Coarse subarray after decompose()", coarse);
+        // PrintSubarray("Coeff subarray after decompose()", local_coeff);
 
         SubArray<D, T, DeviceType> tmp = coarse;
         if (l + 1 < this->L) {
           coarse = SubArray<D, T, DeviceType>(coarse_shapes[l + 1],
-                                              decomposed_data((IDX)0));
+                                              decomposed_data.data());
         }
         data_sub = tmp;
       }
     }
+    // PrintSubarray("Whole decomposed data after decompose()",
+    // decomposed_data);
 
     // Needs copy back
-    SubArray<D, T, DeviceType> decomposed_data_ND(fine_shapes[0],
-                                          decomposed_data((IDX)0));
-    multi_dimension::CopyND(decomposed_data_ND, data, queue_idx);
-    // PrintSubarray("data after CopyND:", data);
+    // But I think here we should reshape data to shape of 1D and perform copy
+    SubArray<1, T, DeviceType> data_1D({fine_num_elems[0]}, data.data());
+    multi_dimension::CopyND(decomposed_data, data_1D, queue_idx);
+    // PrintSubarray("Data 1D after CopyND()", data_1D);
   }
 
   void Recompose(SubArray<D, T, DeviceType> data, int queue_idx) {
-    SubArray<D, T, DeviceType> decomposed_array(fine_shapes[0], data.data());
-    SubArray<D, T, DeviceType> recomposed_array(fine_shapes[0], w_array.data());
+    // data contains:
+    // [0, coarse_num_elems[L-1]): coarse data
+    // [coarse_num_elems[L-1], fine_num_elems[0]): coeff
 
     if (this->L > 0) {
-      SubArray<D, T, DeviceType> coarser(coarse_shapes[this->L-1], decomposed_array.data());
-      SubArray<D, T, DeviceType> finer(fine_shapes[this->L - 1],
-                                       decomposed_array.data());
-      for (SIZE l = 0; l < this->L; l++) {
-        SubArray<1, T, DeviceType> local_coeff(
-            {layer_len[l + 1]}, decomposed_array((IDX)layer_off[l + 1]));
+      // use w_array as buffer
+      SubArray<D, T, DeviceType> output_array(fine_shapes[0], w_array.data());
 
-        in_cache_block::recompose<D, T, DeviceType>(finer, coarser, local_coeff,
-                                                    queue_idx);
-        coarser = finer;
-        if (l + 1 < this->L) {
-          finer = SubArray<D, T, DeviceType>(fine_shapes[l + 1],
-                                             decomposed_array((IDX)0));
+      for (SIZE l = 0; l < this->L; l++) {
+        SIZE level_idx = this->L - 1 - l;
+
+        if (l == 0) {
+          // for first run, directly read from input
+          SubArray<D, T, DeviceType> coarser(coarse_shapes[level_idx],
+                                             data.data());
+          SubArray<1, T, DeviceType> local_coeff({layer_len[l + 1]},
+                                                 data((IDX)layer_off[l + 1]));
+
+          in_cache_block::recompose<D, T, DeviceType>(output_array, coarser,
+                                                      local_coeff, queue_idx);
+        } else {
+          // for L > 1: read from output_array and write back
+          SubArray<D, T, DeviceType> coarser(coarse_shapes[level_idx],
+                                             output_array.data());
+          SubArray<1, T, DeviceType> local_coeff(
+              {layer_len[l + 1]},
+              data((IDX)layer_off[l + 1]));  // remains reading coeff from original
+          SubArray<D, T, DeviceType> finer(fine_shapes[level_idx],
+                                           output_array.data());
+
+          in_cache_block::recompose<D, T, DeviceType>(finer, coarser,
+                                                      local_coeff, queue_idx);
         }
       }
+
+      // copy back
+      SubArray<1, T, DeviceType> src({fine_num_elems[0]}, w_array.data());
+      SubArray<1, T, DeviceType> dst({fine_num_elems[0]}, data.data());
+      multi_dimension::CopyND(src, dst, queue_idx);
     }
-    // PrintSubarray("Decomposed Array in Recompose():", decomposed_array);
-    // multi_dimension::CopyND(recomposed_array, decomposed_array, queue_idx);
-    // PrintSubarray("Decomposed Array in Recompose() after:", decomposed_array);
   }
 
   std::vector<SIZE> coarse_shape;
