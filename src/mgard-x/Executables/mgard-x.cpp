@@ -22,7 +22,6 @@
 
 using namespace std::chrono;
 
- 
 void print_usage_message(std::string error) {
   if (error.compare("") != 0) {
     std::cout << mgard_x::log::log_err << error << std::endl;
@@ -286,11 +285,72 @@ int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
   mgard_x::decompress(compressed_data, compressed_size, decompressed_data,
                       config, true);
 
-  // // Print for debug
-  // T *decompressed_typed = (T *)decompressed_data;  
-  // for (int i = 0; i < 8 * 8 * 8; i++) {
-  //   std::cout << "Index " << i << " : " << "Original: " << original_data[i]
-  //             << ", Decompressed: " << decompressed_typed[i] << std::endl;
+  T *decompressed_typed = (T *)decompressed_data;
+  const int data_size = 8 * 8 * 8;
+  // for (int i = 0; i < data_size; i++) {
+  //   std::cout << "Original, Index " << i << " : " << decompressed_typed[i] << std::endl;
+  // }
+  for (int i = 0; i < data_size; i++) {
+    std::cout << "Decompressed, Index " << i << " : " << decompressed_typed[i] << std::endl;
+  }
+  // const int data_size = 16 * 16 * 16;
+  // const int data_size = 32 * 32 * 32;
+  // const int data_size = 64 * 64 * 64;
+  // const int data_size = 128 * 128 * 128;
+  // const int data_size = 256 * 256 * 256;
+  // const int data_size = 384 * 384 * 256;
+
+  // double max_error = 0;
+  // int max_error_index = -1;
+  // T original_value_at_max_error = 0;
+  // T decompressed_value_at_max_error = 0;
+
+  // T original_min = (data_size > 0) ? original_data[0] : 0;
+  // T original_max = (data_size > 0) ? original_data[0] : 0;
+  // T decompressed_min = (data_size > 0) ? decompressed_typed[0] : 0;
+  // T decompressed_max = (data_size > 0) ? decompressed_typed[0] : 0;
+
+  // for (int i = 0; i < data_size; i++) {
+  //     T current_original = original_data[i];
+  //     T current_decompressed = decompressed_typed[i];
+
+  //     original_min = std::min(original_min, current_original);
+  //     original_max = std::max(original_max, current_original);
+
+  //     decompressed_min = std::min(decompressed_min, current_decompressed);
+  //     decompressed_max = std::max(decompressed_max, current_decompressed);
+
+  //     double current_error = std::abs((double)current_original -
+  //     (double)current_decompressed); if (current_error > max_error) {
+  //         max_error = current_error;
+  //         max_error_index = i;
+  //         original_value_at_max_error = current_original;
+  //         decompressed_value_at_max_error = current_decompressed;
+  //     }
+  // }
+
+  // std::cout << "----------------------------------------" << std::endl;
+  // std::cout << "Data Analysis Results:" << std::endl;
+  // std::cout << "----------------------------------------" << std::endl;
+
+  // std::cout << "Original Data Stats:" << std::endl;
+  // std::cout << "  - Min Value: " << original_min << std::endl;
+  // std::cout << "  - Max Value: " << original_max << std::endl;
+
+  // std::cout << "\nDecompressed Data Stats:" << std::endl;
+  // std::cout << "  - Min Value: " << decompressed_min << std::endl;
+  //   std::cout << "  - Max Value: " << decompressed_max << std::endl;
+
+  // if (max_error > 0) {
+  //     std::cout << "\nMaximum Error Found:" << std::endl;
+  //     std::cout << "  - Max Error Value: " << max_error << std::endl;
+  //     std::cout << "  - Index: " << max_error_index << std::endl;
+  //     std::cout << "  - Original Value: " << original_value_at_max_error <<
+  //     std::endl; std::cout << "  - Decompressed Value: " <<
+  //     decompressed_value_at_max_error << std::endl;
+  // } else {
+  //     std::cout << "\nNo difference found between original and decompressed
+  //     data." << std::endl;
   // }
 
   print_statistics<T>(s, mode, shape, original_data, (T *)decompressed_data,

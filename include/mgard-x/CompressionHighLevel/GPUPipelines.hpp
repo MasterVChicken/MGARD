@@ -191,11 +191,9 @@ enum compress_status_type compress_pipeline_gpu(
     }
     Serialize<SIZE, DeviceType>(compressed_subdomain_data, &compressed_size, 1,
                                 byte_offset, current_queue);
-    log::info("After Serial1");
     Serialize<Byte, DeviceType>(compressed_subdomain_data,
                                 device_compressed_buffer[current_buffer].data(),
                                 compressed_size, byte_offset, current_queue);
-    log::info("After Serial2");
     if (profile) {
       DeviceRuntime<DeviceType>::SyncDevice();
       timer_profile.end();
@@ -426,6 +424,7 @@ enum compress_status_type decompress_pipeline_gpu(
       timer_profile.start();
     }
 
+    log::info("Right before copy subdomain in decompress");
     if (curr_subdomain_id > 0) {
       // We delay D2H since since it can delay the D2H in lossless decompession
       // and dequantization
@@ -474,7 +473,7 @@ enum compress_status_type decompress_pipeline_gpu(
     // }
     compressor.Dequantize(device_subdomain_buffer[current_buffer], local_ebtype,
                           local_tol, s, norm, current_queue);
-    // // log::info("Only call recompose");
+    log::info("Right before recompose");
     compressor.Recompose(device_subdomain_buffer[current_buffer],
                          current_queue);
 
