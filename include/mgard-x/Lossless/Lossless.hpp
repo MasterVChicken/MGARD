@@ -72,8 +72,9 @@ public:
 
   void Compress(Array<1, T, DeviceType> &original_data,
                 Array<1, Byte, DeviceType> &compressed_data, int queue_idx) {
-
+    log::info("Before huffman in lossless");
     huffman.Compress(original_data, compressed_data, 0.0, queue_idx);
+    log::info("Pass huffman");
 
     if (config.lossless == lossless_type::Huffman_LZ4) {
       huffman.Serialize(compressed_data, queue_idx);
@@ -82,12 +83,13 @@ public:
 
     if (config.lossless == lossless_type::Huffman_Zstd) {
       huffman.Serialize(compressed_data, queue_idx);
+      log::info("Pass huffman serialize");
       zstd.Compress(compressed_data, queue_idx);
+      log::info("Pass zstd compress");
     }
   }
 
   void Serialize(Array<1, Byte, DeviceType> &compressed_data, int queue_idx) {
-    log::info("Am i here?");
     if (config.lossless == lossless_type::Huffman) {
       huffman.Serialize(compressed_data, queue_idx);
     }

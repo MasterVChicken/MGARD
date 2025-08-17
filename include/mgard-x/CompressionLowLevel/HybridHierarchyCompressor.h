@@ -74,6 +74,8 @@ class HybridHierarchyCompressor
                   enum error_bound_type ebtype, T tol, T s, T &norm,
                   Array<D, T, DeviceType> &decompressed_data, int queue_idx);
 
+  static SIZE calculate_padded_size(Hierarchy<D, T, DeviceType> &hierarchy);
+
   bool initialized;
   Hierarchy<D, T, DeviceType> *hierarchy;
   Config config;
@@ -81,6 +83,8 @@ class HybridHierarchyCompressor
   Array<1, T, DeviceType> norm_array;
   Array<1, T, DeviceType> local_decomposed_array;
   Array<1, QUANTIZED_INT, DeviceType> local_quantized_array;
+  Array<D, T, DeviceType> original_padded;
+  Array<D, T, DeviceType> decompressed_padded;
   BlockLocalHierarchyDataRefactorType local_refactor;
   LocalQuantizerType local_quantizer;
   LosslessCompressorType lossless_compressor;

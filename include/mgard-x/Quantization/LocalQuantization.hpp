@@ -181,7 +181,11 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     if (s == std::numeric_limits<T>::infinity()) {
       // ben
       for (int l = 0; l < l_target + 1; l++) {
-        quantizers[l] = (abs_tol) / (l_target + 1) * (1 + std::pow(3, D));
+        quantizers[l] = (abs_tol) / ((l_target + 1) * (1 + std::pow(3, D)));
+        // Debug info
+        // log::info("Abs Tol: " + std::to_string(abs_tol));
+        // log::info("l_target: " + std::to_string(l_target));
+        // log::info("D: " + std::to_string(D));
         if (reciprocal) {
           quantizers[l] = 1.0f / quantizers[l];
         }
@@ -211,10 +215,9 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
                    s, norm, this->L, config.decomposition, true);
 
     // Debug for quantizers
-    // After examination CalcQuantizers() is correct
-    // for (int i = 0; i < quantizers_buf.size(); i++) {
+    // for (int i = 0; i <= this->L; i++) {
     //   log::info("Quantizer[" + std::to_string(i) +
-    //             "]: " + std::to_string(quantizers_buf[i]));
+    //             "]: " + std::to_string(host_quantizers[i]));
     // }
 
     // log::info("=== LocalQuantizer Debug ===");

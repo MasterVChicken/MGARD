@@ -76,6 +76,8 @@ class BlockLocalHierarchyDataRefactor {
       local_coeff_size.push_back(last_level_size - curr_level_size);
       coarse_shapes.push_back(coarse_shape);
       fine_shapes.push_back(fine_shape);
+      // log::info("Fine Num Elem " + std::to_string(l) + " : " + std::to_string(fine_num_elems[l]));
+      // log::info("Coarse Num Elem " + std::to_string(l) + " : " + std::to_string(coarse_num_elems[l]));
     }
   }
 
@@ -99,13 +101,13 @@ class BlockLocalHierarchyDataRefactor {
   void Decompose(SubArray<D, T, DeviceType> data, int queue_idx) {
     SubArray<1, T, DeviceType> decomposed_data({fine_num_elems[0]},
                                                w_array.data());
-    log::info("Fine num" + std::to_string(fine_num_elems[0]));
+    // log::info("Fine num" + std::to_string(fine_num_elems[0]));
     // Create a copy for data
     SubArray<D, T, DeviceType> data_sub(fine_shapes[0], data.data());
-    for (DIM d = 0; d < D; d++) {
-      log::info("Dim" + std::to_string(d) + " : " +
-                std::to_string(fine_shapes[0][d]));
-    }
+    // for (DIM d = 0; d < D; d++) {
+    //   log::info("Dim" + std::to_string(d) + " : " +
+    //             std::to_string(fine_shapes[0][d]));
+    // }
 
     if (this->L > 0) {
       accumulated_local_coeff_size = 0;
@@ -172,7 +174,8 @@ class BlockLocalHierarchyDataRefactor {
                                              output_array.data());
           SubArray<1, T, DeviceType> local_coeff(
               {layer_len[l + 1]},
-              data((IDX)layer_off[l + 1]));  // remains reading coeff from original
+              data((IDX)layer_off[l +
+                                  1]));  // remains reading coeff from original
           SubArray<D, T, DeviceType> finer(fine_shapes[level_idx],
                                            output_array.data());
 
@@ -203,6 +206,8 @@ class BlockLocalHierarchyDataRefactor {
   std::vector<SIZE> local_coeff_size;
   std::vector<std::vector<SIZE>> coarse_shapes;
   std::vector<std::vector<SIZE>> fine_shapes;
+  std::vector<SIZE> original_input_shape;
+  std::vector<SIZE> padded_input_shape;
 
   Array<1, T, DeviceType> w_array;
 };

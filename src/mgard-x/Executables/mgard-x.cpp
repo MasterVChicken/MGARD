@@ -285,14 +285,12 @@ int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
   mgard_x::decompress(compressed_data, compressed_size, decompressed_data,
                       config, true);
 
-  T *decompressed_typed = (T *)decompressed_data;
-  const int data_size = 8 * 8 * 8;
+  // T *decompressed_typed = (T *)decompressed_data;
+  // const int data_size = 8 * 8 * 8;
   // for (int i = 0; i < data_size; i++) {
-  //   std::cout << "Original, Index " << i << " : " << decompressed_typed[i] << std::endl;
+  //   std::cout << "Original, Index " << i << " : " << original_data[i] << std::endl;
+  //   std::cout << "Decompressed, Index " << i << " : " << decompressed_typed[i] << std::endl;
   // }
-  for (int i = 0; i < data_size; i++) {
-    std::cout << "Decompressed, Index " << i << " : " << decompressed_typed[i] << std::endl;
-  }
   // const int data_size = 16 * 16 * 16;
   // const int data_size = 32 * 32 * 32;
   // const int data_size = 64 * 64 * 64;

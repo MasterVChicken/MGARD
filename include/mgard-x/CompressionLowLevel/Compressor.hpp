@@ -214,7 +214,9 @@ void Compressor<D, T, DeviceType>::Compress(
   }
 
   CalculateNorm(original_data, ebtype, s, norm, queue_idx);
+  PrintSubarray("Original before decompose", SubArray(original_data));
   Decompose(original_data, queue_idx);
+  PrintSubarray("Original after decompose", SubArray(original_data));
   Quantize(original_data, ebtype, tol, s, norm, queue_idx);
   LosslessCompress(compressed_data, queue_idx);
   Serialize(compressed_data, queue_idx);

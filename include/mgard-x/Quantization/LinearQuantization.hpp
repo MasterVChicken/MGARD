@@ -223,6 +223,9 @@ public:
             decomposition == decomposition_type::Hybrid) {
           // ben
           quantizers[l] = (abs_tol) / ((l_target + 1) * (1 + std::pow(3, D)));
+          log::info("Abs Tol: " + std::to_string(abs_tol));
+        log::info("l_target: " + std::to_string(l_target));
+        log::info("D: " + std::to_string(D));
           // xin
           // quantizers[l] = (tol) / ((l_target + 1) * (1 + 3 * std::sqrt(3) /
           // 4));
@@ -292,6 +295,9 @@ public:
     T *quantizers = new T[hierarchy->l_target() + 1];
     CalcQuantizers(total_elems, quantizers, ebtype, tol, s, norm,
                    hierarchy->l_target(), config.decomposition, true);
+    for(int i =0;i<hierarchy->l_target();i++){
+      std::cout<<"Quantizer " << i << " : " << quantizers[i] << std::endl;
+    }
     MemoryManager<DeviceType>::Copy1D(quantizers_subarray.data(), quantizers,
                                       hierarchy->l_target() + 1, queue_idx);
 
