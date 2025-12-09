@@ -123,10 +123,6 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
 
   void compute_local_ranges() {
     coarse_shape = hierarchy->level_shape(hierarchy->l_target());
-    // for (int d = 0; d < coarse_shape.size(); d++) {
-    //   log::info("Dim " + std::to_string(d) + " : " +
-    //             std::to_string(coarse_shape[d]));
-    // }
 
     fine_num_elems.clear();
     coarse_num_elems.clear();
@@ -145,11 +141,6 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
       fine_num_elems.push_back(last_level_size);
       coarse_num_elems.push_back(curr_level_size);
       local_coeff_size.push_back(last_level_size - curr_level_size);
-      // log::info("L = " + std::to_string(l) +
-      //           ", fine_num_elems = " + std::to_string(fine_num_elems[l])
-      //           +
-      //           ", local_coeff_size = " +
-      //           std::to_string(local_coeff_size[l]));
     }
   }
 
@@ -170,6 +161,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     }
   }
 
+  // Design 1: Linear Amplification
   void CalcQuantizers(size_t dof, T* quantizers, enum error_bound_type type,
                       T tol, T s, T norm, SIZE l_target,
                       enum decomposition_type decomposition, bool reciprocal) {
@@ -178,24 +170,54 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
       abs_tol *= norm;
     }
     abs_tol *= 2;
+
     if (s == std::numeric_limits<T>::infinity()) {
-      // ben
-      for (int l = 0; l < l_target + 1; l++) {
-        quantizers[l] = (abs_tol) / ((l_target + 1) * (1 + std::pow(3, D)));
-        // Debug info
-        // log::info("Abs Tol: " + std::to_string(abs_tol));
-        // log::info("l_target: " + std::to_string(l_target));
-        // log::info("D: " + std::to_string(D));
+      double C = (1 + std::pow(3, D));
+
+      for (int l = 0; l <= l_target; l++) {
+        //
+        quantizers[l] = (abs_tol) / ((l_target - l + 2) * C);
+
         if (reciprocal) {
           quantizers[l] = 1.0f / quantizers[l];
         }
       }
     } else {
-      // warning for un-inf
       log::err("Only L-inf supported");
       exit(-1);
     }
   }
+
+  // // Design 2: Exponential Amplification
+  // void CalcQuantizers(size_t dof, T* quantizers, enum error_bound_type type,
+  //                     T tol, T s, T norm, SIZE l_target,
+  //                     enum decomposition_type decomposition, bool reciprocal) {
+  //   double abs_tol = tol;
+  //   if (type == error_bound_type::REL) {
+  //     abs_tol *= norm;
+  //   }
+  //   abs_tol *= 2;
+  //   if (s == std::numeric_limits<T>::infinity()) {
+  //     double C = (1 + std::pow(3, D));
+  //     // ben
+  //     double total_weight = 0.0;
+  //     for (int l = 0; l <= l_target; l++) {
+  //       double propagation_factor = std::pow(std::sqrt(C), l_target - l);
+  //       total_weight += propagation_factor;
+  //     }
+  //     for (int l = 0; l <= l_target; l++) {
+  //       double propagation_factor = std::pow(std::sqrt(C), l_target - l);
+  //       quantizers[l] = (abs_tol) / (C * propagation_factor * total_weight);
+  //       if (reciprocal) {
+  //         quantizers[l] = 1.0f / quantizers[l];
+  //       }
+  //     }
+  //   } else {
+  //     // warning for un-inf
+  //     log::err("Only L-inf supported");
+  //     exit(-1);
+  //   }
+  // }
 
   void Quantize(SubArray<D, T, DeviceType> original_data,
                 enum error_bound_type ebtype, T tol, T s, T norm,
@@ -214,33 +236,13 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     CalcQuantizers(hierarchy->total_num_elems(), host_quantizers, ebtype, tol,
                    s, norm, this->L, config.decomposition, true);
 
-    // Debug for quantizers
-    // for (int i = 0; i <= this->L; i++) {
-    //   log::info("Quantizer[" + std::to_string(i) +
-    //             "]: " + std::to_string(host_quantizers[i]));
-    // }
-
-    // log::info("=== LocalQuantizer Debug ===");
-    // log::info("original_data.shape(0): " +
-    //           std::to_string(original_data.shape(0)));
-    // log::info("L: " + std::to_string(this->L));
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
 
     for (SIZE l = 0; l <= this->L; ++l) {
-      // log::info("Layer " + std::to_string(l) + ":");
-      // log::info("  layer_len[" + std::to_string(l) +
-      //           "]: " + std::to_string(layer_len[l]));
-      // log::info("  layer_off[" + std::to_string(l) +
-      //           "]: " + std::to_string(layer_off[l]));
-      // log::info("  access range: " + std::to_string(layer_off[l]) + " to " +
-      //           std::to_string(layer_off[l] + layer_len[l] - 1));
-
-      if (layer_off[l] + layer_len[l] > original_data.shape(0)) {
-        log::err("*** BOUNDARY VIOLATION ***");
-        log::err("Trying to access beyond array bounds!");
-        log::err("Array size: " + std::to_string(original_data.shape(0)));
-        log::err("Access end: " + std::to_string(layer_off[l] + layer_len[l]));
-        return;
-      }
       SubArray<1, T, DeviceType> v_in({layer_len[l]},
                                       original_data((IDX)layer_off[l]));
       SubArray<1, Q, DeviceType> qv({layer_len[l]},
@@ -251,9 +253,13 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
           QuantizeLocalLevelKernel<T, Q, MGARDX_QUANTIZE, DeviceType>(quantizer,
                                                                       v_in, qv),
           queue_idx);
-      // PrintSubarray("Oringal data before quantizer:", v_in);
-      // log::info("Quantizer: " + std::to_string(quantizer));
-      // PrintSubarray("Quantized Array: ", qv);
+    }
+
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Quantization", hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
     }
   }
 
@@ -266,35 +272,31 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     CalcQuantizers(hierarchy->total_num_elems(), host_quantizers, ebtype, tol,
                    s, norm, this->L, config.decomposition, false);
 
-    for (SIZE l = 0; l <= this->L; ++l) {
-      // log::info("Layer " + std::to_string(l) + ":");
-      // log::info("  layer_len[" + std::to_string(l) +
-      //           "]: " + std::to_string(layer_len[l]));
-      // log::info("  layer_off[" + std::to_string(l) +
-      //           "]: " + std::to_string(layer_off[l]));
-      // log::info("  access range: " + std::to_string(layer_off[l]) + " to " +
-      //           std::to_string(layer_off[l] + layer_len[l] - 1));
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
 
-      if (layer_off[l] + layer_len[l] > original_data.shape(0)) {
-        log::err("*** BOUNDARY VIOLATION ***");
-        log::err("Trying to access beyond array bounds!");
-        log::err("Array size: " + std::to_string(original_data.shape(0)));
-        log::err("Access end: " + std::to_string(layer_off[l] + layer_len[l]));
-        return;
-      }
+    for (SIZE l = 0; l <= this->L; ++l) {
       SubArray<1, T, DeviceType> v_in({layer_len[l]},
                                       original_data((IDX)layer_off[l]));
       SubArray<1, Q, DeviceType> qv({layer_len[l]},
                                     quantized_data((IDX)layer_off[l]));
       // Launch
+      // T quantizer = host_quantizers[this->L - l];
       T quantizer = host_quantizers[l];
       DeviceLauncher<DeviceType>::Execute(
           QuantizeLocalLevelKernel<T, Q, MGARDX_DEQUANTIZE, DeviceType>(
               quantizer, v_in, qv),
           queue_idx);
-      // PrintSubarray("Quantized data before dequantization:", qv);
-      // log::info("Quantizer: " + std::to_string(quantizer));
-      // PrintSubarray("Dequantized Array: ", v_in);
+    }
+
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Dequantization", hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
     }
   }
 
