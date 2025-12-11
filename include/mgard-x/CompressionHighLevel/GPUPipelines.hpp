@@ -32,7 +32,8 @@ enum compress_status_type compress_pipeline_gpu(
   std::vector<SIZE> shape =
       domain_decomposer.subdomain_shape(domain_decomposer.largest_subdomain());
   SIZE num_elements = 1;
-  for (int i = 0; i < shape.size(); i++) num_elements *= shape[i];
+  for (int i = 0; i < shape.size(); i++)
+    num_elements *= shape[i];
   device_subdomain_buffer[0].resize(shape);
   device_subdomain_buffer[1].resize(shape);
   device_compressed_buffer[0].resize(
@@ -46,6 +47,7 @@ enum compress_status_type compress_pipeline_gpu(
       domain_decomposer.subdomain_shape(domain_decomposer.largest_subdomain()));
   log::info("Adapt Compressor to hierarchy");
   compressor.Adapt(hierarchy, config, 0);
+  
 
   DeviceRuntime<DeviceType>::SyncDevice();
 
@@ -175,13 +177,6 @@ enum compress_status_type compress_pipeline_gpu(
                               1e9) +
                " GB)");
       return compress_status_type::OutputTooLargeFailure;
-      // log::info("Output too large due to no lossless");
-      // log::info("Compressed Size:"+std::to_string(compressed_size));
-      // log::info("Original
-      // Size:"+std::to_string(compressor.hierarchy->total_num_elems() *
-      // sizeof(T))); log::info("Compressed Subdomain
-      // Size:"+std::to_string(compressed_subdomain_size)); log::info("Byte
-      // Offset:"+std::to_string(byte_offset));
     }
 
     if (profile) {
@@ -292,7 +287,8 @@ enum compress_status_type decompress_pipeline_gpu(
   std::vector<SIZE> shape =
       domain_decomposer.subdomain_shape(domain_decomposer.largest_subdomain());
   SIZE num_elements = 1;
-  for (int i = 0; i < shape.size(); i++) num_elements *= shape[i];
+  for (int i = 0; i < shape.size(); i++)
+    num_elements *= shape[i];
   device_subdomain_buffer[0].resize(shape);
   device_subdomain_buffer[1].resize(shape);
   device_compressed_buffer[0].resize(
@@ -412,15 +408,11 @@ enum compress_status_type decompress_pipeline_gpu(
                   compressor.hierarchy->l_target(), d)
            << " ";
       }
-      log::info("Decompressing subdomain " +
-      std::to_string(curr_subdomain_id) +
+      log::info("Decompressing subdomain " + std::to_string(curr_subdomain_id) +
                 " with shape: " + ss.str());
       compressor.Deserialize(device_compressed_buffer[current_buffer],
                              current_queue);
     }
-    // TODO: Uncomment when CR goes fine
-    compressor.Deserialize(device_compressed_buffer[current_buffer],
-                           current_queue);
 
     if (profile) {
       DeviceRuntime<DeviceType>::SyncDevice();
@@ -450,8 +442,9 @@ enum compress_status_type decompress_pipeline_gpu(
       timer_profile.clear();
       timer_profile.start();
     }
-    // TODO: Uncomment back
     if (CR > 1.0) {
+      compressor.Deserialize(device_compressed_buffer[current_buffer], current_queue);
+
       compressor.LosslessDecompress(device_compressed_buffer[current_buffer],
                                     current_queue);
       compressor.Dequantize(device_subdomain_buffer[current_buffer],
@@ -460,6 +453,8 @@ enum compress_status_type decompress_pipeline_gpu(
                            current_queue);
     } else {
       log::info("Skipping decompression as original data was saved instead");
+      // Print info here
+      // log::info("The compression ration is "+std::to_string(CR));
       device_subdomain_buffer[current_buffer].resize(
           {compressor.hierarchy->level_shape(
               compressor.hierarchy->l_target())});
@@ -474,12 +469,11 @@ enum compress_status_type decompress_pipeline_gpu(
           device_subdomain_buffer[current_buffer].shape(D - 1),
           linearized_width, current_queue);
     }
-    compressor.LosslessDecompress(device_compressed_buffer[current_buffer],
-                                  current_queue);
-    compressor.Dequantize(device_subdomain_buffer[current_buffer], local_ebtype,
-                          local_tol, s, norm, current_queue);
-    compressor.Recompose(device_subdomain_buffer[current_buffer],
-                         current_queue);
+
+      // compressor.Dequantize(device_subdomain_buffer[current_buffer], local_ebtype, local_tol, s, norm, current_queue);
+
+      // compressor.Recompose(device_subdomain_buffer[current_buffer],
+      //                      current_queue);
 
     if (profile) {
       DeviceRuntime<DeviceType>::SyncDevice();
@@ -505,6 +499,9 @@ enum compress_status_type decompress_pipeline_gpu(
   int previous_buffer = std::abs((current_buffer - 1) % 2);
   int previous_queue = previous_buffer;
   SIZE prev_subdomain_id = domain_decomposer.num_subdomains() - 1;
+  // Add resizing for device_subdomain_buffer
+  device_subdomain_buffer[previous_buffer].resize(
+      {compressor.hierarchy->level_shape(compressor.hierarchy->l_target())});
   domain_decomposer.copy_subdomain(
       device_subdomain_buffer[previous_buffer], prev_subdomain_id,
       subdomain_copy_direction::SubdomainToOriginal, previous_queue);

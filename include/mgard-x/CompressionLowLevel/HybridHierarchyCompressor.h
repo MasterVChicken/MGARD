@@ -74,7 +74,7 @@ class HybridHierarchyCompressor
                   enum error_bound_type ebtype, T tol, T s, T &norm,
                   Array<D, T, DeviceType> &decompressed_data, int queue_idx);
 
-  static SIZE calculate_padded_size(Hierarchy<D, T, DeviceType> &hierarchy);
+  static SIZE calculate_padded_size(Hierarchy<D, T, DeviceType> &hierarchy, Config config);
 
   bool initialized;
   Hierarchy<D, T, DeviceType> *hierarchy;
