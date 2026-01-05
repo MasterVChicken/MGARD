@@ -5,7 +5,7 @@
  * Date: March 17, 2022
  */
 
-// #include "DataRefactor.hpp"
+#include "DataRefactor.hpp"
 #include "HybridHierarchyDataRefactorInterface.hpp"
 #include "InCacheBlock/DataRefactoring.h"
 #include "MultiDimension/DataRefactoring.h"
@@ -17,14 +17,6 @@ namespace mgard_x {
 
 namespace data_refactoring {
 
-enum class HybridMode { HIGH_TP, HIGH_CR, CUSTOM };
-
-template <DIM D, typename T>
-class HybridParameterModel {
- public:
-  HybridParameterModel(std::vector<SIZE>& input_shape) : shape(input_shape) {}
-};
-
 template <DIM D, typename T, typename DeviceType>
 class HybridHierarchyDataRefactor
     : public HybridHierarchyDataRefactorInterface<D, T, DeviceType> {
@@ -33,7 +25,11 @@ class HybridHierarchyDataRefactor
   HybridHierarchyDataRefactor(Hierarchy<D, T, DeviceType>& hierarchy,
                               Config config)
       : initialized(true), hierarchy(&hierarchy), config(config) {
-    DetermineHybridParams();
+    this->L = config.num_local_refactoring_level;
+    this->M = config.num_global_refactoring_level;
+
+    ComputeLocalShapes();
+    SetupGlobalHierarchy();
     InitializeBuffers();
   }
 
@@ -43,33 +39,12 @@ class HybridHierarchyDataRefactor
     this->hierarchy = &hierarchy;
     this->config = config;
 
-    DetermineHybridParams();
-    InitializeBuffers(queue_idx);
-  }
+    this->L = config.num_local_refactoring_level;
+    this->M = config.num_global_refactoring_level;
 
-  // Get l and m based with hybrid strategy
-  void DetermineHybridParameters() {
-    // Get parameters from config or auto-select
-    if (config.hybrid_mode == HybridMode::CUSTOM) {
-      this->L = config.num_local_refactoring_level;
-      this->M = config.num_global_refactoring_level;
-    } else {
-      HybridParameterModel<D, T> model(
-          hierarchy->level_shape(hierarchy->l_target()));
-
-      auto [l, m] = model.select_parameters(config.hybrid_mode);
-      this->L = l;
-      this->M = m;
-
-      log::info("HybridHierarchyDataRefactor: Auto-selected L=" +
-                std::to_string(L) + ", M=" + std::to_string(M));
-    }
-
-    // Compute shapes for each local level
     ComputeLocalShapes();
-
-    // Setup global hierarchy for the coarsened data after local decomposition
     SetupGlobalHierarchy();
+    InitializeBuffers(queue_idx);
   }
 
   void ComputeLocalShapes() {
@@ -101,10 +76,10 @@ class HybridHierarchyDataRefactor
       coarse_num_elems.push_back(curr_level_size);
       local_coeff_size.push_back(last_level_size - curr_level_size);
 
-      log::dbg("Local level " + std::to_string(l) +
-               ": fine=" + std::to_string(last_level_size) +
-               ", coarse=" + std::to_string(curr_level_size) +
-               ", coeffs=" + std::to_string(last_level_size - curr_level_size));
+      // log::info("Local level " + std::to_string(l) +
+      //          ": fine=" + std::to_string(last_level_size) +
+      //          ", coarse=" + std::to_string(curr_level_size) +
+      //          ", coeffs=" + std::to_string(last_level_size - curr_level_size));
     }
   }
 
@@ -129,6 +104,7 @@ class HybridHierarchyDataRefactor
       for (int l = 0; l < this->L; ++l) {
         total_local_coeffs += local_coeff_size[l];
       }
+      // TODO: Check if we need this one here
       local_coeff_array = Array<1, T, DeviceType>({total_local_coeffs});
 
       // Temporary buffer for coarsest local data
@@ -169,6 +145,14 @@ class HybridHierarchyDataRefactor
     }
 
     return total_size;
+  }
+
+  size_t LocalCoeffSize() {
+    size_t total = 0;
+    for (int l = 0; l < this->L; ++l) {
+      total += local_coeff_size[l];
+    }
+    return total;
   }
 
   void Decompose(SubArray<D, T, DeviceType> data,
@@ -243,7 +227,6 @@ class HybridHierarchyDataRefactor
           local_coeff_subarray(local_coeff_subarray.shape(0) -
                                accumulated_local_coeff_size));
 
-      // Setup coarse buffer with ping-pong
       int buffer_idx = l % 2;
       coarse_buffers[buffer_idx].memset(0, queue_idx);
 
@@ -254,11 +237,9 @@ class HybridHierarchyDataRefactor
       }
       coarse.project(0, 1, 2);
 
-      // Perform decomposition
       in_cache_block::decompose<D, T, DeviceType>(fine, coarse, local_coeff,
                                                   queue_idx);
 
-      // Prepare for next level
       if (l < this->L - 1) {
         fine = SubArray<D, T, DeviceType>(fine_shapes[l + 1],
                                           coarse_buffers[buffer_idx].data());

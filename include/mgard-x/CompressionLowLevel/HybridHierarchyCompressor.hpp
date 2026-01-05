@@ -35,26 +35,26 @@ HybridHierarchyCompressor<D, T, DeviceType>::HybridHierarchyCompressor(
     : initialized(true),
       hierarchy(&hierarchy),
       config(config),
-      local_refactor(hierarchy, config),
+      hybrid_refactor(hierarchy, config),
       lossless_compressor(calculate_padded_size(hierarchy, config), config),
-      local_quantizer(hierarchy, config) {
+      hybrid_quantizer(hierarchy, hybrid_refactor.global_hierarchy, config) {
   norm_array = Array<1, T, DeviceType>({1});
-  local_decomposed_array =
-      Array<1, T, DeviceType>({local_refactor.DecomposedDataSize()});
+  hybrid_decomposed_array =
+      Array<1, T, DeviceType>({hybrid_refactor.DecomposedDataSize()});
 
   // Reuse workspace. Warning:
   if (sizeof(QUANTIZED_INT) <= sizeof(T)) {
     norm_tmp_array =
         Array<1, T, DeviceType>({hierarchy.total_num_elems()},
-                                (T*)local_refactor.coarse_buffers[0].data());
-    local_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
-        {local_refactor.DecomposedDataSize()},
-        (QUANTIZED_INT*)local_refactor.coarse_buffers[0].data());
+                                (T*)hybrid_refactor.coarse_buffers[0].data());
+    hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
+        {hybrid_refactor.DecomposedDataSize()},
+        (QUANTIZED_INT*)hybrid_refactor.coarse_buffers[0].data());
   } else {
     // if space is not enough
     norm_tmp_array = Array<1, T, DeviceType>({hierarchy.total_num_elems()});
-    local_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
-        {local_refactor.DecomposedDataSize()});
+    hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
+        {hybrid_refactor.DecomposedDataSize()});
   }
 }
 
@@ -64,25 +64,25 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Adapt(
   this->initialized = true;
   this->hierarchy = &hierarchy;
   this->config = config;
-  local_refactor.Adapt(hierarchy, config, queue_idx);
+  hybrid_refactor.Adapt(hierarchy, config, queue_idx);
   lossless_compressor.Adapt(calculate_padded_size(hierarchy, config), config,
                             queue_idx);
-  local_quantizer.Adapt(hierarchy, config, queue_idx);
+  hybrid_quantizer.Adapt(hierarchy, hybrid_refactor.global_hierarchy, config, queue_idx);
   norm_array.resize({1}, queue_idx);
-  local_decomposed_array.resize({local_refactor.DecomposedDataSize()},
+  hybrid_decomposed_array.resize({hybrid_refactor.DecomposedDataSize()},
                                 queue_idx);
 
-  // Reuse workspace.
+  // Reuse workspace
   if (sizeof(QUANTIZED_INT) <= sizeof(T)) {
     norm_tmp_array =
         Array<1, T, DeviceType>({hierarchy.total_num_elems()},
-                                (T*)local_refactor.coarse_buffers[0].data());
-    local_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
-        {local_refactor.DecomposedDataSize()},
-        (QUANTIZED_INT*)local_refactor.coarse_buffers[0].data());
+                                (T*)hybrid_refactor.coarse_buffers[0].data());
+    hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
+        {hybrid_refactor.DecomposedDataSize()},
+        (QUANTIZED_INT*)hybrid_refactor.coarse_buffers[0].data());
   } else {
     norm_tmp_array.resize({hierarchy.total_num_elems()}, queue_idx);
-    local_quantized_array.resize({local_refactor.DecomposedDataSize()},
+    hybrid_quantized_array.resize({hybrid_refactor.DecomposedDataSize()},
                                  queue_idx);
   }
 }
@@ -94,7 +94,8 @@ size_t HybridHierarchyCompressor<D, T, DeviceType>::EstimateMemoryFootprint(
   Hierarchy<D, T, DeviceType> hierarchy;
   hierarchy.EstimateMemoryFootprint(shape);
   size_t size = 0;
-  size += BlockLocalHierarchyDataRefactorType::EstimateMemoryFootprint(shape);
+  // size += BlockLocalHierarchyDataRefactorType::EstimateMemoryFootprint(shape);
+  size += HybridHierarchyDataRefactorType::EstimateMemoryFootprint(shape);
   // log::info(
   //     "Data refactor space: " +
   //     std::to_string(
@@ -102,7 +103,8 @@ size_t HybridHierarchyCompressor<D, T, DeviceType>::EstimateMemoryFootprint(
   //             shape)) /
   //         1e9) +
   //     " GB");
-  size += LocalQuantizerType::EstimateMemoryFootprint(shape);
+  // size += LocalQuantizerType::EstimateMemoryFootprint(shape);
+  size += HybridQuantizerType::EstimateMemoryFootprint(shape, config);
   // log::info(
   //     "Quantizer space: " +
   //     std::to_string(
@@ -144,8 +146,8 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Decompose(
   // SubArray<D, T, DeviceType> temp({3,3,3}, original_data.data());
   // PrintSubarray("Orginal 8x8x8 before decompose", temp);
   // hybrid_refactor.Decompose(original_data, decomposed_array, queue_idx);
-  local_refactor.Decompose(SubArray(original_data),
-                           SubArray(local_decomposed_array), queue_idx);
+  hybrid_refactor.Decompose(SubArray(original_data),
+                           SubArray(hybrid_decomposed_array), queue_idx);
   // PrintSubarray("Decomposed after decompose", SubArray(local_decomposed_array));
 }
 
@@ -154,19 +156,19 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Quantize(
     Array<D, T, DeviceType>& original_data, enum error_bound_type ebtype, T tol,
     T s, T norm, int queue_idx) {
   log::info("We have done quantization!");
-  SIZE total_num_elems_1D = local_refactor.DecomposedDataSize();
+  SIZE total_num_elems_1D = hybrid_refactor.DecomposedDataSize();
 
   SubArray<1, T, DeviceType> data_subarray({total_num_elems_1D},
-                                           local_decomposed_array.data());
-  local_quantizer.Quantize(data_subarray, ebtype, tol, s, norm,
-                           local_quantized_array, lossless_compressor,
+                                           hybrid_decomposed_array.data());
+  hybrid_quantizer.Quantize(data_subarray, ebtype, tol, s, norm,
+                           hybrid_quantized_array, lossless_compressor,
                            queue_idx);
 }
 
 template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::LosslessCompress(
     Array<1, Byte, DeviceType>& compressed_data, int queue_idx) {
-  lossless_compressor.Compress(local_quantized_array, compressed_data,
+  lossless_compressor.Compress(hybrid_quantized_array, compressed_data,
                                queue_idx);
 }
 
@@ -186,8 +188,8 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::Recompose(
     Array<D, T, DeviceType>& decompressed_data, int queue_idx) {
   // PrintSubarray("Decomposed before recompose", SubArray(local_decomposed_array));
-  local_refactor.Recompose(SubArray(decompressed_data),
-                           SubArray(local_decomposed_array), queue_idx);
+  hybrid_refactor.Recompose(SubArray(decompressed_data),
+                           SubArray(hybrid_decomposed_array), queue_idx);
 
   // SubArray<D, T, DeviceType> temp({3,3,3}, decompressed_data.data());
   // PrintSubarray("Orginal 8x8x8 after decompose", temp);
@@ -199,20 +201,19 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::Dequantize(
     Array<D, T, DeviceType>& decompressed_data, enum error_bound_type ebtype,
     T tol, T s, T norm, int queue_idx) {
-  log::info("We have done dequantization!");
-  SIZE total_num_elems_1D = local_refactor.DecomposedDataSize();
+  SIZE total_num_elems_1D = hybrid_refactor.DecomposedDataSize();
   SubArray<1, T, DeviceType> decompressed_data_subarray(
-      {total_num_elems_1D}, local_decomposed_array.data());
+      {total_num_elems_1D}, hybrid_decomposed_array.data());
   // Direct calculation
-  local_quantizer.Dequantize(decompressed_data_subarray, ebtype, tol, s, norm,
-                             local_quantized_array, lossless_compressor,
+  hybrid_quantizer.Dequantize(decompressed_data_subarray, ebtype, tol, s, norm,
+                             hybrid_quantized_array, lossless_compressor,
                              queue_idx);
 }
 
 template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::LosslessDecompress(
     Array<1, Byte, DeviceType>& compressed_data, int queue_idx) {
-  lossless_compressor.Decompress(compressed_data, local_quantized_array,
+  lossless_compressor.Decompress(compressed_data, hybrid_quantized_array,
                                  queue_idx);
 }
 

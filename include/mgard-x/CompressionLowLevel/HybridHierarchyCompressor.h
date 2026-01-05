@@ -9,12 +9,14 @@
 #define MGARD_X_HYBRID_HIERARCHY_COMPRESSOR_H
 
 #include "../DataRefactoring/BlockLocalHierarchyDataRefactor.hpp"
+#include "../DataRefactoring/HybridHierarchyDataRefactor.hpp"
 #include "../RuntimeX/RuntimeXPublic.h"
 
 // #include "CompressionLowLevelWorkspace.hpp"
 
 #include "../Hierarchy/Hierarchy.h"
 #include "../Lossless/Lossless.hpp"
+#include "../Quantization/HybridHierarchyLinearQuantization.hpp"
 #include "../Quantization/LocalQuantization.hpp"
 #include "LossyCompressorInterface.hpp"
 #include "NormCalculator.hpp"
@@ -26,67 +28,75 @@ class HybridHierarchyCompressor
     : public LossyCompressorInterface<D, T, DeviceType> {
  public:
   using HierarchyType = Hierarchy<D, T, DeviceType>;
-  using BlockLocalHierarchyDataRefactorType =
-      data_refactoring::BlockLocalHierarchyDataRefactor<D, T, DeviceType>;
+  //   using BlockLocalHierarchyDataRefactorType =
+  //       data_refactoring::BlockLocalHierarchyDataRefactor<D, T, DeviceType>;
+  using HybridHierarchyDataRefactorType =
+      data_refactoring::HybridHierarchyDataRefactor<D, T, DeviceType>;
   using LosslessCompressorType =
       ComposedLosslessCompressor<QUANTIZED_INT, HUFFMAN_CODE, DeviceType>;
-  using LocalQuantizerType = LocalQuantizer<D, T, QUANTIZED_INT, DeviceType>;
+  //   using LocalQuantizerType = LocalQuantizer<D, T, QUANTIZED_INT,
+  //   DeviceType>;
+  using HybridQuantizerType =
+      HybridHierarchyQuantizer<D, T, QUANTIZED_INT, DeviceType>;
 
   HybridHierarchyCompressor();
 
-  HybridHierarchyCompressor(Hierarchy<D, T, DeviceType> &hierarchy,
+  HybridHierarchyCompressor(Hierarchy<D, T, DeviceType>& hierarchy,
                             Config config);
 
-  void Adapt(Hierarchy<D, T, DeviceType> &hierarchy, Config config,
+  void Adapt(Hierarchy<D, T, DeviceType>& hierarchy, Config config,
              int queue_idx);
 
   static size_t EstimateMemoryFootprint(std::vector<SIZE> shape, Config config);
 
-  void CalculateNorm(Array<D, T, DeviceType> &original_data,
-                     enum error_bound_type ebtype, T s, T &norm, int queue_idx);
+  void CalculateNorm(Array<D, T, DeviceType>& original_data,
+                     enum error_bound_type ebtype, T s, T& norm, int queue_idx);
 
-  void Decompose(Array<D, T, DeviceType> &original_data, int queue_idx);
+  void Decompose(Array<D, T, DeviceType>& original_data, int queue_idx);
 
-  void Quantize(Array<D, T, DeviceType> &original_data,
+  void Quantize(Array<D, T, DeviceType>& original_data,
                 enum error_bound_type ebtype, T tol, T s, T norm,
                 int queue_idx);
 
-  void LosslessCompress(Array<1, Byte, DeviceType> &compressed_data,
+  void LosslessCompress(Array<1, Byte, DeviceType>& compressed_data,
                         int queue_idx);
 
-  void Serialize(Array<1, Byte, DeviceType> &compressed_data, int queue_idx);
+  void Serialize(Array<1, Byte, DeviceType>& compressed_data, int queue_idx);
 
-  void Deserialize(Array<1, Byte, DeviceType> &compressed_data, int queue_idx);
+  void Deserialize(Array<1, Byte, DeviceType>& compressed_data, int queue_idx);
 
-  void Recompose(Array<D, T, DeviceType> &decompressed_data, int queue_idx);
+  void Recompose(Array<D, T, DeviceType>& decompressed_data, int queue_idx);
 
-  void Dequantize(Array<D, T, DeviceType> &decompressed_data,
+  void Dequantize(Array<D, T, DeviceType>& decompressed_data,
                   enum error_bound_type ebtype, T tol, T s, T norm,
                   int queue_idx);
 
-  void LosslessDecompress(Array<1, Byte, DeviceType> &compressed_data,
+  void LosslessDecompress(Array<1, Byte, DeviceType>& compressed_data,
                           int queue_idx);
 
-  void Compress(Array<D, T, DeviceType> &original_data,
-                enum error_bound_type ebtype, T tol, T s, T &norm,
-                Array<1, Byte, DeviceType> &compressed_data, int queue_idx);
-  void Decompress(Array<1, Byte, DeviceType> &compressed_data,
-                  enum error_bound_type ebtype, T tol, T s, T &norm,
-                  Array<D, T, DeviceType> &decompressed_data, int queue_idx);
+  void Compress(Array<D, T, DeviceType>& original_data,
+                enum error_bound_type ebtype, T tol, T s, T& norm,
+                Array<1, Byte, DeviceType>& compressed_data, int queue_idx);
+  void Decompress(Array<1, Byte, DeviceType>& compressed_data,
+                  enum error_bound_type ebtype, T tol, T s, T& norm,
+                  Array<D, T, DeviceType>& decompressed_data, int queue_idx);
 
-  static SIZE calculate_padded_size(Hierarchy<D, T, DeviceType> &hierarchy, Config config);
+  static SIZE calculate_padded_size(Hierarchy<D, T, DeviceType>& hierarchy,
+                                    Config config);
 
   bool initialized;
-  Hierarchy<D, T, DeviceType> *hierarchy;
+  Hierarchy<D, T, DeviceType>* hierarchy;
   Config config;
   Array<1, T, DeviceType> norm_tmp_array;
   Array<1, T, DeviceType> norm_array;
-  Array<1, T, DeviceType> local_decomposed_array;
-  Array<1, QUANTIZED_INT, DeviceType> local_quantized_array;
-  Array<D, T, DeviceType> original_padded;
-  Array<D, T, DeviceType> decompressed_padded;
-  BlockLocalHierarchyDataRefactorType local_refactor;
-  LocalQuantizerType local_quantizer;
+//   Array<1, T, DeviceType> local_decomposed_array;
+//   Array<1, QUANTIZED_INT, DeviceType> local_quantized_array;
+  Array<1, T, DeviceType> hybrid_decomposed_array;
+  Array<1, QUANTIZED_INT, DeviceType> hybrid_quantized_array;
+  //   BlockLocalHierarchyDataRefactorType local_refactor;
+  //   LocalQuantizerType local_quantizer;
+  HybridHierarchyDataRefactorType hybrid_refactor;
+  HybridQuantizerType hybrid_quantizer;
   LosslessCompressorType lossless_compressor;
 };
 
