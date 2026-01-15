@@ -175,8 +175,8 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
       double C = (1 + std::pow(3, D));
 
       for (int l = 0; l <= l_target; l++) {
-        //
-        quantizers[l] = (abs_tol) / ((l_target - l + 2) * C);
+        // Modified here
+        quantizers[l] = (abs_tol) / (std::pow(2, l + 1) * C);
 
         if (reciprocal) {
           quantizers[l] = 1.0f / quantizers[l];
@@ -187,37 +187,6 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
       exit(-1);
     }
   }
-
-  // // Design 2: Exponential Amplification
-  // void CalcQuantizers(size_t dof, T* quantizers, enum error_bound_type type,
-  //                     T tol, T s, T norm, SIZE l_target,
-  //                     enum decomposition_type decomposition, bool reciprocal) {
-  //   double abs_tol = tol;
-  //   if (type == error_bound_type::REL) {
-  //     abs_tol *= norm;
-  //   }
-  //   abs_tol *= 2;
-  //   if (s == std::numeric_limits<T>::infinity()) {
-  //     double C = (1 + std::pow(3, D));
-  //     // ben
-  //     double total_weight = 0.0;
-  //     for (int l = 0; l <= l_target; l++) {
-  //       double propagation_factor = std::pow(std::sqrt(C), l_target - l);
-  //       total_weight += propagation_factor;
-  //     }
-  //     for (int l = 0; l <= l_target; l++) {
-  //       double propagation_factor = std::pow(std::sqrt(C), l_target - l);
-  //       quantizers[l] = (abs_tol) / (C * propagation_factor * total_weight);
-  //       if (reciprocal) {
-  //         quantizers[l] = 1.0f / quantizers[l];
-  //       }
-  //     }
-  //   } else {
-  //     // warning for un-inf
-  //     log::err("Only L-inf supported");
-  //     exit(-1);
-  //   }
-  // }
 
   void Quantize(SubArray<D, T, DeviceType> original_data,
                 enum error_bound_type ebtype, T tol, T s, T norm,
@@ -307,6 +276,8 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   std::vector<SIZE> layer_len;
   // change off to offset
   std::vector<SIZE> layer_off;
+
+  std::vector<double> tol_table;
 
   std::vector<SIZE> fine_num_elems;
   std::vector<SIZE> coarse_num_elems;
