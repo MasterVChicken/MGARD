@@ -34,7 +34,6 @@ class HybridHierarchyQuantizer
         global_hierarchy(&global_hierarchy),
         config(config) {}
 
-
   // Think about how can we construct a index table for ROIs
 
   void Adapt(Hierarchy<D, T, DeviceType>& hierarchy,
@@ -50,9 +49,7 @@ class HybridHierarchyQuantizer
   }
 
   // Return the error budget for global quantization
-  T ErrorBudgetAllocation(T tol) {
-    return tol / pow(2, this->L);
-  }
+  T ErrorBudgetAllocation(T tol) { return tol / pow(2, this->L); }
 
   static size_t EstimateMemoryFootprint(std::vector<SIZE> shape,
                                         Config config) {
@@ -89,9 +86,11 @@ class HybridHierarchyQuantizer
     // Local quantization
     SIZE local_offset = original_data.shape(0) - global_q_size;
     SubArray<1, T, DeviceType> local_data_v({local_offset},
-                                             original_data(global_q_size));
+                                            original_data(global_q_size));
     SubArray<1, Q, DeviceType> local_data_q({local_offset},
-                                             quantized_data(global_q_size));
+                                            quantized_data(global_q_size));
+    local_quantizer.Quantize(local_data_v, ebtype, global_tol, s, norm,
+                             local_data_q, lossless, queue_idx);
   }
 
   template <typename LosslessCompressorType>
@@ -110,14 +109,16 @@ class HybridHierarchyQuantizer
                                              quantized_data.data());
 
     global_quantizer.Dequantize(global_data_v, ebtype, global_tol, s, norm,
-                              global_data_q, lossless, queue_idx);
+                                global_data_q, lossless, queue_idx);
 
     // Local dequantization
     SIZE local_offset = original_data.shape(0) - global_q_size;
     SubArray<1, T, DeviceType> local_data_v({local_offset},
-                                             original_data(global_q_size));
+                                            original_data(global_q_size));
     SubArray<1, Q, DeviceType> local_data_q({local_offset},
-                                             quantized_data(global_q_size));
+                                            quantized_data(global_q_size));
+    local_quantizer.Dequantize(local_data_v, ebtype, global_tol, s, norm,
+                               local_data_q, lossless, queue_idx);
   }
 
   bool initialized;
