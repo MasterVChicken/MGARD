@@ -13,10 +13,10 @@ template <typename T, typename Q, OPTION OP, typename DeviceType>
 class QuantizeLocalLevelFunctor : public Functor<DeviceType> {
  public:
   MGARDX_EXEC QuantizeLocalLevelFunctor() {}
-  MGARDX_EXEC QuantizeLocalLevelFunctor(T quantizer,
+  MGARDX_EXEC QuantizeLocalLevelFunctor(SubArray<1, T, DeviceType> quantizers,
                                         SubArray<1, T, DeviceType> v,
                                         SubArray<1, Q, DeviceType> quantized_v)
-      : quantizer(quantizer), v(v), quantized_v(quantized_v) {
+      : quantizers(quantizers), v(v), quantized_v(quantized_v) {
     Functor<DeviceType>();
   }
 
@@ -26,6 +26,12 @@ class QuantizeLocalLevelFunctor : public Functor<DeviceType> {
           FunctorBase<DeviceType>::GetThreadIdX();
 
     if (idx < v.shape(0)) {
+      // Calculate which block this coefficient belongs to
+      SIZE block_idx = idx / 387;
+
+      // Get pre-computed quantizer for this block
+      T quantizer = *quantizers(block_idx);
+
       T t = *v(idx);
       Q quantized_data;
       T volume = 1;
@@ -51,7 +57,7 @@ class QuantizeLocalLevelFunctor : public Functor<DeviceType> {
 
  private:
   SIZE idx;
-  T quantizer;
+  SubArray<1, T, DeviceType> quantizers;
   SubArray<1, T, DeviceType> v;
   SubArray<1, Q, DeviceType> quantized_v;
 };
@@ -62,13 +68,15 @@ class QuantizeLocalLevelKernel : public Kernel {
   constexpr static bool EnableAutoTuning() { return false; }
   constexpr static std::string_view Name = "lvl_qk";
   MGARDX_CONT
-  QuantizeLocalLevelKernel(T quantizer, SubArray<1, T, DeviceType> v,
+  QuantizeLocalLevelKernel(SubArray<1, T, DeviceType> quantizers,
+                           SubArray<1, T, DeviceType> v,
                            SubArray<1, Q, DeviceType> quantized_v)
-      : quantizer(quantizer), v(v), quantized_v(quantized_v) {}
+      : quantizers(quantizers), v(v), quantized_v(quantized_v) {}
+
   MGARDX_CONT Task<QuantizeLocalLevelFunctor<T, Q, OP, DeviceType>> GenTask(
       int queue_idx) {
     using FunctorType = QuantizeLocalLevelFunctor<T, Q, OP, DeviceType>;
-    FunctorType functor(quantizer, v, quantized_v);
+    FunctorType functor(quantizers, v, quantized_v);
 
     SIZE total_thread_z = 1;
     SIZE total_thread_y = 1;
@@ -88,7 +96,7 @@ class QuantizeLocalLevelKernel : public Kernel {
   }
 
  private:
-  T quantizer;
+  SubArray<1, T, DeviceType> quantizers;
   SubArray<1, T, DeviceType> v;
   SubArray<1, Q, DeviceType> quantized_v;
 };
@@ -161,7 +169,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     }
   }
 
-  // Design 1: Linear Amplification
+  // Calculate quantizers between levels
   void CalcQuantizers(size_t dof, T* quantizers, enum error_bound_type type,
                       T tol, T s, T norm, SIZE l_target,
                       enum decomposition_type decomposition, bool reciprocal) {
@@ -230,6 +238,72 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
       timer.print("Quantization", hierarchy->total_num_elems() * sizeof(T));
       timer.clear();
     }
+
+    delete[] host_quantizers;
+  }
+
+  // New Quantize function with ROI support
+  template <typename LosslessCompressorType>
+  void Quantize(SubArray<1, T, DeviceType> original_data,
+                enum error_bound_type ebtype, T tol, T s, T norm,
+                SubArray<1, Q, DeviceType> quantized_data,
+                const std::vector<T>& roi_tolerance_map,
+                const std::vector<SIZE>& level_offsets,
+                const std::vector<SIZE>& level_block_counts,
+                LosslessCompressorType& lossless, int queue_idx) {
+    if (s != std::numeric_limits<T>::infinity()) {
+      log::err("Only L-inf supported");
+      exit(-1);
+    }
+
+    double C = (1 + std::pow(3, D));
+
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
+
+    // Layer 0 will be handled by global quantizer, skip it
+    // Process Layer 1 to Layer L with ROI tolerances
+    for (SIZE l = 1; l <= this->L; ++l) {
+      SIZE roi_level = this->L - l;  // Map to ROI tolerance map level
+      SIZE level_offset = level_offsets[roi_level];
+      SIZE num_blocks = level_block_counts[roi_level];
+
+      // Pre-compute quantizers for all blocks in this layer
+      std::vector<T> host_quantizers(num_blocks);
+      for (SIZE b = 0; b < num_blocks; ++b) {
+        T block_tol = roi_tolerance_map[level_offset + b];
+        block_tol *= 2;
+        
+        T block_quantizer = block_tol / (std::pow(2, l + 1) * C);
+        
+        // reciprocal for quantization
+        host_quantizers[b] = 1.0 / block_quantizer;
+      }
+
+      // Copy to device
+      Array<1, T, DeviceType> device_quantizers({num_blocks});
+      device_quantizers.load(host_quantizers.data(), 0, queue_idx);
+
+      SubArray<1, T, DeviceType> v_in({layer_len[l]},
+                                      original_data((IDX)layer_off[l]));
+      SubArray<1, Q, DeviceType> qv({layer_len[l]},
+                                    quantized_data((IDX)layer_off[l]));
+
+      DeviceLauncher<DeviceType>::Execute(
+          QuantizeLocalLevelKernel<T, Q, MGARDX_QUANTIZE, DeviceType>(
+              SubArray<1, T, DeviceType>(device_quantizers), v_in, qv),
+          queue_idx);
+    }
+
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("ROI Quantization", hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
+    }
   }
 
   template <typename LosslessCompressorType>
@@ -253,7 +327,6 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
       SubArray<1, Q, DeviceType> qv({layer_len[l]},
                                     quantized_data((IDX)layer_off[l]));
       // Launch
-      // T quantizer = host_quantizers[this->L - l];
       T quantizer = host_quantizers[l];
       DeviceLauncher<DeviceType>::Execute(
           QuantizeLocalLevelKernel<T, Q, MGARDX_DEQUANTIZE, DeviceType>(
@@ -267,6 +340,72 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
       timer.print("Dequantization", hierarchy->total_num_elems() * sizeof(T));
       timer.clear();
     }
+
+    delete[] host_quantizers;
+  }
+
+  // New Dequantize function with ROI support
+  template <typename LosslessCompressorType>
+  void Dequantize(SubArray<1, T, DeviceType> original_data,
+                  enum error_bound_type ebtype, T tol, T s, T norm,
+                  SubArray<1, Q, DeviceType> quantized_data,
+                  const std::vector<T>& roi_tolerance_map,
+                  const std::vector<SIZE>& level_offsets,
+                  const std::vector<SIZE>& level_block_counts,
+                  LosslessCompressorType& lossless, int queue_idx) {
+    if (s != std::numeric_limits<T>::infinity()) {
+      log::err("Only L-inf supported");
+      exit(-1);
+    }
+
+    double C = (1 + std::pow(3, D));
+
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
+
+    // Layer 0 will be handled by global quantizer, skip it
+    // Process Layer 1 to Layer L with ROI tolerances
+    for (SIZE l = 1; l <= this->L; ++l) {
+      SIZE roi_level = this->L - l;  // Map to ROI tolerance map level
+      SIZE level_offset = level_offsets[roi_level];
+      SIZE num_blocks = level_block_counts[roi_level];
+
+      // Pre-compute quantizers for all blocks in this layer
+      std::vector<T> host_quantizers(num_blocks);
+      for (SIZE b = 0; b < num_blocks; ++b) {
+        T block_tol = roi_tolerance_map[level_offset + b];
+        block_tol *= 2;
+        T block_quantizer = block_tol / (std::pow(2, l + 1) * C);
+
+        // no reciprocal for quantization
+        host_quantizers[b] = block_quantizer;
+      }
+
+      // Copy to device
+      Array<1, T, DeviceType> device_quantizers({num_blocks});
+      device_quantizers.load(host_quantizers.data(), 0, queue_idx);
+
+      SubArray<1, T, DeviceType> v_in({layer_len[l]},
+                                      original_data((IDX)layer_off[l]));
+      SubArray<1, Q, DeviceType> qv({layer_len[l]},
+                                    quantized_data((IDX)layer_off[l]));
+
+      DeviceLauncher<DeviceType>::Execute(
+          QuantizeLocalLevelKernel<T, Q, MGARDX_DEQUANTIZE, DeviceType>(
+              SubArray<1, T, DeviceType>(device_quantizers), v_in, qv),
+          queue_idx);
+    }
+
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("ROI Dequantization",
+                  hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
+    }
   }
 
   bool initialized;
@@ -274,7 +413,6 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   Hierarchy<D, T, DeviceType>* hierarchy;
   Config config;
   std::vector<SIZE> layer_len;
-  // change off to offset
   std::vector<SIZE> layer_off;
 
   std::vector<double> tol_table;
