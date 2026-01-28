@@ -18,6 +18,9 @@ namespace mgard_x {
 
 namespace data_refactoring {
 
+// TODO: double-check if we have correctly process boundary case
+// TODO: In automatic parameter selection make sure L and M are non-negative
+
 template <DIM D, typename T, typename DeviceType>
 class HybridHierarchyDataRefactor
     : public HybridHierarchyDataRefactorInterface<D, T, DeviceType> {
@@ -35,67 +38,158 @@ class HybridHierarchyDataRefactor
     this->initialized = true;
     this->hierarchy = &hierarchy;
     this->config = config;
-
     this->L = config.num_local_refactoring_level;
     this->M = config.num_global_refactoring_level;
 
-    // We have to set global hierarchy and global config here
-    local_refactor.Adapt(hierarchy, config, queue_idx);
+    // Adaptive intialization for local and global
+    if (this->L == 0 && this->M == 0) {
+      log::err("Both L and M cannot be zero");
+      exit(-1);
+    }
 
-    std::vector<SIZE> global_hierarchy_shape =
-        local_refactor.coarse_shapes[this->L - 1];
-    Config global_config;
-    global_config.max_larget_level = this->M;
-    this->global_hierarchy =
-        Hierarchy<D, T, DeviceType>(global_hierarchy_shape, global_config);
-    global_refactor.Adapt(global_hierarchy, global_config, queue_idx);
+    if (this->L > 0) {
+      local_refactor.Adapt(hierarchy, config, queue_idx);
+    }
+
+    if (this->M > 0) {
+      if (this->L > 0) {
+        // With local, global adapt from the output shape of local
+        std::vector<SIZE> global_hierarchy_shape =
+            local_refactor.coarse_shapes[this->L - 1];
+        Config global_config;
+        global_config.max_larget_level = this->M;
+        this->global_hierarchy =
+            Hierarchy<D, T, DeviceType>(global_hierarchy_shape, global_config);
+        global_refactor.Adapt(global_hierarchy, global_config, queue_idx);
+      } else {
+        // Without local, global directly adapt to original shape
+        Config global_config;
+        global_config.max_larget_level = this->M;
+        this->global_hierarchy = Hierarchy<D, T, DeviceType>(
+            hierarchy.level_shape(hierarchy.l_target()), global_config);
+        global_refactor.Adapt(global_hierarchy, global_config, queue_idx);
+      }
+    }
   }
 
-  // Need to add memory for local later
-  static size_t EstimateMemoryFootprint(std::vector<SIZE> shape) {
+  static size_t EstimateMemoryFootprint(std::vector<SIZE> shape,
+                                        Config config) {
     size_t size = 0;
-    // Global memory size
 
-    // Local size (double check needed)
+    SIZE L = config.num_local_refactoring_level;
+    SIZE M = config.num_global_refactoring_level;
+
+    if (L > 0) {
+      size += BlockLocalHierarchyDataRefactor<
+          D, T, DeviceType>::EstimateMemoryFootprint(shape);
+      if (M > 0) {
+        // Calculate Coarest shape from local
+        std::vector<SIZE> coarest_shape = shape;
+        for (int l = 0; l < config.num_local_refactoring_level; l++) {
+          for (DIM d = 0; d < D; d++) {
+            coarest_shape[d] = ((coarest_shape[d] - 1) / 8 + 1) * 5;
+          }
+        }
+        size += DataRefactor<D, T, DeviceType>::EstimateMemoryFootprint(
+            coarest_shape);
+      }
+    }
+
+    if (M > 0) {
+      size += DataRefactor<D, T, DeviceType>::EstimateMemoryFootprint(shape);
+    }
     return size;
   }
 
-  size_t DecomposedDataSize() { return local_refactor.DecomposedDataSize(); }
+  size_t DecomposedDataSize() {
+    if (this->L > 0) {
+      return local_refactor.DecomposedDataSize();
+    }
+
+    return hierarchy->total_num_elems();
+  }
 
   void Decompose(SubArray<D, T, DeviceType> data,
                  SubArray<1, T, DeviceType> decomposed_data, int queue_idx) {
-    // Local decomposition
-    local_refactor.Decompose(data, decomposed_data, queue_idx);
-
-    std::vector<SIZE> local_coarest_shape =
-        local_refactor.coarse_shapes[this->L - 1];
-    SubArray<D, T, DeviceType> global_input_data({local_coarest_shape},
-                                             decomposed_data.data());
-    for (DIM d = 0; d < D; d++) {
-      global_input_data.setLd(d, local_coarest_shape[d]);
+    if (this->L == 0 && this->M == 0) {
+      log::err("Both L and M cannot be zero");
+      exit(-1);
     }
-    global_input_data.project(0, 1, 2);
+    if (this->L == 0) {
+      // Pure Global (In-Place)
+      std::vector<SIZE> original_shape =
+          hierarchy->level_shape(hierarchy->l_target());
+      SubArray<D, T, DeviceType> global_input_data(original_shape,
+                                                   decomposed_data.data());
+      for (DIM d = 0; d < D; d++) {
+        global_input_data.setLd(d, original_shape[d]);
+      }
+      global_input_data.project(0, 1, 2);
 
-    // Global decomposition
-    global_refactor.Decompose(global_input_data, true, queue_idx);
+      multi_dimension::CopyND(data, global_input_data, queue_idx);
+
+      global_refactor.Decompose(global_input_data, true, queue_idx);
+    } else if (this->M == 0) {
+      // Pure Local
+      local_refactor.Decompose(data, decomposed_data, queue_idx);
+    } else {
+      // Local decomposition
+      local_refactor.Decompose(data, decomposed_data, queue_idx);
+
+      std::vector<SIZE> local_coarest_shape =
+          local_refactor.coarse_shapes[this->L - 1];
+      SubArray<D, T, DeviceType> global_input_data({local_coarest_shape},
+                                                   decomposed_data.data());
+      for (DIM d = 0; d < D; d++) {
+        global_input_data.setLd(d, local_coarest_shape[d]);
+      }
+      global_input_data.project(0, 1, 2);
+
+      // Global decomposition
+      global_refactor.Decompose(global_input_data, true, queue_idx);
+    }
   }
 
   void Recompose(SubArray<D, T, DeviceType> data,
                  SubArray<1, T, DeviceType> decomposed_data, int queue_idx) {
-    std::vector<SIZE> local_coarest_shape =
-        local_refactor.coarse_shapes[this->L - 1];
-    SubArray<D, T, DeviceType> global_input_data({local_coarest_shape},
-                                             decomposed_data.data());
-    for (DIM d = 0; d < D; d++) {
-      global_input_data.setLd(d, local_coarest_shape[d]);
+    if (this->L == 0 && this->M == 0) {
+      log::err("Both L and M cannot be zero");
+      exit(-1);
     }
-    global_input_data.project(0, 1, 2);
+    if (this->L == 0) {
+      // Pure Global (In-Place)
+      std::vector<SIZE> original_shape =
+          hierarchy->level_shape(hierarchy->l_target());
+      SubArray<D, T, DeviceType> global_input_data(original_shape,
+                                                   decomposed_data.data());
+      for (DIM d = 0; d < D; d++) {
+        global_input_data.setLd(d, original_shape[d]);
+      }
+      global_input_data.project(0, 1, 2);
 
-    // Global recomposition
-    global_refactor.Recompose(global_input_data, true, queue_idx);
+      global_refactor.Recompose(global_input_data, true, queue_idx);
 
-    // Local recomposition
-    local_refactor.Recompose(data, decomposed_data, queue_idx);
+      // Copy back to data
+      multi_dimension::CopyND(global_input_data, data, queue_idx);
+    } else if (this->M == 0) {
+      // Pure Local
+      local_refactor.Recompose(data, decomposed_data, queue_idx);
+    } else {
+      std::vector<SIZE> local_coarest_shape =
+          local_refactor.coarse_shapes[this->L - 1];
+      SubArray<D, T, DeviceType> global_input_data({local_coarest_shape},
+                                                   decomposed_data.data());
+      for (DIM d = 0; d < D; d++) {
+        global_input_data.setLd(d, local_coarest_shape[d]);
+      }
+      global_input_data.project(0, 1, 2);
+
+      // Global recomposition
+      global_refactor.Recompose(global_input_data, true, queue_idx);
+
+      // Local recomposition
+      local_refactor.Recompose(data, decomposed_data, queue_idx);
+    }
   }
 
   bool initialized;

@@ -500,17 +500,14 @@ public:
       timer.start();
     }
 
-    log::info("Before Copy1D");
     ATOMIC_IDX zero = 0;
     MemoryManager<DeviceType>::Copy1D(workspace.outlier_count_subarray.data(),
                                       &zero, 1, queue_idx);
 
-                                      log::info("Before shift kernel");
     DeviceLauncher<DeviceType>::Execute(
         DictionaryShiftKernel<S, MGARDX_SHIFT_DICT, DeviceType>(
             SubArray(original_data), dict_size),
         queue_idx);
-        log::info("Before seperate kernel");
     DeviceLauncher<DeviceType>::Execute(
         OutlierSeparatorKernel<S, MGARDX_SEPARATE_OUTLIER, DeviceType>(
             SubArray(original_data), dict_size,

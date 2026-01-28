@@ -39,6 +39,7 @@ struct Config {
   cpu_parallelization_mode cpu_mode;
   bool mdr_qoi_mode;
   int mdr_qoi_num_variables;
+  std::vector<double> roi_tolerance_map;
 
   Config();
   void apply();

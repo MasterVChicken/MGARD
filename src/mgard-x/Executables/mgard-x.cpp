@@ -38,7 +38,7 @@ void print_usage_message(std::string error) {
 \t\t\t  ...\n\
 \t\t\t [int]: fastest dimention\n\
 \t\t -em / --error-bound-mode <abs|rel>: error bound mode (abs: abolute; rel: relative)\n\
-\t\t -e / --error-bound <float>: error bound\n\
+\t\t -r / --roi-tolerance-map <path>: path to ROI tolerance map file\n\
 \t\t -s / --smoothness <float>: smoothness parameter\n\
 \t\t -l / --lossless <huffman|huffman-lz4|huffman-zstd>: lossless compression\n\
 \t\t -d / --device <auto|serial|cuda|hip>: device type\n\
@@ -170,16 +170,19 @@ int verbose_to_log_level(int verbose) {
 template <typename T>
 int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
                     const char *input_file, const char *output_file,
-                    std::vector<mgard_x::SIZE> shape, double tol, double s,
+                    std::vector<mgard_x::SIZE> shape, std::vector<double> tol_map, double s,
                     enum mgard_x::error_bound_type mode, std::string lossless,
                     std::string domain_decomposition, mgard_x::SIZE block_size,
                     enum mgard_x::device_type dev_type, int verbose,
                     mgard_x::SIZE max_memory_footprint) {
   mgard_x::Config config;
   config.log_level = verbose_to_log_level(verbose);
-  config.decomposition = mgard_x::decomposition_type::MultiDim;
-  // config.decomposition = mgard_x::decomposition_type::Hybrid;
-  // config.num_local_refactoring_level = 7;
+  // config.decomposition = mgard_x::decomposition_type::MultiDim;
+  config.decomposition = mgard_x::decomposition_type::Hybrid;
+  config.num_local_refactoring_level = 4;
+  config.num_global_refactoring_level = 4;
+  config.roi_tolerance_map = tol_map;
+  double tol = 1; // placeholder value will not be used
   // config.compress_with_dryrun = true;
 
   // config.max_larget_level = 1;
@@ -346,8 +349,8 @@ bool try_compression(int argc, char *argv[]) {
       get_args<mgard_x::SIZE>(argc, argv, "Dimensions", "-dim", "--dimension");
   enum mgard_x::error_bound_type mode =
       get_error_bound_mode(argc, argv);  // REL or ABS
-  double tol =
-      get_arg<double>(argc, argv, "Error bound", "-e", "--error-bound");
+  std::string roi_file =
+    get_arg<std::string>(argc, argv, "ROI tolerance map", "-r", "--roi-tolerance-map");
   double s = get_arg<double>(argc, argv, "Smoothness", "-s", "--smoothness");
   std::string lossless =
       get_arg<std::string>(argc, argv, "Lossless", "-l", "--lossless");
@@ -373,18 +376,32 @@ bool try_compression(int argc, char *argv[]) {
     }
   }
 
+  size_t expected_roi_map_size = 1;
+  for (mgard_x::DIM i = 0; i < shape.size(); i++) {
+    expected_roi_map_size *= (shape[i] + 8 - 1) / 8; 
+  }
+  std::vector<double> tol_map;
+  double* roi_map_buffer;
+  size_t roi_map_bytes = readfile(roi_file.c_str(), roi_map_buffer);
+  size_t roi_map_size = roi_map_bytes / sizeof(double);
+  tol_map.resize(roi_map_size);
+  for (size_t i = 0; i < roi_map_size; i++) {
+    tol_map[i] = static_cast<double>(roi_map_buffer[i]);
+  }
+
   if (dtype == mgard_x::data_type::Double) {
     launch_compress<double>(shape.size(), dtype, input_file.c_str(),
-                            output_file.c_str(), shape, tol, s, mode, lossless,
+                            output_file.c_str(), shape, tol_map, s, mode, lossless,
                             domain_decomposition, block_size, dev_type, verbose,
                             max_memory_footprint);
   } else if (dtype == mgard_x::data_type::Float) {
     launch_compress<float>(shape.size(), dtype, input_file.c_str(),
-                           output_file.c_str(), shape, tol, s, mode, lossless,
+                           output_file.c_str(), shape, tol_map, s, mode, lossless,
                            domain_decomposition, block_size, dev_type, verbose,
                            max_memory_footprint);
   }
   mgard_x::release_cache(mgard_x::Config());
+  free(roi_map_buffer);
   return true;
 }
 
