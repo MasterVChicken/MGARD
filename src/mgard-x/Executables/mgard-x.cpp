@@ -41,10 +41,14 @@ void print_usage_message(std::string error) {
 \t\t\t  ...\n\
 \t\t\t [int]: fastest dimention\n\
 \t\t -em / --error-bound-mode <abs|rel>: error bound mode (abs: abolute; rel: relative)\n\
+\t\t -e / --error-bound <float>: error bound\n\
 \t\t -r / --roi-tolerance-map <path>: path to ROI tolerance map file\n\
+\t\t -roi / -enable-roi enable ROI mode (use per-block tolerances from -r)\n\
 \t\t -s / --smoothness <float>: smoothness parameter\n\
 \t\t -l / --lossless <huffman|huffman-lz4|huffman-zstd>: lossless compression\n\
 \t\t -d / --device <auto|serial|cuda|hip>: device type\n\
+\t\t (optional) -ll / --local-levels <int>: number of local refactoring levels (default: 1)\n\
+\t\t (optional) -gl / --global-levels <int>: number of global refactoring levels (default: 0)\n\
 \t\t (optional) -v / --verbose <0|1|2|3> 0: error; 1: error+info; 2: error+timing; 3: all\n\
 \n\
 \t -x / --decompress: decompress mode\n\
@@ -417,19 +421,31 @@ int verbose_to_log_level(int verbose) {
 template <typename T>
 int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
                     const char *input_file, const char *output_file,
-                    std::vector<mgard_x::SIZE> shape, std::vector<double> tol_map, double s,
+                    std::vector<mgard_x::SIZE> shape, double tol,
+                    std::vector<double> tol_map, bool enable_roi, double s,
                     enum mgard_x::error_bound_type mode, std::string lossless,
                     std::string domain_decomposition, mgard_x::SIZE block_size,
                     enum mgard_x::device_type dev_type, int verbose,
-                    mgard_x::SIZE max_memory_footprint) {
+                    mgard_x::SIZE max_memory_footprint, 
+                    int num_local_levels, int num_global_levels) {
   mgard_x::Config config;
   config.log_level = verbose_to_log_level(verbose);
   // config.decomposition = mgard_x::decomposition_type::MultiDim;
   config.decomposition = mgard_x::decomposition_type::Hybrid;
-  config.num_local_refactoring_level = 4;
-  config.num_global_refactoring_level = 4;
-  config.roi_tolerance_map = tol_map;
-  double tol = 1; // placeholder value will not be used
+  config.num_local_refactoring_level = num_local_levels;
+  config.num_global_refactoring_level = num_global_levels;
+  
+  // Switch for ROI
+  config.enable_roi = enable_roi;
+  if(enable_roi){
+    config.roi_tolerance_map = tol_map;
+  }
+
+  if (!enable_roi && tol <= 0) {
+    std::cout << mgard_x::log::log_err 
+              << "Error tolerance (-e) is required when not using ROI mode\n";
+    exit(-1);
+  }
   // config.compress_with_dryrun = true;
 
   // config.max_larget_level = 1;
@@ -536,12 +552,14 @@ int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
   mgard_x::decompress(compressed_data, compressed_size, decompressed_data,
                       config, true);
 
-  // print_statistics<T>(s, mode, shape, original_data, (T *)decompressed_data,
-  //                     tol, config.normalize_coordinates);
+  
 
-  if (!tol_map.empty()) {
+  if (config.enable_roi) {
     print_statistics_roi<T>(s, mode, shape, original_data, (T *)decompressed_data,
                             tol_map, config.normalize_coordinates);
+  }else{
+    print_statistics<T>(s, mode, shape, original_data, (T *)decompressed_data,
+                      tol, config.normalize_coordinates);
   }
 
   mgard_x::unpin_memory(decompressed_data, config);
@@ -601,8 +619,46 @@ bool try_compression(int argc, char *argv[]) {
       get_args<mgard_x::SIZE>(argc, argv, "Dimensions", "-dim", "--dimension");
   enum mgard_x::error_bound_type mode =
       get_error_bound_mode(argc, argv);  // REL or ABS
-  std::string roi_file =
-    get_arg<std::string>(argc, argv, "ROI tolerance map", "-r", "--roi-tolerance-map");
+  double tol = -1.0;
+  if(has_arg(argc, argv, "-e", "--error-bound")){
+    tol =
+      get_arg<double>(argc, argv, "Error bound", "-e", "--error-bound");
+  }
+  bool enable_roi = has_arg(argc, argv, "-roi", "--enable-roi");
+  std::vector<double> tol_map;
+  if (has_arg(argc, argv, "-r", "--roi-tolerance-map")) {
+    std::string roi_file =
+        get_arg<std::string>(argc, argv, "ROI tolerance map", "-r", "--roi-tolerance-map");
+    
+    double* roi_map_buffer;
+    size_t roi_map_bytes = readfile(roi_file.c_str(), roi_map_buffer);
+    size_t roi_map_size = roi_map_bytes / sizeof(double);
+    tol_map.resize(roi_map_size);
+    for (size_t i = 0; i < roi_map_size; i++) {
+      tol_map[i] = static_cast<double>(roi_map_buffer[i]);
+    }
+    free(roi_map_buffer);
+    
+    size_t expected_roi_map_size = 1;
+    for (mgard_x::DIM i = 0; i < shape.size(); i++) {
+      expected_roi_map_size *= (shape[i] + 8 - 1) / 8; 
+    }
+    if (tol_map.size() != expected_roi_map_size) {
+      std::cout << mgard_x::log::log_warn << "ROI map size mismatch: expected "
+                << expected_roi_map_size << ", got " << tol_map.size() << "\n";
+    }
+  }
+  
+  if (enable_roi && tol_map.empty()) {
+    std::cout << mgard_x::log::log_err 
+              << "--enable-roi requires -r/--roi-tolerance-map\n";
+    exit(-1);
+  }
+  if (!enable_roi && tol <= 0) {
+    std::cout << mgard_x::log::log_err 
+              << "-e/--tolerance is required when not using ROI mode\n";
+    exit(-1);
+  }
   double s = get_arg<double>(argc, argv, "Smoothness", "-s", "--smoothness");
   std::string lossless =
       get_arg<std::string>(argc, argv, "Lossless", "-l", "--lossless");
@@ -617,6 +673,17 @@ bool try_compression(int argc, char *argv[]) {
     max_memory_footprint = (mgard_x::SIZE)get_arg<double>(
         argc, argv, "Max memory", "-m", "--max-memory");
   }
+
+  int num_local_levels = 1;  // default value
+  if (has_arg(argc, argv, "-ll", "--local-levels")) {
+    num_local_levels = get_arg<int>(argc, argv, "Local levels", "-ll", "--local-levels");
+  }
+  
+  int num_global_levels = 0;  // default value
+  if (has_arg(argc, argv, "-gl", "--global-levels")) {
+    num_global_levels = get_arg<int>(argc, argv, "Global levels", "-gl", "--global-levels");
+  }
+
   std::string domain_decomposition = "max-dim";
   mgard_x::SIZE block_size = 0;
   if (has_arg(argc, argv, "-dd", "--domain-decomposition")) {
@@ -628,32 +695,18 @@ bool try_compression(int argc, char *argv[]) {
     }
   }
 
-  size_t expected_roi_map_size = 1;
-  for (mgard_x::DIM i = 0; i < shape.size(); i++) {
-    expected_roi_map_size *= (shape[i] + 8 - 1) / 8; 
-  }
-  std::vector<double> tol_map;
-  double* roi_map_buffer;
-  size_t roi_map_bytes = readfile(roi_file.c_str(), roi_map_buffer);
-  size_t roi_map_size = roi_map_bytes / sizeof(double);
-  tol_map.resize(roi_map_size);
-  for (size_t i = 0; i < roi_map_size; i++) {
-    tol_map[i] = static_cast<double>(roi_map_buffer[i]);
-  }
-
   if (dtype == mgard_x::data_type::Double) {
     launch_compress<double>(shape.size(), dtype, input_file.c_str(),
-                            output_file.c_str(), shape, tol_map, s, mode, lossless,
+                            output_file.c_str(), shape, tol, tol_map, enable_roi, s, mode, lossless,
                             domain_decomposition, block_size, dev_type, verbose,
-                            max_memory_footprint);
+                            max_memory_footprint, num_local_levels, num_global_levels);
   } else if (dtype == mgard_x::data_type::Float) {
     launch_compress<float>(shape.size(), dtype, input_file.c_str(),
-                           output_file.c_str(), shape, tol_map, s, mode, lossless,
+                           output_file.c_str(), shape, tol, tol_map, enable_roi, s, mode, lossless,
                            domain_decomposition, block_size, dev_type, verbose,
-                           max_memory_footprint);
+                           max_memory_footprint, num_local_levels, num_global_levels);
   }
   mgard_x::release_cache(mgard_x::Config());
-  free(roi_map_buffer);
   return true;
 }
 

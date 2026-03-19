@@ -48,24 +48,24 @@ HybridHierarchyCompressor<D, T, DeviceType>::HybridHierarchyCompressor(
       norm_tmp_array = Array<1, T, DeviceType>(
           {hierarchy.total_num_elems()},
           (T*)hybrid_refactor.local_refactor.coarse_buffers[0].data());
-      hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
-          {hybrid_refactor.DecomposedDataSize()},
-          (QUANTIZED_INT*)hybrid_refactor.local_refactor.coarse_buffers[0]
-              .data());
+      // hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
+      //     {hybrid_refactor.DecomposedDataSize()},
+      //     (QUANTIZED_INT*)hybrid_refactor.local_refactor.coarse_buffers[0]
+      //         .data());
     } else {
       // Reuse space from global refactor
       norm_tmp_array = Array<1, T, DeviceType>(
           {hierarchy.total_num_elems()},
           (T*)hybrid_refactor.global_refactor.w_array.data());
-      hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
-          {hybrid_refactor.DecomposedDataSize()},
-          (QUANTIZED_INT*)hybrid_refactor.global_refactor.w_array.data());
+      // hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
+      //     {hybrid_refactor.DecomposedDataSize()},
+      //     (QUANTIZED_INT*)hybrid_refactor.global_refactor.w_array.data());
     }
   } else {
     // if space is not enough
     norm_tmp_array = Array<1, T, DeviceType>({hierarchy.total_num_elems()});
-    hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
-        {hybrid_refactor.DecomposedDataSize()});
+    // hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
+    //     {hybrid_refactor.DecomposedDataSize()});
   }
 }
 
@@ -83,6 +83,7 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Adapt(
   norm_array.resize({1}, queue_idx);
   hybrid_decomposed_array.resize({hybrid_refactor.DecomposedDataSize()},
                                  queue_idx);
+  hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>({hybrid_refactor.DecomposedDataSize()});
 
   // Reuse workspace
   if (sizeof(QUANTIZED_INT) <= sizeof(T)) {
@@ -90,23 +91,23 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Adapt(
       norm_tmp_array = Array<1, T, DeviceType>(
           {hierarchy.total_num_elems()},
           (T*)hybrid_refactor.local_refactor.coarse_buffers[0].data());
-      hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
-          {hybrid_refactor.DecomposedDataSize()},
-          (QUANTIZED_INT*)hybrid_refactor.local_refactor.coarse_buffers[0]
-              .data());
+      // hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
+      //     {hybrid_refactor.DecomposedDataSize()},
+      //     (QUANTIZED_INT*)hybrid_refactor.local_refactor.coarse_buffers[0]
+      //         .data());
     } else {
       // Reuse space from global refactor
       norm_tmp_array = Array<1, T, DeviceType>(
           {hierarchy.total_num_elems()},
           (T*)hybrid_refactor.global_refactor.w_array.data());
-      hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
-          {hybrid_refactor.DecomposedDataSize()},
-          (QUANTIZED_INT*)hybrid_refactor.global_refactor.w_array.data());
+      // hybrid_quantized_array = Array<1, QUANTIZED_INT, DeviceType>(
+      //     {hybrid_refactor.DecomposedDataSize()},
+      //     (QUANTIZED_INT*)hybrid_refactor.global_refactor.w_array.data());
     }
   } else {
     norm_tmp_array.resize({hierarchy.total_num_elems()}, queue_idx);
-    hybrid_quantized_array.resize({hybrid_refactor.DecomposedDataSize()},
-                                  queue_idx);
+    // hybrid_quantized_array.resize({hybrid_refactor.DecomposedDataSize()},
+    //                               queue_idx);
   }
 }
 
@@ -119,7 +120,8 @@ size_t HybridHierarchyCompressor<D, T, DeviceType>::EstimateMemoryFootprint(
   size_t size = 0;
   // size +=
   // BlockLocalHierarchyDataRefactorType::EstimateMemoryFootprint(shape);
-  size += HybridHierarchyDataRefactorType::EstimateMemoryFootprint(shape, config);
+  size +=
+      HybridHierarchyDataRefactorType::EstimateMemoryFootprint(shape, config);
   // log::info(
   //     "Data refactor space: " +
   //     std::to_string(
@@ -346,21 +348,27 @@ template <DIM D, typename T, typename DeviceType>
 SIZE HybridHierarchyCompressor<D, T, DeviceType>::calculate_padded_size(
     Hierarchy<D, T, DeviceType>& hierarchy, Config config) {
   int L = config.num_local_refactoring_level;
-  std::vector<SIZE> coarse_shape = hierarchy.level_shape(hierarchy.l_target());
   SIZE total_num_elems_1D = 1;
-  for (int l = 0; l < L; l++) {
-    SIZE last_level_size = 1, curr_level_size = 1;
-    for (DIM d = 0; d < D; d++) {
-      coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 8;
-      last_level_size *= coarse_shape[d];
-      coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 5;
-      curr_level_size *= coarse_shape[d];
+  if (L > 0) {
+    std::vector<SIZE> coarse_shape =
+        hierarchy.level_shape(hierarchy.l_target());
+    for (int l = 0; l < L; l++) {
+      SIZE last_level_size = 1, curr_level_size = 1;
+      for (DIM d = 0; d < D; d++) {
+        coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 8;
+        last_level_size *= coarse_shape[d];
+        coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 5;
+        curr_level_size *= coarse_shape[d];
+      }
+      total_num_elems_1D += (last_level_size - curr_level_size);
+      if (l == L - 1) {
+        total_num_elems_1D += curr_level_size;
+      }
     }
-    total_num_elems_1D += (last_level_size - curr_level_size);
-    if (l == L - 1) {
-      total_num_elems_1D += curr_level_size;
-    }
+  } else {
+    total_num_elems_1D = hierarchy.total_num_elems();
   }
+
   return total_num_elems_1D;
 }
 

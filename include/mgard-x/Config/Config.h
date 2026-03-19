@@ -40,6 +40,7 @@ struct Config {
   bool mdr_qoi_mode;
   int mdr_qoi_num_variables;
   std::vector<double> roi_tolerance_map;
+  bool enable_roi;
 
   Config();
   void apply();

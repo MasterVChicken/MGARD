@@ -42,7 +42,8 @@ class BlockLocalHierarchyDataRefactor {
   }
 
   static size_t EstimateMemoryFootprint(std::vector<SIZE> shape) {
-    // We have 2 arrays for shape switch and another one for output coeff and coarest
+    // We have 2 arrays for shape switch and another one for output coeff and
+    // coarest
     size_t size = 3;
     for (DIM d = 0; d < shape.size(); d++) {
       int dim8 = ((shape[d] - 1) / 8 + 1) * 8;
@@ -52,26 +53,7 @@ class BlockLocalHierarchyDataRefactor {
   }
 
   size_t DecomposedDataSize() {
-    // The following is how to calculate final size with local refactoring
-
-    // size_t size = 0;
-    // SIZE L = config.num_local_refactoring_level;
-    // std::vector<SIZE> coarse_shape = shape;
-    // for (int l = 0; l < L; ++l) {
-    //   SIZE last_level_size = 1, curr_level_size = 1;
-    //   for (DIM d = 0; d < D; ++d) {
-    //     coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 8;
-    //     last_level_size *= coarse_shape[d];
-    //     coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 5;
-    //     curr_level_size *= coarse_shape[d];
-    //   }
-    //   size += (last_level_size - curr_level_size) if (l == L - 1) {
-    //     size += curr_level_size;
-    //   }
-    // }
-    // return size * sizeof(T);
-    SIZE decomposed_size = 0;
-    decomposed_size = coarse_num_elems[this->L - 1];
+    SIZE decomposed_size = coarse_num_elems[this->L - 1];
     for (SIZE l = 0; l < this->L; l++) {
       decomposed_size += local_coeff_size[l];
     }
@@ -104,15 +86,10 @@ class BlockLocalHierarchyDataRefactor {
         fine_shape[d] = coarse_shape[d];
         coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 5;
         curr_level_size *= coarse_shape[d];
-        // log::info("L: " + std::to_string(l) + ", DIM: " + std::to_string(d) +
-        //           ", Fine: " + std::to_string(fine_shape[d]) +
-        //           ", Coarse: " + std::to_string(coarse_shape[d]));
       }
       fine_num_elems.push_back(last_level_size);
       coarse_num_elems.push_back(curr_level_size);
       local_coeff_size.push_back(last_level_size - curr_level_size);
-      // log::info("L: " + std::to_string(l) + ", Local coeff_size: " +
-      //           std::to_string(last_level_size - curr_level_size));
       coarse_shapes.push_back(coarse_shape);
       fine_shapes.push_back(fine_shape);
     }
@@ -120,17 +97,18 @@ class BlockLocalHierarchyDataRefactor {
 
   void Decompose(SubArray<D, T, DeviceType> data,
                  SubArray<1, T, DeviceType> output_decomposed, int queue_idx) {
-    Timer timer;
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.start();
-    }
-
     SubArray<D, T, DeviceType> fine(coarse_buffers[1]);
     SubArray<D, T, DeviceType> coarse;
     // CopyND follows the shape of 1st param
     multi_dimension::CopyND(data, fine, queue_idx);
     SubArray<1, T, DeviceType> decomposed_coeff(w_array);
+
+    // Exclude copy time
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
 
     // Will be reused between decompose and recompose
     accumulated_local_coeff_size = 0;
@@ -163,6 +141,15 @@ class BlockLocalHierarchyDataRefactor {
       }
     }
 
+    // Exclude copy time
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Local Decomposition",
+                  hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
+    }
+
     int final_buffer_id = (this->L - 1) % 2;
     SubArray<D, T, DeviceType> coarsest(coarse_shapes[this->L - 1],
                                         coarse_buffers[final_buffer_id].data());
@@ -184,14 +171,6 @@ class BlockLocalHierarchyDataRefactor {
     multi_dimension::CopyND(decomposed_coeff, data_coeff, queue_idx);
 
     // PrintSubarray("Temp in decompose:",SubArray(temp_coarest));
-
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.end();
-      timer.print("Local Decomposition",
-                  hierarchy->total_num_elems() * sizeof(T));
-      timer.clear();
-    }
   }
 
   void Recompose(SubArray<D, T, DeviceType> data,
@@ -201,8 +180,6 @@ class BlockLocalHierarchyDataRefactor {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer.start();
     }
-
-    // PrintSubarray("Temp in recompose:",SubArray(temp_coarest));
 
     coarse_buffers[0].memset(0, queue_idx);
     coarse_buffers[1].memset(0, queue_idx);
@@ -243,6 +220,15 @@ class BlockLocalHierarchyDataRefactor {
       accumulated_local_coeff_size -= local_coeff_size[level_idx];
     }
 
+    // Exclude copy time
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Local Recomposition",
+                  hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
+    }
+
     // copy back, using ND
     SubArray<D, T, DeviceType> src(
         hierarchy->level_shape(hierarchy->l_target()),
@@ -257,14 +243,6 @@ class BlockLocalHierarchyDataRefactor {
         hierarchy->level_shape(hierarchy->l_target()), data.data());
 
     multi_dimension::CopyND(src, dst, queue_idx);
-
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.end();
-      timer.print("Local Recomposition",
-                  hierarchy->total_num_elems() * sizeof(T));
-      timer.clear();
-    }
   }
 
   std::vector<SIZE> coarse_shape;

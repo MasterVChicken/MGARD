@@ -18,9 +18,6 @@ namespace mgard_x {
 
 namespace data_refactoring {
 
-// TODO: double-check if we have correctly process boundary case
-// TODO: In automatic parameter selection make sure L and M are non-negative
-
 template <DIM D, typename T, typename DeviceType>
 class HybridHierarchyDataRefactor
     : public HybridHierarchyDataRefactorInterface<D, T, DeviceType> {
@@ -60,11 +57,12 @@ class HybridHierarchyDataRefactor
         global_config.max_larget_level = this->M;
         this->global_hierarchy =
             Hierarchy<D, T, DeviceType>(global_hierarchy_shape, global_config);
-        global_refactor.Adapt(global_hierarchy, global_config, queue_idx);
+        global_refactor.Adapt(this->global_hierarchy, global_config, queue_idx);
       } else {
         // Without local, global directly adapt to original shape
         Config global_config;
         global_config.max_larget_level = this->M;
+
         this->global_hierarchy = Hierarchy<D, T, DeviceType>(
             hierarchy.level_shape(hierarchy.l_target()), global_config);
         global_refactor.Adapt(global_hierarchy, global_config, queue_idx);
@@ -93,9 +91,7 @@ class HybridHierarchyDataRefactor
         size += DataRefactor<D, T, DeviceType>::EstimateMemoryFootprint(
             coarest_shape);
       }
-    }
-
-    if (M > 0) {
+    } else {
       size += DataRefactor<D, T, DeviceType>::EstimateMemoryFootprint(shape);
     }
     return size;
@@ -109,6 +105,7 @@ class HybridHierarchyDataRefactor
     return hierarchy->total_num_elems();
   }
 
+  // Need revise further to exclude copy time
   void Decompose(SubArray<D, T, DeviceType> data,
                  SubArray<1, T, DeviceType> decomposed_data, int queue_idx) {
     if (this->L == 0 && this->M == 0) {
@@ -150,6 +147,7 @@ class HybridHierarchyDataRefactor
     }
   }
 
+  // Need revise further to exclude copy time
   void Recompose(SubArray<D, T, DeviceType> data,
                  SubArray<1, T, DeviceType> decomposed_data, int queue_idx) {
     if (this->L == 0 && this->M == 0) {

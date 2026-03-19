@@ -15,8 +15,6 @@
 
 namespace mgard_x {
 
-// TODO: double-check if we have correctly process boundary case
-
 #define MGARDX_QUANTIZE 1
 #define MGARDX_DEQUANTIZE 2
 
@@ -35,16 +33,10 @@ class HybridHierarchyQuantizer
         config(config) {
     this->L = config.num_local_refactoring_level;
     this->M = config.num_global_refactoring_level;
-    this->initial_block_tolerances = config.roi_tolerance_map;
 
     if (this->L == 0 && this->M == 0) {
       log::err("Both L and M cannot be zero");
       exit(-1);
-    }
-
-    if (this->L > 0) {
-      ComputeLocalShapes();
-      SetBlockTolerances(this->initial_block_tolerances);
     }
   }
 
@@ -63,12 +55,13 @@ class HybridHierarchyQuantizer
       exit(-1);
     }
 
-    this->initial_block_tolerances = config.roi_tolerance_map;
-
     if (this->L > 0) {
       local_quantizer.Adapt(hierarchy, config, queue_idx);
-      ComputeLocalShapes();
-      SetBlockTolerances(this->initial_block_tolerances);
+      if (config.enable_roi) {
+        this->initial_block_tolerances = config.roi_tolerance_map;
+        ComputeLocalShapes();
+        SetBlockTolerances(this->initial_block_tolerances);
+      }
     }
 
     if (this->M > 0) {
@@ -86,27 +79,17 @@ class HybridHierarchyQuantizer
     BuildROIToleranceMap(initial_block_tolerances);
   }
 
-  // Return the error budget for global quantization
+  // Called only when this->M > 0
   T ErrorBudgetAllocation(T tol) {
-    if (this->L == 0) {
-      // Pure Global: directly find global min from input ROI table
-      if (!initial_block_tolerances.empty()) {
-        T min_tol = std::numeric_limits<T>::max();
-        for (const auto& t : initial_block_tolerances) {
-          min_tol = std::min(min_tol, static_cast<T>(t));
-        }
-        return min_tol;
-      }
-      // If no ROI table provided, use original tolerance
-      return tol;
-    }
+    T global_tol = tol;
 
-    if (!roi_tolerance_map.empty()) {
-      return GetMinToleranceForGlobal();
+    if (this->L > 0) {
+      if (this->config.enable_roi) {
+        global_tol = GetMinToleranceForGlobal();
+      } 
+      global_tol = global_tol / (1 << this->L); 
     }
-
-    // Default: return original tolerance
-    return tol;
+    return global_tol;
   }
 
   void Quantize(SubArray<D, T, DeviceType> original_data,
@@ -117,7 +100,6 @@ class HybridHierarchyQuantizer
                   enum error_bound_type ebtype, T tol, T s, T norm,
                   SubArray<D, Q, DeviceType> quantized_data, int queue_idx) {}
 
-  // Support ROI with tolerance map in member variable
   template <typename LosslessCompressorType>
   void Quantize(SubArray<1, T, DeviceType> original_data,
                 enum error_bound_type ebtype, T tol, T s, T norm,
@@ -129,19 +111,24 @@ class HybridHierarchyQuantizer
     }
 
     SIZE global_q_size = 0;
-    if (this->M > 0) {
-      global_q_size = global_hierarchy->total_num_elems();
-    }
 
     // Global quantization
     if (this->M > 0) {
+      global_q_size = global_hierarchy->total_num_elems();
       T global_tol = ErrorBudgetAllocation(tol);
+
       std::vector<SIZE> global_shape =
           global_hierarchy->level_shape(global_hierarchy->l_target());
       SubArray<D, T, DeviceType> global_data_v(global_shape,
                                                original_data.data());
       SubArray<D, Q, DeviceType> global_data_q(global_shape,
                                                quantized_data.data());
+      for (DIM d = 0; d < D; d++) {
+        global_data_v.setLd(d, global_shape[d]);
+        global_data_q.setLd(d, global_shape[d]);
+      }
+      global_data_v.project(0, 1, 2);
+      global_data_q.project(0, 1, 2);
       global_quantizer.Quantize(global_data_v, ebtype, global_tol, s, norm,
                                 global_data_q, lossless, queue_idx);
     }
@@ -149,21 +136,24 @@ class HybridHierarchyQuantizer
     // Local quantization
     if (this->L > 0) {
       SIZE local_length = original_data.shape(0) - global_q_size;
-      // log::info("Global q size: " + std::to_string(global_q_size));
-      // log::info("Local length: " + std::to_string(local_length));
 
       SubArray<1, T, DeviceType> local_data_v({local_length},
                                               original_data(global_q_size));
       SubArray<1, Q, DeviceType> local_data_q({local_length},
                                               quantized_data(global_q_size));
-      // For local quantizer, we take a calculated tolerance map
-      local_quantizer.Quantize(local_data_v, ebtype, 0.0, s, norm, local_data_q,
-                               roi_tolerance_map, level_offsets,
-                               level_block_counts, lossless, queue_idx);
+
+      // Switch between ROI and Non-ROI
+      if (config.enable_roi) {
+        local_quantizer.Quantize(local_data_v, ebtype, 0.0, s, norm,
+                                 local_data_q, roi_tolerance_map, level_offsets,
+                                 level_block_counts, lossless, queue_idx);
+      } else {
+        local_quantizer.Quantize(local_data_v, ebtype, tol, s, norm,
+                                 local_data_q, lossless, queue_idx);
+      }
     }
   }
 
-  // Support ROI with tolerance map in member variable
   template <typename LosslessCompressorType>
   void Dequantize(SubArray<1, T, DeviceType> original_data,
                   enum error_bound_type ebtype, T tol, T s, T norm,
@@ -177,17 +167,25 @@ class HybridHierarchyQuantizer
     SIZE global_q_size = 0;
     if (this->M > 0) {
       global_q_size = global_hierarchy->total_num_elems();
+      log::info("Total Elems: " + std::to_string(global_q_size));
     }
 
     // Global dequantization
     if (this->M > 0) {
       T global_tol = ErrorBudgetAllocation(tol);
+
       std::vector<SIZE> global_shape =
           global_hierarchy->level_shape(global_hierarchy->l_target());
       SubArray<D, T, DeviceType> global_data_v(global_shape,
                                                original_data.data());
       SubArray<D, Q, DeviceType> global_data_q(global_shape,
                                                quantized_data.data());
+      for (DIM d = 0; d < D; d++) {
+        global_data_v.setLd(d, global_shape[d]);
+        global_data_q.setLd(d, global_shape[d]);
+      }
+      global_data_v.project(0, 1, 2);
+      global_data_q.project(0, 1, 2);
       global_quantizer.Dequantize(global_data_v, ebtype, global_tol, s, norm,
                                   global_data_q, lossless, queue_idx);
     }
@@ -199,10 +197,15 @@ class HybridHierarchyQuantizer
                                               original_data(global_q_size));
       SubArray<1, Q, DeviceType> local_data_q({local_length},
                                               quantized_data(global_q_size));
-      // For local quantizer, we take a calculated tolerance map
-      local_quantizer.Dequantize(local_data_v, ebtype, 0.0, s, norm,
-                                 local_data_q, roi_tolerance_map, level_offsets,
-                                 level_block_counts, lossless, queue_idx);
+      // Switch between ROI and Non-ROI
+      if (config.enable_roi) {
+        local_quantizer.Dequantize(
+            local_data_v, ebtype, 0.0, s, norm, local_data_q, roi_tolerance_map,
+            level_offsets, level_block_counts, lossless, queue_idx);
+      } else {
+        local_quantizer.Dequantize(local_data_v, ebtype, tol, s, norm,
+                                   local_data_q, lossless, queue_idx);
+      }
     }
   }
 
@@ -432,7 +435,7 @@ class HybridHierarchyQuantizer
 
   // Get minimum tolerance for global quantization
   T GetMinToleranceForGlobal() {
-    if (roi_tolerance_map.empty() || level_offsets.empty()) {
+    if (!this->config.enable_roi) {
       return std::numeric_limits<double>::max();
     }
 
