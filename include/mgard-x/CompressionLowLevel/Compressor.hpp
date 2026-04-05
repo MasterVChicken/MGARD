@@ -198,7 +198,8 @@ void Compressor<D, T, DeviceType>::Compress(
 
   DeviceRuntime<DeviceType>::SelectDevice(config.dev_id);
   log::info("Select device: " + DeviceRuntime<DeviceType>::GetDeviceName());
-  Timer timer_total;
+  // Timer timer_total;
+  Timer timer_compress_kernel;
   for (int d = D - 1; d >= 0; d--) {
     if (hierarchy->level_shape(hierarchy->l_target(), d) !=
         original_data.shape(d)) {
@@ -208,32 +209,45 @@ void Compressor<D, T, DeviceType>::Compress(
     }
   }
 
-  if (log::level & log::TIME) {
-    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-    timer_total.start();
-  }
+  // if (log::level & log::TIME) {
+  //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+  //   timer_total.start();
+  // }
 
   CalculateNorm(original_data, ebtype, s, norm, queue_idx);
+
+  if (log::level & log::TIME) {
+    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    timer_compress_kernel.start();
+  }
+
   Decompose(original_data, queue_idx);
   Quantize(original_data, ebtype, tol, s, norm, queue_idx);
   LosslessCompress(compressed_data, queue_idx);
+  if (log::level & log::TIME) {
+    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    timer_compress_kernel.end();
+    timer_compress_kernel.print("Compression Kernel");
+    timer_compress_kernel.clear();
+  }
+
   Serialize(compressed_data, queue_idx);
   if (config.compress_with_dryrun) {
     Dequantize(original_data, ebtype, tol, s, norm, queue_idx);
     Recompose(original_data, queue_idx);
   }
 
-  if (log::level & log::TIME) {
-    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-    timer_total.end();
-    timer_total.print("Low-level compression");
-    log::time(
-        "Low-level compression throughput: " +
-        std::to_string((double)(hierarchy->total_num_elems() * sizeof(T)) /
-                       timer_total.get() / 1e9) +
-        " GB/s");
-    timer_total.clear();
-  }
+  // if (log::level & log::TIME) {
+  //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+  //   timer_total.end();
+  //   timer_total.print("Low-level compression");
+  //   log::time(
+  //       "Low-level compression throughput: " +
+  //       std::to_string((double)(hierarchy->total_num_elems() * sizeof(T)) /
+  //                      timer_total.get() / 1e9) +
+  //       " GB/s");
+  //   timer_total.clear();
+  // }
 }
 
 template <DIM D, typename T, typename DeviceType>
