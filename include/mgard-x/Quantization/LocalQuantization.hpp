@@ -282,11 +282,11 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     CalcQuantizers(hierarchy->total_num_elems(), host_quantizers, ebtype, tol,
                    s, norm, this->L, config.decomposition, true);
 
-    Timer timer;
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.start();
-    }
+    // Timer timer;
+    // if (log::level & log::TIME) {
+    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    //   timer.start();
+    // }
 
     SIZE start_level = (this->M > 0) ? 1 : 0;
     SIZE offset_adjustment = (this->M > 0) ? layer_off[1] : 0;
@@ -305,13 +305,13 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
           queue_idx);
     }
 
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.end();
-      timer.print("Local Quantization",
-                  hierarchy->total_num_elems() * sizeof(T));
-      timer.clear();
-    }
+    // if (log::level & log::TIME) {
+    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    //   timer.end();
+    //   timer.print("Local Quantization",
+    //               hierarchy->total_num_elems() * sizeof(T));
+    //   timer.clear();
+    // }
 
     delete[] host_quantizers;
   }
@@ -326,11 +326,11 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     CalcQuantizers(hierarchy->total_num_elems(), host_quantizers, ebtype, tol,
                    s, norm, this->L, config.decomposition, false);
 
-    Timer timer;
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.start();
-    }
+    // Timer timer;
+    // if (log::level & log::TIME) {
+    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    //   timer.start();
+    // }
 
     SIZE start_level = (this->M > 0) ? 1 : 0;
     SIZE offset_adjustment = (this->M > 0) ? layer_off[1] : 0;
@@ -349,13 +349,13 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
           queue_idx);
     }
 
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.end();
-      timer.print("Local Dequantization",
-                  hierarchy->total_num_elems() * sizeof(T));
-      timer.clear();
-    }
+    // if (log::level & log::TIME) {
+    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    //   timer.end();
+    //   timer.print("Local Dequantization",
+    //               hierarchy->total_num_elems() * sizeof(T));
+    //   timer.clear();
+    // }
 
     delete[] host_quantizers;
   }
@@ -393,9 +393,14 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
       std::vector<T> host_quantizers(num_blocks);
       for (SIZE b = 0; b < num_blocks; ++b) {
         double block_tol = roi_tolerance_map[level_offset + b];
+        if (ebtype == error_bound_type::REL) {
+          block_tol *= norm;
+        }
         block_tol *= 2;
 
-        T block_quantizer = block_tol / (std::pow(2, l + 1) * C);
+        // l=0 is finest coefficients (laid out at the end of the data array),
+        // which maps to non-ROI layer L. The correct exponent is (L - l + 1).
+        T block_quantizer = block_tol / (std::pow(2, this->L - l + 1) * C);
 
         // reciprocal for quantization
         host_quantizers[b] = 1.0 / block_quantizer;
@@ -461,11 +466,16 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
       std::vector<T> host_quantizers(num_blocks);
       for (SIZE b = 0; b < num_blocks; ++b) {
         double block_tol = roi_tolerance_map[level_offset + b];
+        if (ebtype == error_bound_type::REL) {
+          block_tol *= norm;
+        }
         block_tol *= 2;
 
-        T block_quantizer = block_tol / (std::pow(2, l + 1) * C);
+        // l=0 is finest coefficients (laid out at the end of the data array),
+        // which maps to non-ROI layer L. The correct exponent is (L - l + 1).
+        T block_quantizer = block_tol / (std::pow(2, this->L - l + 1) * C);
 
-        // no reciprocal for quantization
+        // no reciprocal for dequantization
         host_quantizers[b] = block_quantizer;
       }
 

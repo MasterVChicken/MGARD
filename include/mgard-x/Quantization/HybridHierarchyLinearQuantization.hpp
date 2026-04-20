@@ -167,7 +167,7 @@ class HybridHierarchyQuantizer
     SIZE global_q_size = 0;
     if (this->M > 0) {
       global_q_size = global_hierarchy->total_num_elems();
-      log::info("Total Elems: " + std::to_string(global_q_size));
+      // log::info("Total Elems: " + std::to_string(global_q_size));
     }
 
     // Global dequantization

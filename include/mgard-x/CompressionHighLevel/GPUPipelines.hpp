@@ -313,6 +313,7 @@ enum compress_status_type decompress_pipeline_gpu(
   }
 
   Timer timer_profile;
+  Timer timer_decompress_kernel;
   std::vector<float> h2d, d2h, comp;
   std::vector<SIZE> size;
   bool profile = false;
@@ -445,12 +446,23 @@ enum compress_status_type decompress_pipeline_gpu(
     if (CR > 1.0) {
       compressor.Deserialize(device_compressed_buffer[current_buffer], current_queue);
 
+      if (log::level & log::TIME) {
+        DeviceRuntime<DeviceType>::SyncDevice();
+        timer_decompress_kernel.clear();
+        timer_decompress_kernel.start();
+      }
       compressor.LosslessDecompress(device_compressed_buffer[current_buffer],
                                     current_queue);
       compressor.Dequantize(device_subdomain_buffer[current_buffer],
                             local_ebtype, local_tol, s, norm, current_queue);
       compressor.Recompose(device_subdomain_buffer[current_buffer],
                            current_queue);
+      if (log::level & log::TIME) {
+        DeviceRuntime<DeviceType>::SyncQueue(0);
+        timer_decompress_kernel.end();
+        timer_decompress_kernel.print("Decompression Kernel");
+        timer_decompress_kernel.clear();
+      }
     } else {
       log::info("Skipping decompression as original data was saved instead");
       // Print info here

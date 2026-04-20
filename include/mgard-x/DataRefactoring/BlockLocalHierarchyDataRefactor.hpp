@@ -103,12 +103,12 @@ class BlockLocalHierarchyDataRefactor {
     multi_dimension::CopyND(data, fine, queue_idx);
     SubArray<1, T, DeviceType> decomposed_coeff(w_array);
 
-    // Exclude copy time
-    Timer timer;
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.start();
-    }
+    // // Exclude copy time
+    // Timer timer;
+    // if (log::level & log::TIME) {
+    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    //   timer.start();
+    // }
 
     // Will be reused between decompose and recompose
     accumulated_local_coeff_size = 0;
@@ -141,14 +141,14 @@ class BlockLocalHierarchyDataRefactor {
       }
     }
 
-    // Exclude copy time
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.end();
-      timer.print("Local Decomposition",
-                  hierarchy->total_num_elems() * sizeof(T));
-      timer.clear();
-    }
+    // // Exclude copy time
+    // if (log::level & log::TIME) {
+    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    //   timer.end();
+    //   timer.print("Local Decomposition",
+    //               hierarchy->total_num_elems() * sizeof(T));
+    //   timer.clear();
+    // }
 
     int final_buffer_id = (this->L - 1) % 2;
     SubArray<D, T, DeviceType> coarsest(coarse_shapes[this->L - 1],
@@ -175,11 +175,25 @@ class BlockLocalHierarchyDataRefactor {
 
   void Recompose(SubArray<D, T, DeviceType> data,
                  SubArray<1, T, DeviceType> input_decomposed, int queue_idx) {
-    Timer timer;
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.start();
-    }
+    // Timer timer;
+    // if (log::level & log::TIME) {
+    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    //   timer.start();
+    // }
+
+    // Initialize accumulated_local_coeff_size so that Recompose works correctly
+    // regardless of whether Decompose was called first (e.g., standalone decompress).
+    accumulated_local_coeff_size = DecomposedCoeffSize();
+
+    // Restore temp_coarest from input_decomposed (the first coarse_num_elems[L-1]
+    // elements). This is critical for standalone decompression where Decompose was
+    // never called and temp_coarest was never populated. After global Recompose,
+    // input_decomposed[0..coarse_num_elems[L-1]-1] holds the correctly reconstructed
+    // coarsest values, which we must use here instead of stale/zero temp_coarest.
+    multi_dimension::CopyND(
+        SubArray<1, T, DeviceType>({coarse_num_elems[this->L - 1]},
+                                   input_decomposed.data()),
+        SubArray(temp_coarest), queue_idx);
 
     coarse_buffers[0].memset(0, queue_idx);
     coarse_buffers[1].memset(0, queue_idx);
@@ -220,14 +234,14 @@ class BlockLocalHierarchyDataRefactor {
       accumulated_local_coeff_size -= local_coeff_size[level_idx];
     }
 
-    // Exclude copy time
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.end();
-      timer.print("Local Recomposition",
-                  hierarchy->total_num_elems() * sizeof(T));
-      timer.clear();
-    }
+    // // Exclude copy time
+    // if (log::level & log::TIME) {
+    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    //   timer.end();
+    //   timer.print("Local Recomposition",
+    //               hierarchy->total_num_elems() * sizeof(T));
+    //   timer.clear();
+    // }
 
     // copy back, using ND
     SubArray<D, T, DeviceType> src(

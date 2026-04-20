@@ -295,11 +295,11 @@ public:
     MemoryManager<DeviceType>::Copy1D(quantizers_subarray.data(), quantizers,
                                       hierarchy->l_target() + 1, queue_idx);
 
-    Timer timer;
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.start();
-    }
+    // Timer timer;
+    // if (log::level & log::TIME) {
+    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    //   timer.start();
+    // }
 
     bool calc_vol =
         s != std::numeric_limits<T>::infinity(); // m.ntype == norm_type::L_2;
@@ -311,12 +311,12 @@ public:
             quantized_data),
         queue_idx);
 
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.end();
-      timer.print("Global Quantization", hierarchy->total_num_elems() * sizeof(T));
-      timer.clear();
-    }
+    // if (log::level & log::TIME) {
+    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    //   timer.end();
+    //   timer.print("Global Quantization", hierarchy->total_num_elems() * sizeof(T));
+    //   timer.clear();
+    // }
 
     delete[] quantizers;
   }
@@ -344,11 +344,11 @@ public:
                                       hierarchy->l_target() + 1, queue_idx);
     DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
 
-    Timer timer;
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.start();
-    }
+    // Timer timer;
+    // if (log::level & log::TIME) {
+    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    //   timer.start();
+    // }
 
     bool calc_vol =
         s != std::numeric_limits<T>::infinity(); // m.ntype == norm_type::L_2;
@@ -359,12 +359,12 @@ public:
             original_data, quantized_data),
         queue_idx);
 
-    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-    if (log::level & log::TIME) {
-      timer.end();
-      timer.print("Global Dequantization", hierarchy->total_num_elems() * sizeof(T));
-      timer.clear();
-    }
+    // DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    // if (log::level & log::TIME) {
+    //   timer.end();
+    //   timer.print("Global Dequantization", hierarchy->total_num_elems() * sizeof(T));
+    //   timer.clear();
+    // }
 
     delete[] quantizers;
   }
