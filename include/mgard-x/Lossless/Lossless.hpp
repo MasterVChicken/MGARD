@@ -7,10 +7,12 @@
 
 #include "CPU.hpp"
 #include "Cascaded.hpp"
+#include "DeltaEncoding.hpp"
 #include "LZ4.hpp"
 #include "LosslessCompressorInterface.hpp"
 #include "ParallelHuffman/Huffman.hpp"
 #include "Zstd.hpp"
+#include "DeltaEncoding.hpp"
 
 #ifndef MGARD_X_LOSSLESS_TEMPLATE_HPP
 #define MGARD_X_LOSSLESS_TEMPLATE_HPP
@@ -56,6 +58,12 @@ public:
   }
 
   static size_t EstimateMemoryFootprint(SIZE primary_count, Config config) {
+    if (config.lossless == lossless_type::Delta_Encoding_Fixed)
+      return DeltaEncodingEstimateMemoryFootprintFixed<T>(primary_count);
+    if (config.lossless == lossless_type::Delta_Encoding_Plain)
+      return DeltaEncodingEstimateMemoryFootprintPlain<T>(primary_count);
+    if (config.lossless == lossless_type::Delta_Encoding_Outlier)
+      return DeltaEncodingEstimateMemoryFootprintOutlier<T>(primary_count);
     size_t size = Huffman<Q, S, H, DeviceType>::EstimateMemoryFootprint(
         primary_count, config.huff_dict_size, config.huff_block_size,
         config.estimate_outlier_ratio);
@@ -72,6 +80,18 @@ public:
 
   void Compress(Array<1, T, DeviceType> &original_data,
                 Array<1, Byte, DeviceType> &compressed_data, int queue_idx) {
+    if (config.lossless == lossless_type::Delta_Encoding_Fixed ||
+        config.lossless == lossless_type::Delta_Encoding_Plain ||
+        config.lossless == lossless_type::Delta_Encoding_Outlier) {
+      SubArray<1, T, DeviceType> input_sub(original_data);
+      if (config.lossless == lossless_type::Delta_Encoding_Fixed)
+        compressed_data = DeltaEncodingCompressFixed(input_sub, 0, 387, queue_idx);
+      else if (config.lossless == lossless_type::Delta_Encoding_Plain)
+        compressed_data = DeltaEncodingCompressPlain(input_sub, 0, 387, queue_idx);
+      else
+        compressed_data = DeltaEncodingCompressOutlier(input_sub, 0, 387, queue_idx);
+      return;
+    }
     huffman.Compress(original_data, compressed_data, 0.0, queue_idx);
 
     if (config.lossless == lossless_type::Huffman_LZ4) {
@@ -86,12 +106,20 @@ public:
   }
 
   void Serialize(Array<1, Byte, DeviceType> &compressed_data, int queue_idx) {
+    // Delta encoding is self-contained; no separate serialization needed.
+    if (config.lossless == lossless_type::Delta_Encoding_Fixed ||
+        config.lossless == lossless_type::Delta_Encoding_Plain ||
+        config.lossless == lossless_type::Delta_Encoding_Outlier) return;
     if (config.lossless == lossless_type::Huffman) {
       huffman.Serialize(compressed_data, queue_idx);
     }
   }
 
   void Deserialize(Array<1, Byte, DeviceType> &compressed_data, int queue_idx) {
+    // Delta encoding is self-contained; no separate deserialization needed.
+    if (config.lossless == lossless_type::Delta_Encoding_Fixed ||
+        config.lossless == lossless_type::Delta_Encoding_Plain ||
+        config.lossless == lossless_type::Delta_Encoding_Outlier) return;
     if (config.lossless == lossless_type::Huffman) {
       huffman.Deserialize(compressed_data, queue_idx);
     }
@@ -99,6 +127,14 @@ public:
 
   void Decompress(Array<1, Byte, DeviceType> &compressed_data,
                   Array<1, T, DeviceType> &decompressed_data, int queue_idx) {
+    if (config.lossless == lossless_type::Delta_Encoding_Fixed ||
+        config.lossless == lossless_type::Delta_Encoding_Plain ||
+        config.lossless == lossless_type::Delta_Encoding_Outlier) {
+      SubArray<1, Byte, DeviceType> compressed_sub(compressed_data);
+      decompressed_data =
+          DeltaEncodingDecompress<T, DeviceType>(compressed_sub, queue_idx);
+      return;
+    }
 
     if (config.lossless == lossless_type::Huffman_LZ4) {
       lz4.Decompress(compressed_data, queue_idx);
