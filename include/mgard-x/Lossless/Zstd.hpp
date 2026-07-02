@@ -12,12 +12,12 @@ namespace mgard_x {
 #define CHECK(cond, ...)                                                       \
   do {                                                                         \
     if (!(cond)) {                                                             \
-      char mgard_x_check_msg[256];                                            \
+      char mgard_x_check_msg[256];                                             \
       std::snprintf(mgard_x_check_msg, sizeof(mgard_x_check_msg),              \
                     "CHECK(" #cond ") failed: " __VA_ARGS__);                  \
-      throw mgard_x::ProcessingException(                                      \
-          std::string(__FILE__) + ":" + std::to_string(__LINE__) + " " +      \
-          mgard_x_check_msg);                                                  \
+      throw mgard_x::ProcessingException(std::string(__FILE__) + ":" +         \
+                                         std::to_string(__LINE__) + " " +      \
+                                         mgard_x_check_msg);                   \
     }                                                                          \
   } while (0)
 

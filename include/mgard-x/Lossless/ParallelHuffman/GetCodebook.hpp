@@ -5,12 +5,12 @@
  * Date: March 17, 2022
  */
 
+#include "../../RuntimeX/Utilities/Exceptions.h"
 #include "EntropyCalculator.hpp"
 #include "FillArraySequence.hpp"
 #include "GenerateCL.hpp"
 #include "GenerateCW.hpp"
 #include "GetFirstNonzeroIndex.hpp"
-#include "../../RuntimeX/Utilities/Exceptions.h"
 #include "HuffmanWorkspace.hpp"
 #include "ReorderByIndex.hpp"
 #include "ReverseArray.hpp"

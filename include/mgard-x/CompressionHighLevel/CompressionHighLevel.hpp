@@ -45,11 +45,12 @@
 namespace mgard_x {
 
 template <DIM D, typename T, typename DeviceType, typename CompressorType>
-enum compress_status_type general_compress_pipeline(
-    std::vector<SIZE> shape, T tol, T s, enum error_bound_type ebtype,
-    const void *original_data, void *&compressed_data, size_t &compressed_size,
-    Config config, bool uniform, std::vector<T *> coords,
-    bool output_pre_allocated) {
+enum compress_status_type
+general_compress_pipeline(std::vector<SIZE> shape, T tol, T s,
+                          enum error_bound_type ebtype,
+                          const void *original_data, void *&compressed_data,
+                          size_t &compressed_size, Config config, bool uniform,
+                          std::vector<T *> coords, bool output_pre_allocated) {
 
   DeviceRuntime<DeviceType>::Initialize();
   size_t total_num_elem = 1;
@@ -370,10 +371,11 @@ compress(std::vector<SIZE> shape, T tol, T s, enum error_bound_type ebtype,
 }
 
 template <DIM D, typename T, typename DeviceType, typename CompressorType>
-enum compress_status_type general_decompress_pipeline(
-    std::vector<SIZE> shape, const void *compressed_data,
-    size_t compressed_size, void *&decompressed_data, Config config,
-    bool output_pre_allocated) {
+enum compress_status_type
+general_decompress_pipeline(std::vector<SIZE> shape,
+                            const void *compressed_data, size_t compressed_size,
+                            void *&decompressed_data, Config config,
+                            bool output_pre_allocated) {
   DeviceRuntime<DeviceType>::Initialize();
   size_t total_num_elem = 1;
   for (int i = 0; i < D; i++)
