@@ -10,6 +10,7 @@
 #include "GenerateCL.hpp"
 #include "GenerateCW.hpp"
 #include "GetFirstNonzeroIndex.hpp"
+#include "../../RuntimeX/Utilities/Exceptions.h"
 #include "HuffmanWorkspace.hpp"
 #include "ReorderByIndex.hpp"
 #include "ReverseArray.hpp"
@@ -114,22 +115,16 @@ void GetCodebook(int dict_size, size_t primary_count,
 
   int max_CW_bits = (sizeof(H) * 8) - 8;
   if (max_CL > max_CW_bits) {
-    std::cout << log::log_err << "Cannot store all Huffman codewords in "
-              << max_CW_bits + 8 << "-bit representation" << std::endl;
-    std::cout << log::log_err
-              << "Huffman codeword representation requires at least "
-              << max_CL + 8 << " bits (longest codeword: " << max_CL << " bits)"
-              << std::endl;
     // Throw (instead of exit) so callers can catch and fall back to another
     // lossless backend (e.g. raw Zstd) or retry with a smaller huff_dict_size.
     // A longer dictionary makes the tree deeper, so a degenerate/low-entropy
-    // input can produce codewords exceeding the H-type budget (sizeof(H)*8 -
-    // 8).
-    throw std::runtime_error(
-        "MGARD-X Huffman: longest codeword (" + std::to_string(max_CL) +
-        " bits) exceeds the " + std::to_string(max_CW_bits) +
-        "-bit budget of the H code type; retry with a smaller huff_dict_size "
-        "or a different lossless backend");
+    // input can produce codewords exceeding the H-type budget (sizeof(H)*8 - 8).
+    throw ProcessingException(
+        "Cannot store all Huffman codewords in " +
+        std::to_string(max_CW_bits + 8) +
+        "-bit representation; representation requires at least " +
+        std::to_string(max_CL + 8) +
+        " bits (longest codeword: " + std::to_string(max_CL) + " bits)");
   }
 
   DeviceLauncher<DeviceType>::Execute(
