@@ -1,6 +1,7 @@
 #ifndef _MDR_COMPOSED_RECONSTRUCTOR_HPP
 #define _MDR_COMPOSED_RECONSTRUCTOR_HPP
 
+#include "../../RuntimeX/Utilities/Exceptions.h"
 #include "../BitplaneEncoder/BitplaneEncoder.hpp"
 #include "../Decomposer/Decomposer.hpp"
 #include "../ErrorCollector/ErrorCollector.hpp"
@@ -9,7 +10,6 @@
 #include "../LosslessCompressor/LevelCompressor.hpp"
 #include "../RefactorUtils.hpp"
 #include "../Retriever/Retriever.hpp"
-#include "../../RuntimeX/Utilities/Exceptions.h"
 #include "../SizeInterpreter/SizeInterpreter.hpp"
 #include "ReconstructorInterface.hpp"
 

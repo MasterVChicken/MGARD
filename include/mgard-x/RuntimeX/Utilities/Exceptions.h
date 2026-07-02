@@ -23,9 +23,8 @@ namespace mgard_x {
 //! exception back into the status code returned by `compress()`/`decompress()`.
 class Exception : public std::runtime_error {
 public:
-  explicit Exception(
-      const std::string &msg,
-      compress_status_type status = compress_status_type::Failure)
+  explicit Exception(const std::string &msg, compress_status_type status =
+                                                 compress_status_type::Failure)
       : std::runtime_error(msg), status_(status) {}
 
   //! Status code that the high-level API should return for this exception.
