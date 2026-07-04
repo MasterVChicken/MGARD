@@ -1,0 +1,233 @@
+/*
+ * Copyright 2026, Oak Ridge National Laboratory.
+ * MGARD-X: MultiGrid Adaptive Reduction of Data Portable across GPUs and CPUs
+ * Author: Jieyang Chen (chenj3@ornl.gov)
+ */
+
+#include "catch2/catch_template_test_macros.hpp"
+#include "catch2/catch_test_macros.hpp"
+#include "catch2/generators/catch_generators.hpp"
+
+#include <cmath>
+#include <limits>
+#include <vector>
+
+#include "mgard-x/RuntimeX/RuntimeX.h"
+#include "mgard-x/CompressionLowLevel/HybridHierarchyCompressor.hpp"
+#include "mgard-x/DataRefactoring/BlockLocalHierarchyDataRefactor.hpp"
+#include "mgard-x/DataRefactoring/HybridHierarchyDataRefactor.hpp"
+#include "mgard-x/Utilities/ErrorCalculator.h"
+
+namespace mgard_x {
+
+using TestDevice = @DEVICE_TYPE@;
+
+// Smooth, multi-dimensional test data: a separable product of sines over the
+// normalized grid coordinates (same generator as test_Compressor).
+template <DIM D, typename T>
+void fill_smooth_data(std::vector<T> &data, std::vector<SIZE> shape) {
+  const double pi = std::acos(-1.0);
+  SIZE n = data.size();
+  for (SIZE idx = 0; idx < n; idx++) {
+    SIZE r = idx;
+    double v = 1.0;
+    for (int d = static_cast<int>(D) - 1; d >= 0; d--) {
+      SIZE coord = r % shape[d];
+      r /= shape[d];
+      double x = static_cast<double>(coord) / static_cast<double>(shape[d]);
+      v *= std::sin(2.0 * pi * x + 0.5 * d);
+    }
+    data[idx] = static_cast<T>(v);
+  }
+}
+
+// Decompose -> Recompose with the block-local (in-cache 8x8x8) refactor must
+// be a numerical identity: no quantization is involved, only the forward and
+// inverse block transforms. Shapes must be multiples of 8 per level (the
+// hybrid compressor pads to this internally).
+template <typename T, typename DevType>
+void run_block_local_roundtrip(std::vector<SIZE> shape, int num_local_levels) {
+  constexpr DIM D = 3;
+  SIZE n = 1;
+  for (auto s : shape)
+    n *= s;
+
+  std::vector<T> original(n);
+  fill_smooth_data<D, T>(original, shape);
+
+  Config config;
+  config.num_local_refactoring_level = num_local_levels;
+  Hierarchy<D, T, DevType> hierarchy(shape, config);
+
+  data_refactoring::BlockLocalHierarchyDataRefactor<D, T, DevType> refactor;
+  refactor.Adapt(hierarchy, config, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  Array<D, T, DevType> data(shape);
+  data.load(original.data());
+  Array<1, T, DevType> decomposed({(SIZE)refactor.DecomposedDataSize()});
+
+  refactor.Decompose(SubArray(data), SubArray(decomposed), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  // Recompose into a fresh output array so reconstruction can only come from
+  // the decomposed representation.
+  Array<D, T, DevType> reconstructed(shape);
+  reconstructed.memset(0, 0);
+  refactor.Recompose(SubArray(reconstructed), SubArray(decomposed), 0);
+
+  T *result = reconstructed.hostCopy(false, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  const double tolerance = std::is_same<T, double>::value ? 1e-10 : 1e-3;
+  double error =
+      L_inf_error(n, original.data(), result, error_bound_type::REL);
+  REQUIRE(error < tolerance);
+}
+
+// Decompose -> Recompose with the hybrid refactor (block-local levels chained
+// into the standard global decomposition) must also be a numerical identity.
+template <typename T, typename DevType>
+void run_hybrid_refactor_roundtrip(std::vector<SIZE> shape,
+                                   int num_local_levels,
+                                   int num_global_levels) {
+  constexpr DIM D = 3;
+  SIZE n = 1;
+  for (auto s : shape)
+    n *= s;
+
+  std::vector<T> original(n);
+  fill_smooth_data<D, T>(original, shape);
+
+  Config config;
+  config.num_local_refactoring_level = num_local_levels;
+  config.num_global_refactoring_level = num_global_levels;
+  Hierarchy<D, T, DevType> hierarchy(shape, config);
+
+  data_refactoring::HybridHierarchyDataRefactor<D, T, DevType> refactor;
+  refactor.Adapt(hierarchy, config, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  Array<D, T, DevType> data(shape);
+  data.load(original.data());
+  Array<1, T, DevType> decomposed({(SIZE)refactor.DecomposedDataSize()});
+
+  refactor.Decompose(SubArray(data), SubArray(decomposed), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  Array<D, T, DevType> reconstructed(shape);
+  reconstructed.memset(0, 0);
+  refactor.Recompose(SubArray(reconstructed), SubArray(decomposed), 0);
+
+  T *result = reconstructed.hostCopy(false, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  const double tolerance = std::is_same<T, double>::value ? 1e-10 : 1e-3;
+  double error =
+      L_inf_error(n, original.data(), result, error_bound_type::REL);
+  REQUIRE(error < tolerance);
+}
+
+// Full hybrid compress -> decompress round trip through serialized bytes.
+// The hybrid quantizer only supports the L-infinity norm (s == inf), so the
+// error check is L_inf against the requested tolerance.
+template <typename T, typename DevType>
+void run_hybrid_compressor_test(std::vector<SIZE> shape, int num_local_levels,
+                                int num_global_levels,
+                                enum error_bound_type ebtype, T tol) {
+  constexpr DIM D = 3;
+  SIZE n = 1;
+  for (auto sz : shape)
+    n *= sz;
+
+  std::vector<T> original(n);
+  fill_smooth_data<D, T>(original, shape);
+
+  Config config;
+  config.decomposition = decomposition_type::Hybrid;
+  config.num_local_refactoring_level = num_local_levels;
+  config.num_global_refactoring_level = num_global_levels;
+
+  const T s = std::numeric_limits<T>::infinity();
+
+  // Separate compressor and decompressor objects so the round trip only
+  // communicates through the serialized bytes (and the norm, as it would be
+  // carried in metadata in real usage).
+  Hierarchy<D, T, DevType> hierarchy(shape, config);
+  HybridHierarchyCompressor<D, T, DevType> compressor;
+  compressor.Adapt(hierarchy, config, 0);
+  HybridHierarchyCompressor<D, T, DevType> decompressor;
+  decompressor.Adapt(hierarchy, config, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  Array<D, T, DevType> original_array(shape);
+  original_array.load(original.data());
+
+  T norm = 0;
+  Array<1, Byte, DevType> compressed_array;
+  compressor.Compress(original_array, ebtype, tol, s, norm, compressed_array,
+                      0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  Array<D, T, DevType> decompressed_array;
+  decompressor.Decompress(compressed_array, ebtype, tol, s, norm,
+                          decompressed_array, 0);
+  T *result = decompressed_array.hostCopy(false, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  double actual_error =
+      L_inf_error(n, original.data(), result, ebtype);
+  CAPTURE(actual_error);
+  REQUIRE(actual_error < static_cast<double>(tol));
+}
+
+TEMPLATE_TEST_CASE("Block-Local (In-Cache 8x8x8) Decomposition 3D",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("one level, cubic") {
+    run_block_local_roundtrip<TestType, TestDevice>({64, 64, 64}, 1);
+  }
+  SECTION("one level, non-cubic") {
+    run_block_local_roundtrip<TestType, TestDevice>({40, 64, 56}, 1);
+  }
+  SECTION("two levels") {
+    run_block_local_roundtrip<TestType, TestDevice>({64, 64, 64}, 2);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid Hierarchy Decomposition 3D",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("pure local (L=1, M=0)") {
+    run_hybrid_refactor_roundtrip<TestType, TestDevice>({64, 64, 64}, 1, 0);
+  }
+  SECTION("pure local (L=2, M=0)") {
+    run_hybrid_refactor_roundtrip<TestType, TestDevice>({64, 64, 64}, 2, 0);
+  }
+  SECTION("pure global (L=0, M=2)") {
+    run_hybrid_refactor_roundtrip<TestType, TestDevice>({64, 64, 64}, 0, 2);
+  }
+  SECTION("hybrid (L=1, M=2)") {
+    run_hybrid_refactor_roundtrip<TestType, TestDevice>({64, 64, 64}, 1, 2);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid Hierarchy Compressor 3D",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  enum error_bound_type ebtype =
+      GENERATE(error_bound_type::REL, error_bound_type::ABS);
+  TestType tol = GENERATE(static_cast<TestType>(1e-2),
+                          static_cast<TestType>(1e-3));
+  CAPTURE(static_cast<int>(ebtype), tol);
+  SECTION("pure local (L=1, M=0)") {
+    run_hybrid_compressor_test<TestType, TestDevice>({64, 64, 64}, 1, 0,
+                                                     ebtype, tol);
+  }
+  SECTION("hybrid (L=1, M=2)") {
+    run_hybrid_compressor_test<TestType, TestDevice>({64, 64, 64}, 1, 2,
+                                                     ebtype, tol);
+  }
+}
+
+} // namespace mgard_x

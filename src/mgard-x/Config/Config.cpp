@@ -58,6 +58,8 @@ Config::Config() {
   adjust_shape = false;
   compress_with_dryrun = false;
   num_local_refactoring_level = 1;
+  num_global_refactoring_level = 0;
+  enable_roi = false;
   auto_cache_release = false;
   cpu_mode = cpu_parallelization_mode::INTER_BLOCK;
   mdr_qoi_mode = false;

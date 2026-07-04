@@ -5,9 +5,10 @@
  * Date: March 17, 2022
  */
 
+#include <iostream>
+
 #include "../../Hierarchy/Hierarchy.h"
 #include "../../RuntimeX/RuntimeX.h"
-
 #include "Autocorrelation8x8x8.hpp"
 #include "DataRefactoring.h"
 #include "Decompose8x8x8.hpp"
@@ -55,19 +56,16 @@ void decompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
 template <DIM D, typename T, typename DeviceType>
 void recompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
                SubArray<1, T, DeviceType> coeff, int queue_idx) {
-
   if constexpr (D <= 3) {
-    std::cout << "recompose start\n";
     DeviceLauncher<DeviceType>::Execute(
         Recompose8x8x8Kernel<D, T, DeviceType>(v, coarse, coeff), queue_idx);
-    std::cout << "recompose end\n";
   }
 }
 
-} // namespace in_cache_block
+}  // namespace in_cache_block
 
-} // namespace data_refactoring
+}  // namespace data_refactoring
 
-} // namespace mgard_x
+}  // namespace mgard_x
 
 #endif

@@ -128,6 +128,7 @@ namespace mgard_x {
 
 void MetadataBase::InitializeConfig(Config &config) {
   config.domain_decomposition = ddtype;
+  config.domain_decomposition_dim = domain_decomposed_dim;
   config.decomposition = decomposition;
   config.lossless = ltype;
   // Only overwrite a backend's parameters when the metadata actually carries

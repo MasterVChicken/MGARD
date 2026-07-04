@@ -430,23 +430,6 @@ public:
     // if (tid < 125) {
     //   sm_v[tid] = coarse + correction;
     // }
-
-#ifdef MGARDX_COMPILE_CUDA
-    __syncthreads();
-    if (bid == 0 && tid == 0) {
-      for (int i = 0; i < 8; i++) {
-        printf("sm[i = %d]\n", i);
-        for (int j = 0; j < 8; j++) {
-          for (int k = 0; k < 8; k++) {
-            printf("%10.2f ", sm_v[get_idx(8, 8, i, j, k)]);
-          }
-          printf("\n");
-        }
-        printf("\n");
-      }
-    }
-    __syncthreads();
-#endif
   }
 
   MGARDX_CONT size_t shared_memory_size() {
