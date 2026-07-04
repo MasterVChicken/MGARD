@@ -19,6 +19,7 @@
 #include <string>
 #include <utility> // std::pair
 #include <vector>
+#include <stdint.h>
 
 // #include "MemoryManagement.h"
 

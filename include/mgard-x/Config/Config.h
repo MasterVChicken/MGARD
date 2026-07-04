@@ -36,10 +36,13 @@ struct Config {
   bool adjust_shape;
   bool compress_with_dryrun;
   int num_local_refactoring_level;
+  int num_global_refactoring_level;
   bool auto_cache_release;
   cpu_parallelization_mode cpu_mode;
   bool mdr_qoi_mode;
   int mdr_qoi_num_variables;
+  std::vector<double> roi_tolerance_map;
+  bool enable_roi;
 
   Config();
   void apply();
