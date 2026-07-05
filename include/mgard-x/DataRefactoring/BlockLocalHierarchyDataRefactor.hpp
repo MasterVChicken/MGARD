@@ -99,6 +99,21 @@ class BlockLocalHierarchyDataRefactor {
                  SubArray<1, T, DeviceType> output_decomposed, int queue_idx) {
     SubArray<D, T, DeviceType> fine(coarse_buffers[1]);
     SubArray<D, T, DeviceType> coarse;
+    // Zero the level-0 fine buffer when the input needs padding up to the
+    // next multiple of 8: CopyND below only writes the original extent, and
+    // 8x8x8 blocks straddling the boundary would otherwise mix uninitialized
+    // values into their coefficients. Deeper levels are unaffected (their
+    // fine buffer is a coarse buffer that is fully memset before use).
+    bool needs_padding = false;
+    for (DIM d = 0; d < D; d++) {
+      if (data.shape(d) != fine_shapes[0][d]) {
+        needs_padding = true;
+        break;
+      }
+    }
+    if (needs_padding) {
+      coarse_buffers[1].memset(0, queue_idx);
+    }
     // CopyND follows the shape of 1st param
     multi_dimension::CopyND(data, fine, queue_idx);
     SubArray<1, T, DeviceType> decomposed_coeff(w_array);
