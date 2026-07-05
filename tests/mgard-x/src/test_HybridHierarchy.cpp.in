@@ -190,8 +190,17 @@ TEMPLATE_TEST_CASE("Block-Local (In-Cache 8x8x8) Decomposition 3D",
   SECTION("one level, non-cubic") {
     run_block_local_roundtrip<TestType, TestDevice>({40, 64, 56}, 1);
   }
+  SECTION("one level, padded (non-multiple-of-8)") {
+    run_block_local_roundtrip<TestType, TestDevice>({60, 60, 60}, 1);
+  }
+  SECTION("one level, padded non-cubic") {
+    run_block_local_roundtrip<TestType, TestDevice>({65, 48, 39}, 1);
+  }
   SECTION("two levels") {
     run_block_local_roundtrip<TestType, TestDevice>({64, 64, 64}, 2);
+  }
+  SECTION("two levels, padded") {
+    run_block_local_roundtrip<TestType, TestDevice>({60, 60, 60}, 2);
   }
 }
 
@@ -210,6 +219,9 @@ TEMPLATE_TEST_CASE("Hybrid Hierarchy Decomposition 3D",
   SECTION("hybrid (L=1, M=2)") {
     run_hybrid_refactor_roundtrip<TestType, TestDevice>({64, 64, 64}, 1, 2);
   }
+  SECTION("hybrid, padded (L=1, M=2)") {
+    run_hybrid_refactor_roundtrip<TestType, TestDevice>({60, 60, 60}, 1, 2);
+  }
 }
 
 TEMPLATE_TEST_CASE("Hybrid Hierarchy Compressor 3D",
@@ -226,6 +238,10 @@ TEMPLATE_TEST_CASE("Hybrid Hierarchy Compressor 3D",
   }
   SECTION("hybrid (L=1, M=2)") {
     run_hybrid_compressor_test<TestType, TestDevice>({64, 64, 64}, 1, 2,
+                                                     ebtype, tol);
+  }
+  SECTION("padded (L=1, M=0)") {
+    run_hybrid_compressor_test<TestType, TestDevice>({60, 60, 60}, 1, 0,
                                                      ebtype, tol);
   }
 }
