@@ -318,11 +318,11 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
                         config.lossless != lossless_type::LZ4;
     SIZE huff_dict_size = config.huff_dict_size;
 
-    // Timer timer;
-    // if (log::level & log::TIME) {
-    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-    //   timer.start();
-    // }
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
 
     SIZE start_level = (this->M > 0) ? 1 : 0;
     SIZE offset_adjustment = (this->M > 0) ? layer_off[1] : 0;
@@ -341,13 +341,13 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
           queue_idx);
     }
 
-    // if (log::level & log::TIME) {
-    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-    //   timer.end();
-    //   timer.print("Local Quantization",
-    //               hierarchy->total_num_elems() * sizeof(T));
-    //   timer.clear();
-    // }
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Local Quantization",
+                  hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
+    }
 
     delete[] host_quantizers;
   }
@@ -366,11 +366,11 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
                         config.lossless != lossless_type::LZ4;
     SIZE huff_dict_size = config.huff_dict_size;
 
-    // Timer timer;
-    // if (log::level & log::TIME) {
-    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-    //   timer.start();
-    // }
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
 
     SIZE start_level = (this->M > 0) ? 1 : 0;
     SIZE offset_adjustment = (this->M > 0) ? layer_off[1] : 0;
@@ -389,13 +389,13 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
           queue_idx);
     }
 
-    // if (log::level & log::TIME) {
-    //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-    //   timer.end();
-    //   timer.print("Local Dequantization",
-    //               hierarchy->total_num_elems() * sizeof(T));
-    //   timer.clear();
-    // }
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Local Dequantization",
+                  hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
+    }
 
     delete[] host_quantizers;
   }

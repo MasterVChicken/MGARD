@@ -266,7 +266,10 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Compress(
     }
   }
 
-  // if (log::level & log::TIME) timer_total.start();
+  if (log::level & log::TIME) {
+    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    timer_total.start();
+  }
 
   CalculateNorm(original_data, ebtype, s, norm, queue_idx);
   // log::info(std::to_string(original_data.totalNumElems()));
@@ -308,17 +311,13 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Compress(
     // PrintSubarray("Original data after recompose", SubArray(original_data));
   }
 
-  // if (log::level & log::TIME) {
-  //   DeviceRuntime<DeviceType>::SyncQueue(0);
-  //   timer_total.end();
-  //   timer_total.print("Low-level compression");
-  //   log::time(
-  //       "Low-level compression throughput: " +
-  //       std::to_string((double)(hierarchy->total_num_elems() * sizeof(T)) /
-  //                      timer_total.get() / 1e9) +
-  //       " GB/s");
-  //   timer_total.clear();
-  // }
+  if (log::level & log::TIME) {
+    DeviceRuntime<DeviceType>::SyncQueue(0);
+    timer_total.end();
+    timer_total.print("Low-level compression",
+                      hierarchy->total_num_elems() * sizeof(T));
+    timer_total.clear();
+  }
 }
 
 template <DIM D, typename T, typename DeviceType>
@@ -345,12 +344,8 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Decompress(
   if (log::level & log::TIME) {
     DeviceRuntime<DeviceType>::SyncQueue(0);
     timer_total.end();
-    timer_total.print("Low-level decompression");
-    log::time(
-        "Low-level decompression throughput: " +
-        std::to_string((double)(hierarchy->total_num_elems() * sizeof(T)) /
-                       timer_total.get() / 1e9) +
-        " GB/s");
+    timer_total.print("Low-level decompression",
+                      hierarchy->total_num_elems() * sizeof(T));
     timer_total.clear();
   }
 }
