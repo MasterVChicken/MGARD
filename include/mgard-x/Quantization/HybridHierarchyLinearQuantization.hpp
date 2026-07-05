@@ -109,6 +109,11 @@ class HybridHierarchyQuantizer
       log::err("Both L and M cannot be zero");
       exit(-1);
     }
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
 
     SIZE global_q_size = 0;
 
@@ -152,6 +157,14 @@ class HybridHierarchyQuantizer
                                  local_data_q, lossless, queue_idx);
       }
     }
+
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Hybrid Quantization",
+                  hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
+    }
   }
 
   template <typename LosslessCompressorType>
@@ -162,6 +175,11 @@ class HybridHierarchyQuantizer
     if (this->L == 0 && this->M == 0) {
       log::err("Both L and M cannot be zero");
       exit(-1);
+    }
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
     }
 
     SIZE global_q_size = 0;
@@ -206,6 +224,14 @@ class HybridHierarchyQuantizer
         local_quantizer.Dequantize(local_data_v, ebtype, tol, s, norm,
                                    local_data_q, lossless, queue_idx);
       }
+    }
+
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Hybrid Dequantization",
+                  hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
     }
   }
 

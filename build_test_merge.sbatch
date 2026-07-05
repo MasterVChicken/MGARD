@@ -54,9 +54,10 @@ if [ ! -f "${install_dir}/lib/libzstd.so" ]; then
   cmake --install ${build_dir}/zstd/build
 fi
 
-# Protobuf (reused if already installed)
+# Protobuf (reused if already installed). Version-suffixed source dir so a
+# stale clone of a different version can never be rebuilt silently.
 if [ ! -f "${install_dir}/lib64/libprotobuf.so" ] && [ ! -f "${install_dir}/lib/libprotobuf.so" ]; then
-  protobuf_src_dir=${build_dir}/protobuf/src
+  protobuf_src_dir=${build_dir}/protobuf/src-v3.21.12
   [ -d "${protobuf_src_dir}" ] || git clone -b v3.21.12 --recurse-submodules https://github.com/protocolbuffers/protobuf.git ${protobuf_src_dir}
   cmake -S ${protobuf_src_dir} -B ${build_dir}/protobuf/build \
       -Dprotobuf_BUILD_SHARED_LIBS=ON -Dprotobuf_BUILD_TESTS=OFF \
@@ -96,3 +97,30 @@ echo "=== BUILD OK ==="
 
 ctest --test-dir ${mgard_build_dir} -R mgard-x --output-on-failure
 echo "=== CTEST EXIT: $? ==="
+
+# Timer smoke test: run the hybrid pipeline through the CLI with timing
+# logging (-v 2) and show the new Hybrid/Local decomposition & quantization
+# timer lines on both the CUDA and SERIAL backends.
+smoke_dir=${mgard_build_dir}/timer-smoke
+mkdir -p ${smoke_dir}
+python3 - <<'PYEOF'
+import struct, math
+n = 64
+with open("build-cuda-hopper/mgard-merge/timer-smoke/sine64.raw", "wb") as f:
+    for i in range(n ** 3):
+        z, y, x = i // (n * n), (i // n) % n, i % n
+        v = (math.sin(2 * math.pi * x / n) * math.sin(2 * math.pi * y / n) *
+             math.sin(2 * math.pi * z / n))
+        f.write(struct.pack("<f", v))
+PYEOF
+for dev in cuda serial; do
+  echo "=== TIMER SMOKE (${dev}) ==="
+  ${mgard_build_dir}/bin/mgard-x -z -i ${smoke_dir}/sine64.raw \
+      -o ${smoke_dir}/sine64.mgard -dt s -dim 3 64 64 64 -em abs -e 1e-3 \
+      -s inf -l huffman -d ${dev} -hh -ll 1 -gl 2 -v 2 2>&1 \
+    | grep -E "Hybrid|Local (De|Re|Quant|Dequant)|Compression Kernel|Low-level" || true
+  ${mgard_build_dir}/bin/mgard-x -x -i ${smoke_dir}/sine64.mgard \
+      -o ${smoke_dir}/sine64.out -d ${dev} -v 2 2>&1 \
+    | grep -E "Hybrid|Local (De|Re|Quant|Dequant)|Decompression Kernel|Low-level" || true
+done
+echo "=== TIMER SMOKE DONE ==="

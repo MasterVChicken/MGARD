@@ -112,6 +112,11 @@ class HybridHierarchyDataRefactor
       log::err("Both L and M cannot be zero");
       exit(-1);
     }
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
     if (this->L == 0) {
       // Pure Global (In-Place)
       std::vector<SIZE> original_shape =
@@ -145,6 +150,14 @@ class HybridHierarchyDataRefactor
       // Global decomposition
       global_refactor.Decompose(global_input_data, true, queue_idx);
     }
+
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Hybrid Decomposition",
+                  hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
+    }
   }
 
   // Need revise further to exclude copy time
@@ -153,6 +166,11 @@ class HybridHierarchyDataRefactor
     if (this->L == 0 && this->M == 0) {
       log::err("Both L and M cannot be zero");
       exit(-1);
+    }
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
     }
     if (this->L == 0) {
       // Pure Global (In-Place)
@@ -187,6 +205,14 @@ class HybridHierarchyDataRefactor
 
       // Local recomposition
       local_refactor.Recompose(data, decomposed_data, queue_idx);
+    }
+
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Hybrid Recomposition",
+                  hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
     }
   }
 
