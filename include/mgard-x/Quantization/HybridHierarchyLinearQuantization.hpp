@@ -35,8 +35,7 @@ class HybridHierarchyQuantizer
     this->M = config.num_global_refactoring_level;
 
     if (this->L == 0 && this->M == 0) {
-      log::err("Both L and M cannot be zero");
-      exit(-1);
+      throw ProcessingException("Both L and M cannot be zero");
     }
   }
 
@@ -51,8 +50,7 @@ class HybridHierarchyQuantizer
     this->M = config.num_global_refactoring_level;
 
     if (this->L == 0 && this->M == 0) {
-      log::err("Both L and M cannot be zero");
-      exit(-1);
+      throw ProcessingException("Both L and M cannot be zero");
     }
 
     if (this->L > 0) {
@@ -106,8 +104,7 @@ class HybridHierarchyQuantizer
                 SubArray<1, Q, DeviceType> quantized_data,
                 LosslessCompressorType& lossless, int queue_idx) {
     if (this->L == 0 && this->M == 0) {
-      log::err("Both L and M cannot be zero");
-      exit(-1);
+      throw ProcessingException("Both L and M cannot be zero");
     }
     Timer timer;
     if (log::level & log::TIME) {
@@ -173,8 +170,7 @@ class HybridHierarchyQuantizer
                   SubArray<1, Q, DeviceType> quantized_data,
                   LosslessCompressorType& lossless, int queue_idx) {
     if (this->L == 0 && this->M == 0) {
-      log::err("Both L and M cannot be zero");
-      exit(-1);
+      throw ProcessingException("Both L and M cannot be zero");
     }
     Timer timer;
     if (log::level & log::TIME) {

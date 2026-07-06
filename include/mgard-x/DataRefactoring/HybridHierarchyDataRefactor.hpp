@@ -8,6 +8,7 @@
 #include "BlockLocalHierarchyDataRefactor.hpp"
 #include "DataRefactor.hpp"
 #include "HybridHierarchyDataRefactorInterface.hpp"
+#include "../RuntimeX/Utilities/Exceptions.h"
 #include "InCacheBlock/DataRefactoring.h"
 #include "MultiDimension/DataRefactoring.h"
 #include "SingleDimension/DataRefactoring.h"
@@ -40,8 +41,7 @@ class HybridHierarchyDataRefactor
 
     // Adaptive intialization for local and global
     if (this->L == 0 && this->M == 0) {
-      log::err("Both L and M cannot be zero");
-      exit(-1);
+      throw ProcessingException("Both L and M cannot be zero");
     }
 
     if (this->L > 0) {
@@ -109,8 +109,7 @@ class HybridHierarchyDataRefactor
   void Decompose(SubArray<D, T, DeviceType> data,
                  SubArray<1, T, DeviceType> decomposed_data, int queue_idx) {
     if (this->L == 0 && this->M == 0) {
-      log::err("Both L and M cannot be zero");
-      exit(-1);
+      throw ProcessingException("Both L and M cannot be zero");
     }
     Timer timer;
     if (log::level & log::TIME) {
@@ -164,8 +163,7 @@ class HybridHierarchyDataRefactor
   void Recompose(SubArray<D, T, DeviceType> data,
                  SubArray<1, T, DeviceType> decomposed_data, int queue_idx) {
     if (this->L == 0 && this->M == 0) {
-      log::err("Both L and M cannot be zero");
-      exit(-1);
+      throw ProcessingException("Both L and M cannot be zero");
     }
     Timer timer;
     if (log::level & log::TIME) {
