@@ -291,8 +291,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
         }
       }
     } else {
-      log::err("Only L-inf supported");
-      exit(-1);
+      throw ProcessingException("Only L-inf supported");
     }
   }
 
@@ -410,8 +409,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
                 const std::vector<SIZE>& level_block_counts,
                 LosslessCompressorType& lossless, int queue_idx) {
     if (s != std::numeric_limits<T>::infinity()) {
-      log::err("Only L-inf supported");
-      exit(-1);
+      throw ProcessingException("Only L-inf supported");
     }
 
     double C = (1 + std::pow(3, D));
@@ -488,8 +486,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
                   const std::vector<SIZE>& level_block_counts,
                   LosslessCompressorType& lossless, int queue_idx) {
     if (s != std::numeric_limits<T>::infinity()) {
-      log::err("Only L-inf supported");
-      exit(-1);
+      throw ProcessingException("Only L-inf supported");
     }
 
     double C = (1 + std::pow(3, D));
