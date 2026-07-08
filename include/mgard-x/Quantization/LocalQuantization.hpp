@@ -196,6 +196,88 @@ class QuantizeLocalLevelROIKernel : public Kernel {
   SIZE dict_size;
 };
 
+// Computes per-block ROI quantizers directly on device from a device-resident
+// tolerance map, avoiding a host-side loop plus a per-call H2D transfer of the
+// result (the tolerance map itself is uploaded once, not on every call).
+template <typename T, typename DeviceType>
+class ComputeROIQuantizersFunctor : public Functor<DeviceType> {
+ public:
+  MGARDX_EXEC ComputeROIQuantizersFunctor() {}
+  MGARDX_EXEC ComputeROIQuantizersFunctor(
+      SubArray<1, double, DeviceType> tolerance_map, SIZE level_offset,
+      SIZE num_blocks, double norm_factor, double denom, bool reciprocal,
+      SubArray<1, T, DeviceType> quantizers)
+      : tolerance_map(tolerance_map), level_offset(level_offset),
+        num_blocks(num_blocks), norm_factor(norm_factor), denom(denom),
+        reciprocal(reciprocal), quantizers(quantizers) {
+    Functor<DeviceType>();
+  }
+
+  MGARDX_EXEC void Operation1() {
+    idx = FunctorBase<DeviceType>::GetBlockIdX() *
+              FunctorBase<DeviceType>::GetBlockDimX() +
+          FunctorBase<DeviceType>::GetThreadIdX();
+
+    if (idx < num_blocks) {
+      double block_tol = *tolerance_map(level_offset + idx) * norm_factor * 2;
+      double block_quantizer = block_tol / denom;
+      *quantizers(idx) = reciprocal ? (T)(1.0 / block_quantizer)
+                                    : (T)block_quantizer;
+    }
+  }
+
+  MGARDX_CONT size_t shared_memory_size() { return 0; }
+
+ private:
+  SIZE idx;
+  SubArray<1, double, DeviceType> tolerance_map;
+  SIZE level_offset;
+  SIZE num_blocks;
+  double norm_factor;
+  double denom;
+  bool reciprocal;
+  SubArray<1, T, DeviceType> quantizers;
+};
+
+template <typename T, typename DeviceType>
+class ComputeROIQuantizersKernel : public Kernel {
+ public:
+  constexpr static bool EnableAutoTuning() { return false; }
+  constexpr static std::string_view Name = "roi_qcalc";
+
+  MGARDX_CONT
+  ComputeROIQuantizersKernel(SubArray<1, double, DeviceType> tolerance_map,
+                             SIZE level_offset, SIZE num_blocks,
+                             double norm_factor, double denom, bool reciprocal,
+                             SubArray<1, T, DeviceType> quantizers)
+      : tolerance_map(tolerance_map), level_offset(level_offset),
+        num_blocks(num_blocks), norm_factor(norm_factor), denom(denom),
+        reciprocal(reciprocal), quantizers(quantizers) {}
+
+  MGARDX_CONT Task<ComputeROIQuantizersFunctor<T, DeviceType>> GenTask(
+      int queue_idx) {
+    using FunctorType = ComputeROIQuantizersFunctor<T, DeviceType>;
+    FunctorType functor(tolerance_map, level_offset, num_blocks, norm_factor,
+                        denom, reciprocal, quantizers);
+
+    SIZE tbx = 256, tby = 1, tbz = 1;
+    SIZE gridx = (num_blocks + tbx - 1) / tbx;
+    SIZE gridy = 1, gridz = 1;
+
+    return Task(functor, gridz, gridy, gridx, tbz, tby, tbx, 0, queue_idx,
+                std::string(Name));
+  }
+
+ private:
+  SubArray<1, double, DeviceType> tolerance_map;
+  SIZE level_offset;
+  SIZE num_blocks;
+  double norm_factor;
+  double denom;
+  bool reciprocal;
+  SubArray<1, T, DeviceType> quantizers;
+};
+
 template <DIM D, typename T, typename Q, typename DeviceType>
 class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
  public:
@@ -404,7 +486,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   void Quantize(SubArray<1, T, DeviceType> original_data,
                 enum error_bound_type ebtype, double tol, T s, T norm,
                 SubArray<1, Q, DeviceType> quantized_data,
-                const std::vector<double>& roi_tolerance_map,
+                SubArray<1, double, DeviceType> device_roi_tolerance_map,
                 const std::vector<SIZE>& level_offsets,
                 const std::vector<SIZE>& level_block_counts,
                 LosslessCompressorType& lossless, int queue_idx) {
@@ -413,6 +495,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     }
 
     double C = (1 + std::pow(3, D));
+    double norm_factor = (ebtype == error_bound_type::REL) ? (double)norm : 1.0;
     bool prep_huffman = config.lossless != lossless_type::CPU_Lossless &&
                         config.lossless != lossless_type::BlockDelta &&
                         config.lossless != lossless_type::LZ4;
@@ -431,26 +514,20 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
       SIZE level_offset = level_offsets[roi_level];
       SIZE num_blocks = level_block_counts[roi_level];
 
-      // Pre-compute quantizers for all blocks in this layer
-      std::vector<T> host_quantizers(num_blocks);
-      for (SIZE b = 0; b < num_blocks; ++b) {
-        double block_tol = roi_tolerance_map[level_offset + b];
-        if (ebtype == error_bound_type::REL) {
-          block_tol *= norm;
-        }
-        block_tol *= 2;
+      // l=0 is finest coefficients (laid out at the end of the data array),
+      // which maps to non-ROI layer L. The correct exponent is (L - l + 1).
+      double denom = std::pow(2, this->L - l + 1) * C;
 
-        // l=0 is finest coefficients (laid out at the end of the data array),
-        // which maps to non-ROI layer L. The correct exponent is (L - l + 1).
-        T block_quantizer = block_tol / (std::pow(2, this->L - l + 1) * C);
-
-        // reciprocal for quantization
-        host_quantizers[b] = 1.0 / block_quantizer;
-      }
-
-      // Copy to device
-      Array<1, T, DeviceType> device_quantizers({num_blocks});
-      device_quantizers.load(host_quantizers.data(), 0, queue_idx);
+      // Compute per-block quantizers directly on device from the
+      // already-uploaded tolerance map (reciprocal for quantization), instead
+      // of recomputing on host and re-uploading every call.
+      Array<1, T, DeviceType> device_quantizers({num_blocks}, queue_idx);
+      DeviceLauncher<DeviceType>::Execute(
+          ComputeROIQuantizersKernel<T, DeviceType>(
+              device_roi_tolerance_map, level_offset, num_blocks, norm_factor,
+              denom, /*reciprocal=*/true,
+              SubArray<1, T, DeviceType>(device_quantizers)),
+          queue_idx);
 
       accumulated_coeff_size += local_coeff_size[l];
       SubArray<1, T, DeviceType> v_in(
@@ -481,7 +558,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   void Dequantize(SubArray<1, T, DeviceType> original_data,
                   enum error_bound_type ebtype, double tol, T s, T norm,
                   SubArray<1, Q, DeviceType> quantized_data,
-                  const std::vector<double>& roi_tolerance_map,
+                  SubArray<1, double, DeviceType> device_roi_tolerance_map,
                   const std::vector<SIZE>& level_offsets,
                   const std::vector<SIZE>& level_block_counts,
                   LosslessCompressorType& lossless, int queue_idx) {
@@ -490,6 +567,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     }
 
     double C = (1 + std::pow(3, D));
+    double norm_factor = (ebtype == error_bound_type::REL) ? (double)norm : 1.0;
     bool prep_huffman = config.lossless != lossless_type::CPU_Lossless &&
                         config.lossless != lossless_type::BlockDelta &&
                         config.lossless != lossless_type::LZ4;
@@ -508,26 +586,19 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
       SIZE level_offset = level_offsets[roi_level];
       SIZE num_blocks = level_block_counts[roi_level];
 
-      // Pre-compute quantizers for all blocks in this layer
-      std::vector<T> host_quantizers(num_blocks);
-      for (SIZE b = 0; b < num_blocks; ++b) {
-        double block_tol = roi_tolerance_map[level_offset + b];
-        if (ebtype == error_bound_type::REL) {
-          block_tol *= norm;
-        }
-        block_tol *= 2;
+      // l=0 is finest coefficients (laid out at the end of the data array),
+      // which maps to non-ROI layer L. The correct exponent is (L - l + 1).
+      double denom = std::pow(2, this->L - l + 1) * C;
 
-        // l=0 is finest coefficients (laid out at the end of the data array),
-        // which maps to non-ROI layer L. The correct exponent is (L - l + 1).
-        T block_quantizer = block_tol / (std::pow(2, this->L - l + 1) * C);
-
-        // no reciprocal for dequantization
-        host_quantizers[b] = block_quantizer;
-      }
-
-      // Copy to device
-      Array<1, T, DeviceType> device_quantizers({num_blocks});
-      device_quantizers.load(host_quantizers.data(), 0, queue_idx);
+      // Compute per-block quantizers directly on device from the
+      // already-uploaded tolerance map (no reciprocal for dequantization).
+      Array<1, T, DeviceType> device_quantizers({num_blocks}, queue_idx);
+      DeviceLauncher<DeviceType>::Execute(
+          ComputeROIQuantizersKernel<T, DeviceType>(
+              device_roi_tolerance_map, level_offset, num_blocks, norm_factor,
+              denom, /*reciprocal=*/false,
+              SubArray<1, T, DeviceType>(device_quantizers)),
+          queue_idx);
 
       accumulated_coeff_size += local_coeff_size[l];
       SubArray<1, T, DeviceType> v_in(

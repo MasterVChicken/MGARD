@@ -58,7 +58,7 @@ class HybridHierarchyQuantizer
       if (config.enable_roi) {
         this->initial_block_tolerances = config.roi_tolerance_map;
         ComputeLocalShapes();
-        SetBlockTolerances(this->initial_block_tolerances);
+        SetBlockTolerances(this->initial_block_tolerances, queue_idx);
       }
     }
 
@@ -73,8 +73,14 @@ class HybridHierarchyQuantizer
   }
 
   // Set block-level tolerances according to ROI table
-  void SetBlockTolerances(const std::vector<double>& initial_block_tolerances) {
+  void SetBlockTolerances(const std::vector<double>& initial_block_tolerances,
+                          int queue_idx) {
     BuildROIToleranceMap(initial_block_tolerances);
+    // Upload once here so Quantize/Dequantize don't have to re-upload the
+    // tolerance map (which barely changes) on every call.
+    device_roi_tolerance_map.resize({(SIZE)roi_tolerance_map.size()},
+                                    queue_idx);
+    device_roi_tolerance_map.load(roi_tolerance_map.data(), 0, queue_idx);
   }
 
   // Called only when this->M > 0
@@ -147,8 +153,11 @@ class HybridHierarchyQuantizer
       // Switch between ROI and Non-ROI
       if (config.enable_roi) {
         local_quantizer.Quantize(local_data_v, ebtype, 0.0, s, norm,
-                                 local_data_q, roi_tolerance_map, level_offsets,
-                                 level_block_counts, lossless, queue_idx);
+                                 local_data_q,
+                                 SubArray<1, double, DeviceType>(
+                                     device_roi_tolerance_map),
+                                 level_offsets, level_block_counts, lossless,
+                                 queue_idx);
       } else {
         local_quantizer.Quantize(local_data_v, ebtype, tol, s, norm,
                                  local_data_q, lossless, queue_idx);
@@ -214,7 +223,8 @@ class HybridHierarchyQuantizer
       // Switch between ROI and Non-ROI
       if (config.enable_roi) {
         local_quantizer.Dequantize(
-            local_data_v, ebtype, 0.0, s, norm, local_data_q, roi_tolerance_map,
+            local_data_v, ebtype, 0.0, s, norm, local_data_q,
+            SubArray<1, double, DeviceType>(device_roi_tolerance_map),
             level_offsets, level_block_counts, lossless, queue_idx);
       } else {
         local_quantizer.Dequantize(local_data_v, ebtype, tol, s, norm,
@@ -487,6 +497,10 @@ class HybridHierarchyQuantizer
 
   // 1D ROI tolerance map: all levels stored consecutively
   std::vector<double> roi_tolerance_map;
+
+  // Device-resident copy of roi_tolerance_map, uploaded once in
+  // SetBlockTolerances and reused by every Quantize/Dequantize call.
+  Array<1, double, DeviceType> device_roi_tolerance_map;
 
   // Offset for each level in the 1D tolerance map
   std::vector<SIZE> level_offsets;
