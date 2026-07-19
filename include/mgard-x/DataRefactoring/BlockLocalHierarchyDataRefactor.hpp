@@ -174,11 +174,17 @@ public:
     coarsest.project(0, 1, 2);
     // log::info("Find read buffer idx: " + std::to_string(final_buffer_id));
 
-    SubArray<D, T, DeviceType> temp_coarest_subarray(coarse_shapes[this->L - 1],
-                                                     temp_coarest.data());
-    multi_dimension::CopyND(coarsest, temp_coarest_subarray, queue_idx);
-    multi_dimension::CopyND(SubArray(temp_coarest), output_decomposed,
-                            queue_idx);
+    // Write the coarsest level directly into output_decomposed instead of
+    // staging through temp_coarest: temp_coarest is unused between here and
+    // the next Recompose() call, which repopulates it independently from
+    // input_decomposed (see below), so the staging copy was pure overhead.
+    SubArray<D, T, DeviceType> coarsest_out(coarse_shapes[this->L - 1],
+                                            output_decomposed.data());
+    for (DIM d = 0; d < D; d++) {
+      coarsest_out.setLd(d, coarse_shapes[this->L - 1][d]);
+    }
+    coarsest_out.project(0, 1, 2);
+    multi_dimension::CopyND(coarsest, coarsest_out, queue_idx);
 
     SubArray<1, T, DeviceType> data_coeff({DecomposedCoeffSize()},
                                           output_decomposed.data() +
