@@ -58,6 +58,13 @@ class HybridHierarchyCompressor
                 enum error_bound_type ebtype, T tol, T s, T norm,
                 int queue_idx);
 
+  // Fused Decompose+Quantize (single pass over the local levels); used by
+  // Compress() instead of Decompose()+Quantize() when
+  // hybrid_quantizer.CanFuseQuantize(s) holds.
+  void DecomposeQuantize(Array<D, T, DeviceType>& original_data,
+                         enum error_bound_type ebtype, T tol, T s, T norm,
+                         int queue_idx);
+
   void LosslessCompress(Array<1, Byte, DeviceType>& compressed_data,
                         int queue_idx);
 

@@ -194,6 +194,85 @@ class BlockLocalHierarchyDataRefactor {
     // PrintSubarray("Temp in decompose:",SubArray(temp_coarest));
   }
 
+  // Fused decompose+quantize. Runs the same per-level 8x8x8 decomposition as
+  // Decompose(), but each level's coefficients are quantized in-kernel and
+  // written directly to their final location in output_quantized, so the
+  // T-typed coefficient staging (w_array) and the copies into
+  // output_decomposed disappear. Level 0 reads straight from the (possibly
+  // unpadded) input, and deeper levels read the previous coarse buffer at its
+  // true extent — the fused kernel zero-fills out-of-range reads, replacing
+  // the padding memsets. Only the coarsest level is emitted in T, compacted
+  // at the front of output_decomposed for the global stage / coarsest
+  // quantization.
+  //
+  // Level l's quantizer: level_quantizers[l] (reciprocal), or per-block
+  // level_block_quantizers[l] in ROI mode (level_quantizers empty).
+  template <typename Q>
+  void DecomposeQuantize(
+      SubArray<D, T, DeviceType> data,
+      SubArray<1, T, DeviceType> output_decomposed,
+      SubArray<1, Q, DeviceType> output_quantized,
+      const std::vector<T> &level_quantizers,
+      const std::vector<SubArray<1, T, DeviceType>> &level_block_quantizers,
+      bool prep_huffman, SIZE dict_size, int queue_idx) {
+    bool use_block_quantizers = level_quantizers.empty();
+
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
+
+    SubArray<D, T, DeviceType> fine = data;
+    SIZE accumulated = 0;
+    for (SIZE l = 0; l < this->L; l++) {
+      accumulated += local_coeff_size[l];
+      SubArray<1, Q, DeviceType> level_quantized(
+          {local_coeff_size[l]},
+          output_quantized(output_quantized.shape(0) - accumulated));
+
+      int buffer_idx = l % 2;
+      SubArray<D, T, DeviceType> coarse;
+      if (l == this->L - 1) {
+        // Last level: write the coarsest data compactly to its final
+        // location instead of staging it in a padded buffer and copying.
+        coarse = SubArray<D, T, DeviceType>(coarse_shapes[l],
+                                            output_decomposed.data());
+        for (DIM d = 0; d < D; d++) {
+          coarse.setLd(d, coarse_shapes[l][d]);
+        }
+      } else {
+        coarse = SubArray<D, T, DeviceType>(coarse_shapes[l],
+                                            coarse_buffers[buffer_idx].data());
+        for (DIM d = 0; d < D; d++) {
+          coarse.setLd(d, fine_shapes[0][d]);
+        }
+      }
+      coarse.project(0, 1, 2);
+
+      in_cache_block::decompose_quantize<D, T, Q, DeviceType>(
+          fine, coarse, level_quantized,
+          use_block_quantizers ? (T)0 : level_quantizers[l],
+          use_block_quantizers ? level_block_quantizers[l]
+                               : SubArray<1, T, DeviceType>(),
+          use_block_quantizers, prep_huffman, dict_size, queue_idx);
+
+      if (l < this->L - 1) {
+        // Next level reads the coarse output at its true extent; the fused
+        // kernel's boundary handling supplies the zero padding.
+        fine = coarse;
+      }
+    }
+
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Local Decomposition+Quantization (fused)",
+                  hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
+    }
+  }
+
   void Recompose(SubArray<D, T, DeviceType> data,
                  SubArray<1, T, DeviceType> input_decomposed, int queue_idx) {
     Timer timer;

@@ -377,6 +377,41 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     }
   }
 
+  // Reciprocal quantizers indexed by decompose level (level 0 = finest
+  // coefficients) for the fused decompose+quantize path. Decompose level l
+  // corresponds to non-ROI layer L - l, i.e. quantizer index L - l.
+  std::vector<T> DecomposeLevelQuantizers(enum error_bound_type ebtype, T tol,
+                                          T s, T norm) {
+    std::vector<T> quantizers(this->L + 1);
+    CalcQuantizers(hierarchy->total_num_elems(), quantizers.data(), ebtype, tol,
+                   s, norm, this->L, config.decomposition, true);
+    std::vector<T> level_quantizers(this->L);
+    for (SIZE l = 0; l < this->L; l++) {
+      level_quantizers[l] = quantizers[this->L - l];
+    }
+    return level_quantizers;
+  }
+
+  // Quantize only the coarsest layer (layer 0). Used by the fused
+  // decompose+quantize path when there is no global stage; the coefficient
+  // layers have already been quantized inside the decompose kernels.
+  void QuantizeCoarsest(SubArray<1, T, DeviceType> v,
+                        SubArray<1, Q, DeviceType> quantized_v,
+                        enum error_bound_type ebtype, T tol, T s, T norm,
+                        int queue_idx) {
+    std::vector<T> quantizers(this->L + 1);
+    CalcQuantizers(hierarchy->total_num_elems(), quantizers.data(), ebtype, tol,
+                   s, norm, this->L, config.decomposition, true);
+    bool prep_huffman = config.lossless != lossless_type::CPU_Lossless &&
+                        config.lossless != lossless_type::BlockDelta &&
+                        config.lossless != lossless_type::LZ4;
+    DeviceLauncher<DeviceType>::Execute(
+        QuantizeLocalLevelKernel<T, Q, MGARDX_QUANTIZE, DeviceType>(
+            quantizers[0], v, quantized_v, prep_huffman,
+            config.huff_dict_size),
+        queue_idx);
+  }
+
   void Quantize(SubArray<D, T, DeviceType> original_data,
                 enum error_bound_type ebtype, T tol, T s, T norm,
                 SubArray<D, Q, DeviceType> quantized_data, int queue_idx) {}

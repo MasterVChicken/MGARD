@@ -6,6 +6,7 @@
  */
 
 #include <chrono>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <numeric>
@@ -192,6 +193,18 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Quantize(
 }
 
 template <DIM D, typename T, typename DeviceType>
+void HybridHierarchyCompressor<D, T, DeviceType>::DecomposeQuantize(
+    Array<D, T, DeviceType>& original_data, enum error_bound_type ebtype, T tol,
+    T s, T norm, int queue_idx) {
+  SubArray<1, T, DeviceType> decomposed_subarray(hybrid_decomposed_array);
+  SubArray<1, QUANTIZED_INT, DeviceType> quantized_subarray(
+      hybrid_quantized_array);
+  hybrid_quantizer.DecomposeQuantize(
+      hybrid_refactor, SubArray(original_data), decomposed_subarray,
+      quantized_subarray, ebtype, tol, s, norm, lossless_compressor, queue_idx);
+}
+
+template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::LosslessCompress(
     Array<1, Byte, DeviceType>& compressed_data, int queue_idx) {
   lossless_compressor.Compress(hybrid_quantized_array, compressed_data,
@@ -277,13 +290,16 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Compress(
   // log::info("Before decompose()");
 
   if (log::level & log::TIME) timer_compress_kernel.start();
-  Decompose(original_data, queue_idx);
-  // log::info("After decompose()");
-  // log::info(std::to_string(original_data.totalNumElems()));
-  // PrintSubarray("Original after decompose", SubArray(original_data));
-  // // PrintSubarray("Decomposed", SubArray(decomposed_array));
-  // log::info("Before quantize");
-  Quantize(original_data, ebtype, tol, s, norm, queue_idx);
+  // Escape hatch for A/B benchmarking and debugging: set
+  // MGARD_X_DISABLE_FUSED_DECOMPOSE_QUANTIZE to force the unfused path.
+  static const bool disable_fused =
+      std::getenv("MGARD_X_DISABLE_FUSED_DECOMPOSE_QUANTIZE") != nullptr;
+  if (!disable_fused && hybrid_quantizer.CanFuseQuantize(s)) {
+    DecomposeQuantize(original_data, ebtype, tol, s, norm, queue_idx);
+  } else {
+    Decompose(original_data, queue_idx);
+    Quantize(original_data, ebtype, tol, s, norm, queue_idx);
+  }
   // log::info("After quantize");
   // log::info("Num of Original data after quantization:");
   // log::info(std::to_string(original_data.totalNumElems()));
