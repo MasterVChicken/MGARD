@@ -105,6 +105,24 @@ public:
     return hierarchy->total_num_elems();
   }
 
+  // Global-stage decomposition over the coarsest region at the front of
+  // decomposed_data (in-place). Factored out so the fused
+  // decompose+quantize path can run it separately from the local stage.
+  void DecomposeGlobal(SubArray<1, T, DeviceType> decomposed_data,
+                       int queue_idx) {
+    std::vector<SIZE> global_shape =
+        (this->L > 0) ? local_refactor.coarse_shapes[this->L - 1]
+                      : hierarchy->level_shape(hierarchy->l_target());
+    SubArray<D, T, DeviceType> global_input_data(global_shape,
+                                                 decomposed_data.data());
+    for (DIM d = 0; d < D; d++) {
+      global_input_data.setLd(d, global_shape[d]);
+    }
+    global_input_data.project(0, 1, 2);
+
+    global_refactor.Decompose(global_input_data, true, queue_idx);
+  }
+
   // Need revise further to exclude copy time
   void Decompose(SubArray<D, T, DeviceType> data,
                  SubArray<1, T, DeviceType> decomposed_data, int queue_idx) {
@@ -137,17 +155,8 @@ public:
       // Local decomposition
       local_refactor.Decompose(data, decomposed_data, queue_idx);
 
-      std::vector<SIZE> local_coarest_shape =
-          local_refactor.coarse_shapes[this->L - 1];
-      SubArray<D, T, DeviceType> global_input_data({local_coarest_shape},
-                                                   decomposed_data.data());
-      for (DIM d = 0; d < D; d++) {
-        global_input_data.setLd(d, local_coarest_shape[d]);
-      }
-      global_input_data.project(0, 1, 2);
-
       // Global decomposition
-      global_refactor.Decompose(global_input_data, true, queue_idx);
+      DecomposeGlobal(decomposed_data, queue_idx);
     }
 
     if (log::level & log::TIME) {

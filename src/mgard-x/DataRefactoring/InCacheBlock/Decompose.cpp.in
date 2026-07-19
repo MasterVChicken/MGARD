@@ -14,9 +14,18 @@ namespace data_refactoring {
 namespace in_cache_block {
 
 template void decompose<@NUM_DIM@, @DATA_TYPE@, @DEVICE_TYPE@>(
-    SubArray<@NUM_DIM@, @DATA_TYPE@, @DEVICE_TYPE@> v, 
-    SubArray<@NUM_DIM@, @DATA_TYPE@, @DEVICE_TYPE@> coarse, 
+    SubArray<@NUM_DIM@, @DATA_TYPE@, @DEVICE_TYPE@> v,
+    SubArray<@NUM_DIM@, @DATA_TYPE@, @DEVICE_TYPE@> coarse,
     SubArray<1, @DATA_TYPE@, @DEVICE_TYPE@> coeff, int queue_idx);
+
+template void decompose_quantize<@NUM_DIM@, @DATA_TYPE@, QUANTIZED_INT, @DEVICE_TYPE@>(
+    SubArray<@NUM_DIM@, @DATA_TYPE@, @DEVICE_TYPE@> v,
+    SubArray<@NUM_DIM@, @DATA_TYPE@, @DEVICE_TYPE@> coarse,
+    SubArray<1, QUANTIZED_INT, @DEVICE_TYPE@> quantized_coeff,
+    @DATA_TYPE@ quantizer,
+    SubArray<1, @DATA_TYPE@, @DEVICE_TYPE@> block_quantizers,
+    bool use_block_quantizers, bool prep_huffman,
+    SIZE dict_size, int queue_idx);
 } // namespace in_cache_block
 
 } // namespace data_refactoring

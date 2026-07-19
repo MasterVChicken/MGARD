@@ -439,7 +439,7 @@ public:
     return size * sizeof(T);
   }
 
-private:
+protected:
   SubArray<D, T, DeviceType> v;
   SubArray<D, T, DeviceType> coarse;
   SubArray<1, T, DeviceType> coeff;
@@ -456,6 +456,98 @@ private:
   // #ifdef MGARDX_COMPILE_CUDA
   // clock_t start, end;
   // #endif
+};
+
+// Fused decompose+quantize variant: identical transform pipeline, but
+// (1) the input is read with bounds checks so unpadded inputs can be consumed
+//     directly (out-of-range positions contribute zeros, matching the
+//     memset+copy padding of the unfused path bit for bit), and
+// (2) the 387 per-block coefficients are quantized on write-out while still
+//     in shared memory, emitting Q symbols (with the Huffman dictionary shift
+//     folded in, mirroring QuantizeLocalLevelFunctor) instead of T values.
+// The 5x5x5 coarse output stays in T: it is the next level's input.
+template <DIM D, typename T, typename Q, SIZE Z, SIZE Y, SIZE X,
+          typename DeviceType>
+class DecomposeQuantize8x8x8Functor
+    : public Decompose8x8x8Functor<D, T, Z, Y, X, DeviceType> {
+  using Base = Decompose8x8x8Functor<D, T, Z, Y, X, DeviceType>;
+
+public:
+  MGARDX_CONT DecomposeQuantize8x8x8Functor() {}
+  MGARDX_CONT DecomposeQuantize8x8x8Functor(
+      SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
+      SubArray<1, Q, DeviceType> quantized_coeff, T quantizer,
+      SubArray<1, T, DeviceType> block_quantizers, bool use_block_quantizers,
+      bool prep_huffman, SIZE dict_size)
+      : Base(v, coarse, SubArray<1, T, DeviceType>()),
+        quantized_coeff(quantized_coeff), quantizer(quantizer),
+        block_quantizers(block_quantizers),
+        use_block_quantizers(use_block_quantizers), prep_huffman(prep_huffman),
+        dict_size(dict_size) {}
+
+  MGARDX_EXEC void Operation1() {
+    this->initialize_sm_8x8x8();
+    this->x = FunctorBase<DeviceType>::GetThreadIdX();
+    this->y = FunctorBase<DeviceType>::GetThreadIdY();
+    this->z = FunctorBase<DeviceType>::GetThreadIdZ();
+    this->x_tb = FunctorBase<DeviceType>::GetBlockIdX();
+    this->y_tb = FunctorBase<DeviceType>::GetBlockIdY();
+    this->z_tb = FunctorBase<DeviceType>::GetBlockIdZ();
+    this->x_gl = X * this->x_tb + this->x;
+    this->y_gl = Y * this->y_tb + this->y;
+    this->z_gl = Z * this->z_tb + this->z;
+
+    this->tid = this->z * X * Y + this->y * X + this->x;
+    this->bid = this->z_tb * FunctorBase<DeviceType>::GetGridDimX() *
+                    FunctorBase<DeviceType>::GetGridDimY() +
+                this->y_tb * FunctorBase<DeviceType>::GetGridDimX() +
+                this->x_tb;
+    if (this->z == 0 && this->y == 0 && this->x == 0)
+      this->sm_v[this->zero_const_offset] = (T)0;
+
+    this->offset = get_idx(this->ld1, this->ld2, this->z, this->y, this->x);
+    this->sm_v[this->offset] = 0.0;
+    // Unlike the unfused functor, keep the bounds check: the input here is
+    // not pre-padded to a multiple of 8, so edge blocks must zero-fill.
+    if (this->z_gl < (int)this->v.shape(D - 3) &&
+        this->y_gl < (int)this->v.shape(D - 2) &&
+        this->x_gl < (int)this->v.shape(D - 1)) {
+      this->sm_v[this->offset] = *this->v(this->z_gl, this->y_gl, this->x_gl);
+    }
+  }
+
+  MGARDX_EXEC void Operation9() {
+    if (this->tid < 125) {
+      this->sm_v[Coarse_Offset_8x8x8(this->tid)] += this->sm_z[this->tid];
+      int const *index = Coarse_Reorder_8x8x8(this->tid);
+      *this->coarse(this->z_tb * 5 + index[0], this->y_tb * 5 + index[1],
+                    this->x_tb * 5 + index[2]) =
+          this->sm_v[Coarse_Offset_8x8x8(this->tid)];
+    } else {
+      int op_tid = this->tid - 125;
+      T t = this->sm_v[Coeff_Offset_8x8x8(op_tid)];
+      T q = use_block_quantizers ? *block_quantizers(this->bid) : quantizer;
+      // Must stay bit-identical to QuantizeLocalLevelFunctor (volume == 1).
+      Q quantized_data;
+      if constexpr (sizeof(T) == sizeof(double)) {
+        quantized_data = copysign((T)0.5 + fabs(t * q), t);
+      } else if constexpr (sizeof(T) == sizeof(float)) {
+        quantized_data = copysign((T)0.5 + fabsf(t * q), t);
+      }
+      if (prep_huffman) {
+        quantized_data += dict_size / 2;
+      }
+      *quantized_coeff(this->bid * 387 + op_tid) = quantized_data;
+    }
+  }
+
+protected:
+  SubArray<1, Q, DeviceType> quantized_coeff;
+  T quantizer;
+  SubArray<1, T, DeviceType> block_quantizers;
+  bool use_block_quantizers;
+  bool prep_huffman;
+  SIZE dict_size;
 };
 
 template <DIM D, typename T, typename DeviceType>
@@ -495,6 +587,61 @@ private:
   SubArray<D, T, DeviceType> v;
   SubArray<D, T, DeviceType> coarse;
   SubArray<1, T, DeviceType> coeff;
+};
+
+template <DIM D, typename T, typename Q, typename DeviceType>
+class DecomposeQuantize8x8x8Kernel : public Kernel {
+public:
+  constexpr static bool EnableAutoTuning() { return false; }
+  constexpr static std::string_view Name = "lwpk_fq";
+  MGARDX_CONT
+  DecomposeQuantize8x8x8Kernel(SubArray<D, T, DeviceType> v,
+                               SubArray<D, T, DeviceType> coarse,
+                               SubArray<1, Q, DeviceType> quantized_coeff,
+                               T quantizer,
+                               SubArray<1, T, DeviceType> block_quantizers,
+                               bool use_block_quantizers, bool prep_huffman,
+                               SIZE dict_size)
+      : v(v), coarse(coarse), quantized_coeff(quantized_coeff),
+        quantizer(quantizer), block_quantizers(block_quantizers),
+        use_block_quantizers(use_block_quantizers), prep_huffman(prep_huffman),
+        dict_size(dict_size) {}
+
+  MGARDX_CONT Task<DecomposeQuantize8x8x8Functor<D, T, Q, 8, 8, 8, DeviceType>>
+  GenTask(int queue_idx) {
+    using FunctorType =
+        DecomposeQuantize8x8x8Functor<D, T, Q, 8, 8, 8, DeviceType>;
+    FunctorType functor(v, coarse, quantized_coeff, quantizer, block_quantizers,
+                        use_block_quantizers, prep_huffman, dict_size);
+
+    // Same launch geometry as Decompose8x8x8Kernel; v may be unpadded here
+    // but ceil(shape / 8) matches the padded grid exactly.
+    SIZE total_thread_z = v.shape(D - 3);
+    SIZE total_thread_y = v.shape(D - 2);
+    SIZE total_thread_x = v.shape(D - 1);
+
+    SIZE tbx, tby, tbz, gridx, gridy, gridz;
+    size_t sm_size = functor.shared_memory_size();
+    tbz = 8;
+    tby = 8;
+    tbx = 8;
+    gridz = ceil((double)total_thread_z / tbz);
+    gridy = ceil((double)total_thread_y / tby);
+    gridx = ceil((double)total_thread_x / tbx);
+
+    return Task(functor, gridz, gridy, gridx, tbz, tby, tbx, sm_size, queue_idx,
+                std::string(Name));
+  }
+
+private:
+  SubArray<D, T, DeviceType> v;
+  SubArray<D, T, DeviceType> coarse;
+  SubArray<1, Q, DeviceType> quantized_coeff;
+  T quantizer;
+  SubArray<1, T, DeviceType> block_quantizers;
+  bool use_block_quantizers;
+  bool prep_huffman;
+  SIZE dict_size;
 };
 
 } // namespace in_cache_block
