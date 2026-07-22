@@ -14,6 +14,9 @@
 #include "ReorderByIndex.hpp"
 #include "ReverseArray.hpp"
 
+#include <stdexcept>
+#include <string>
+
 #ifndef MGARD_X_GET_CODEBOOK_TEMPLATE_HPP
 #define MGARD_X_GET_CODEBOOK_TEMPLATE_HPP
 
@@ -119,7 +122,16 @@ void GetCodebook(int dict_size,
               << "Huffman codeword representation requires at least "
               << max_CL + 8 << " bits (longest codeword: " << max_CL << " bits)"
               << std::endl;
-    exit(1);
+    // Throw (instead of exit) so callers can catch and fall back to another
+    // lossless backend (e.g. raw Zstd) or retry with a smaller huff_dict_size.
+    // A longer dictionary makes the tree deeper, so a degenerate/low-entropy
+    // input can produce codewords exceeding the H-type budget (sizeof(H)*8 -
+    // 8).
+    throw std::runtime_error(
+        "MGARD-X Huffman: longest codeword (" + std::to_string(max_CL) +
+        " bits) exceeds the " + std::to_string(max_CW_bits) +
+        "-bit budget of the H code type; retry with a smaller huff_dict_size "
+        "or a different lossless backend");
   }
 
   DeviceLauncher<DeviceType>::Execute(

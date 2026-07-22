@@ -349,15 +349,30 @@ public:
         (*status((IDX)_iNodesFront)) = (*status((IDX)_iNodesRear));
       }
       /* Odd number of nodes to merge - leave out one*/
-      // If number of participating leaf node is zero OR
-      // The highest frequency leaf node is less than the
-      // highest frequency internal node
+      // Remove one internal node (keep it for the next outer iteration) if:
+      //   (a) there are no leaf nodes in the batch (_curLeavesNum == 0), OR
+      //   (b) the first leaf node NOT in the batch has a frequency <= the
+      //       highest-frequency internal node in the batch, meaning it is
+      //       cheaper to defer that internal node.
+      //
+      // BUG FIX: The original code read histogram[_lNodesCur + _curLeavesNum]
+      // unconditionally.  When _curLeavesNum == dict_size - _lNodesCur (i.e.,
+      // all remaining leaf nodes qualify for the batch), the index equals
+      // dict_size, which is one past the end of the nz_dict_size-sized
+      // histogram array, causing a GPU memory access fault.
+      // FIX: Guard the histogram access with the bounds check
+      //   (_lNodesCur + _curLeavesNum < dict_size).
+      // When there is no next leaf outside the batch, the condition is treated
+      // as false and execution falls through to the else branch (remove one
+      // leaf from the batch instead).
       else if (((*status((IDX)_iNodesSize)) != 0) and
                ((*status((IDX)_curLeavesNum)) == 0 or
-                (*histogram((IDX)(*status((IDX)_lNodesCur)) +
-                            (*status((IDX)_curLeavesNum))) <=
-                 *iNodesFreq(
-                     (IDX)MOD((*status((IDX)_iNodesRear)) - 1, dict_size))))) {
+                (((*status((IDX)_lNodesCur)) + (*status((IDX)_curLeavesNum)) <
+                  dict_size) and
+                 (*histogram((IDX)(*status((IDX)_lNodesCur)) +
+                             (*status((IDX)_curLeavesNum))) <=
+                  *iNodesFreq((IDX)MOD((*status((IDX)_iNodesRear)) - 1,
+                                       dict_size)))))) {
         (*status((IDX)_mergeRear)) =
             MOD((*status((IDX)_mergeRear)) - 1, dict_size);
         (*status((IDX)_iNodesFront)) =

@@ -446,7 +446,7 @@ public:
   bool initialized;
   SIZE max_size;
   size_t primary_count;
-  ATOMIC_IDX outlier_count;
+  ATOMIC_IDX outlier_count = 0;
   int dict_size;
   int chunk_size;
   size_t huffmeta_size;

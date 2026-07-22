@@ -135,7 +135,9 @@ public:
     copyIsLeaf_array = Array<1, int, DeviceType>({dict_size});
     copyIndex_array = Array<1, int, DeviceType>({dict_size});
     _d_codebook_array_org = Array<1, H, DeviceType>({dict_size});
-    status_array = Array<1, int, DeviceType>({(SIZE)16}, false, true);
+    status_array = Array<1, int, DeviceType>(
+        {(SIZE)16}, false,
+        false); // non-managed: atomicMin on managed mem unreliable on ROCm
     SIZE mblocks = (DeviceRuntime<DeviceType>::GetMaxNumThreadsPerTB() /
                     DeviceRuntime<DeviceType>::GetWarpSize()) *
                    DeviceRuntime<DeviceType>::GetNumSMs();
