@@ -240,7 +240,7 @@ public:
     // condense/gather pass. Here we only compute the output geometry:
     //   per-group bit sums -> scan -> per-chunk bit lengths + word counts
     //   -> scan -> per-chunk word offsets (and the total ddata word count).
-    SIZE groups_per_chunk = (chunk_size - 1) / DEFLATE_GROUP_SIZE + 1;
+    SIZE groups_per_chunk = (chunk_size - 1) / GetDeflateGroupSize<DeviceType>(chunk_size) + 1;
     auto nchunk = (primary_count - 1) / chunk_size + 1;
     SIZE ngroups = (SIZE)(nchunk * groups_per_chunk);
 

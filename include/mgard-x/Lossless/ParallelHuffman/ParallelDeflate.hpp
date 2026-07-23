@@ -12,17 +12,38 @@
 namespace mgard_x {
 
 // Number of consecutive symbols packed by a single thread ("group"). Each
-// Huffman chunk is split into ceil(chunk_size / DEFLATE_GROUP_SIZE) groups so
-// that the bit-packing of one chunk is shared by many threads instead of a
-// single one. Must stay small enough to keep good parallelism but large enough
-// that most output words a group produces are fully owned (written with a plain
+// Huffman chunk is split into ceil(chunk_size / group_size) groups so that
+// the bit-packing of one chunk is shared by many threads instead of a single
+// one. Must stay small enough to keep good parallelism but large enough that
+// most output words a group produces are fully owned (written with a plain
 // store) rather than shared at the boundaries (written with an atomicOr).
 //
-// Empirically the pack kernel is fastest when a warp (32 threads) covers about
-// one Huffman chunk, i.e. DEFLATE_GROUP_SIZE ~= huff_block_size / 32. For the
-// default huff_block_size = 1024 that is 32, which measured ~3.6x faster than
-// 256 on NYX 512^3 (Hopper). Revisit this if huff_block_size changes.
-#define DEFLATE_GROUP_SIZE 32
+// Empirically the pack kernel is fastest when a full warp covers about one
+// Huffman chunk, i.e. group_size ~= huff_block_size / 32: for the default
+// huff_block_size = 1024 that measured ~3.6x faster than a fixed 256 on NYX
+// 512^3 on Hopper. That "one warp per chunk" reasoning does not transfer
+// directly to a 64-wide CDNA wavefront, though: group_size = chunk_size/64
+// = 16 measured *worse* on MI300 (~73 GB/s) than the original 32 (~74
+// GB/s), and a direct sweep (16/32/64/128/256/512) found the real peak at
+// group_size = 128 (~86 GB/s) -- larger, not smaller, than Hopper's tuning.
+// Fewer, bigger groups apparently win here because each group boundary
+// costs an atomicOr-merged word instead of a plain store (see DeflatePack
+// below); halving group_size doubles the boundary count for the same data,
+// and on MI300 that atomic-merge overhead outweighs the extra parallelism
+// from narrower groups. Revisit with a fresh sweep if huff_block_size
+// changes (currently group_size = chunk_size/8, matching the measured
+// optimum at the default chunk_size = 1024).
+template <typename DeviceType>
+MGARDX_CONT SIZE GetDeflateGroupSize(SIZE chunk_size) {
+  SIZE group_size;
+  if constexpr (std::is_same<DeviceType, HIP>::value) {
+    group_size = chunk_size / 8;
+  } else {
+    SIZE warp_size = DeviceRuntime<DeviceType>::GetWarpSize();
+    group_size = chunk_size / warp_size;
+  }
+  return group_size > 0 ? group_size : 1;
+}
 
 // Helper: extract the per-symbol bitwidth, stored in the most-significant byte
 // of each fixed-length Huffman codeword (codebook[symbol]).
@@ -42,10 +63,12 @@ public:
   MGARDX_CONT DeflateGroupBitsFunctor(
       SubArray<1, Q, DeviceType> data, SubArray<1, H, DeviceType> codebook,
       SubArray<1, size_t, DeviceType> group_bits, size_t primary_count,
-      SIZE chunk_size, SIZE groups_per_chunk, SIZE ngroups)
+      SIZE chunk_size, SIZE groups_per_chunk, SIZE ngroups,
+      SIZE deflate_group_size)
       : data(data), codebook(codebook), group_bits(group_bits),
         primary_count(primary_count), chunk_size(chunk_size),
-        groups_per_chunk(groups_per_chunk), ngroups(ngroups) {
+        groups_per_chunk(groups_per_chunk), ngroups(ngroups),
+        deflate_group_size(deflate_group_size) {
     Functor<DeviceType>();
   }
 
@@ -58,11 +81,11 @@ public:
     SIZE chunk_id = gid / groups_per_chunk;
     SIZE local = gid % groups_per_chunk;
     size_t sym_base =
-        (size_t)chunk_id * chunk_size + (size_t)local * DEFLATE_GROUP_SIZE;
+        (size_t)chunk_id * chunk_size + (size_t)local * deflate_group_size;
     size_t chunk_end = (size_t)(chunk_id + 1) * chunk_size;
     if (chunk_end > primary_count)
       chunk_end = primary_count;
-    size_t sym_end = sym_base + DEFLATE_GROUP_SIZE;
+    size_t sym_end = sym_base + deflate_group_size;
     if (sym_end > chunk_end)
       sym_end = chunk_end;
     size_t bits = 0;
@@ -82,6 +105,7 @@ private:
   SIZE chunk_size;
   SIZE groups_per_chunk;
   SIZE ngroups;
+  SIZE deflate_group_size;
 };
 
 template <typename Q, typename H, typename DeviceType>
@@ -102,9 +126,20 @@ public:
   MGARDX_CONT Task<DeflateGroupBitsFunctor<Q, H, DeviceType>>
   GenTask(int queue_idx) {
     using FunctorType = DeflateGroupBitsFunctor<Q, H, DeviceType>;
+    SIZE deflate_group_size = GetDeflateGroupSize<DeviceType>(chunk_size);
     FunctorType functor(data, codebook, group_bits, primary_count, chunk_size,
-                        groups_per_chunk, ngroups);
-    SIZE tbx = 256;
+                        groups_per_chunk, ngroups, deflate_group_size);
+    // Empirically tuned on MI300: this kernel has no shared memory or
+    // cross-thread communication (each thread independently sums bitwidths
+    // for its own group), so block size is a pure occupancy knob. A direct
+    // sweep (256/512/768/960) found a non-monotonic curve -- 256 and 512
+    // both measure ~113 GB/s (combined with DeflatePack below, via the CLI's
+    // "Huffman compress" timer), 768 measures ~120-124 GB/s, and 960 drops
+    // back to ~111 GB/s. 768 is the peak, likely an occupancy sweet spot for
+    // this kernel's register/LDS footprint rather than a value that keeps
+    // climbing like OutlierSeparator's. Revisit with a fresh sweep if this
+    // kernel's per-thread work changes.
+    SIZE tbx = 768;
     size_t sm_size = functor.shared_memory_size();
     SIZE gridx = (ngroups - 1) / tbx + 1;
     return Task(functor, 1, 1, gridx, 1, 1, tbx, sm_size, queue_idx,
@@ -210,11 +245,13 @@ public:
                      SubArray<1, size_t, DeviceType> group_offsets,
                      SubArray<1, size_t, DeviceType> chunk_word_offsets,
                      SubArray<1, H, DeviceType> condensed, size_t primary_count,
-                     SIZE chunk_size, SIZE groups_per_chunk, SIZE ngroups)
+                     SIZE chunk_size, SIZE groups_per_chunk, SIZE ngroups,
+                     SIZE deflate_group_size)
       : data(data), codebook(codebook), group_offsets(group_offsets),
         chunk_word_offsets(chunk_word_offsets), condensed(condensed),
         primary_count(primary_count), chunk_size(chunk_size),
-        groups_per_chunk(groups_per_chunk), ngroups(ngroups) {
+        groups_per_chunk(groups_per_chunk), ngroups(ngroups),
+        deflate_group_size(deflate_group_size) {
     Functor<DeviceType>();
   }
 
@@ -227,13 +264,13 @@ public:
     SIZE chunk_id = gid / groups_per_chunk;
     SIZE local = gid % groups_per_chunk;
     size_t sym_base =
-        (size_t)chunk_id * chunk_size + (size_t)local * DEFLATE_GROUP_SIZE;
+        (size_t)chunk_id * chunk_size + (size_t)local * deflate_group_size;
     if (sym_base >= primary_count)
       return;
     size_t chunk_end = (size_t)(chunk_id + 1) * chunk_size;
     if (chunk_end > primary_count)
       chunk_end = primary_count;
-    size_t sym_end = sym_base + DEFLATE_GROUP_SIZE;
+    size_t sym_end = sym_base + deflate_group_size;
     if (sym_end > chunk_end)
       sym_end = chunk_end;
 
@@ -308,6 +345,7 @@ private:
   SIZE chunk_size;
   SIZE groups_per_chunk;
   SIZE ngroups;
+  SIZE deflate_group_size;
 };
 
 template <typename Q, typename H, typename DeviceType>
@@ -330,10 +368,14 @@ public:
   MGARDX_CONT Task<DeflatePackFunctor<Q, H, DeviceType>>
   GenTask(int queue_idx) {
     using FunctorType = DeflatePackFunctor<Q, H, DeviceType>;
+    SIZE deflate_group_size = GetDeflateGroupSize<DeviceType>(chunk_size);
     FunctorType functor(data, codebook, group_offsets, chunk_word_offsets,
                         condensed, primary_count, chunk_size, groups_per_chunk,
-                        ngroups);
-    SIZE tbx = 256;
+                        ngroups, deflate_group_size);
+    // Same empirical sweep and reasoning as DeflateGroupBitsKernel above --
+    // 768 is the measured occupancy sweet spot on MI300 (256/512 ~113 GB/s,
+    // 768 ~120-124 GB/s, 960 back down to ~111 GB/s).
+    SIZE tbx = 768;
     size_t sm_size = functor.shared_memory_size();
     SIZE gridx = (ngroups - 1) / tbx + 1;
     return Task(functor, 1, 1, gridx, 1, 1, tbx, sm_size, queue_idx,

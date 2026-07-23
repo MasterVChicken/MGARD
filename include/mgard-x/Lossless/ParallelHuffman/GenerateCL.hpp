@@ -829,7 +829,24 @@ public:
   MGARDX_CONT
   Task<GenerateCLFunctor<T, DeviceType>> GenTask(int queue_idx) {
     using FunctorType = GenerateCLFunctor<T, DeviceType>;
-    SIZE warp_size = DeviceRuntime<DeviceType>::GetWarpSize();
+    SIZE warp_size;
+    if constexpr (std::is_same<DeviceType, HIP>::value) {
+      // Empirically tuned on MI300: the merge-path search here uses shared
+      // memory + explicit inter-Operation sync barriers rather than raw
+      // warp-shuffle/ballot, so its "width" is really just a block size and
+      // isn't tied to the hardware wavefront. A direct sweep (64/128/256/
+      // 512/1024) on the real 64-wide CDNA wavefront found throughput
+      // climbing well past 64 -- 64 (the true wavefront size) measures
+      // ~86 GB/s, 512 measures 110-114 GB/s, a ~30% further gain. 1024 (the
+      // hardware max block width) also completes safely here (unlike
+      // OutlierSeparator's tbx, which hangs at 1024) but measures ~111 GB/s,
+      // matching 512 within noise, so 512 is used as the smallest width that
+      // captures the full gain. Revisit with a fresh sweep if this kernel's
+      // algorithm changes.
+      warp_size = 512;
+    } else {
+      warp_size = DeviceRuntime<DeviceType>::GetWarpSize();
+    }
     FunctorType Functor(histogram, CL, dict_size, lNodesFreq, lNodesLeader,
                         iNodesFreq, iNodesLeader, tempFreq, tempIsLeaf,
                         tempIndex, copyFreq, copyIsLeaf, copyIndex,
