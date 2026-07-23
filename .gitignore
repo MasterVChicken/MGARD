@@ -61,3 +61,7 @@ tags
 # Editor / CLI artifacts
 /.vscode/
 /vscode_cli.tar.gz
+
+# Slurm submission scripts (local scheduler jobs, not part of the source tree)
+*.sbatch
+*.slurm
