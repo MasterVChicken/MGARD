@@ -45,14 +45,25 @@ public:
       SubArray<1, int, DeviceType> copyIsLeaf,
       SubArray<1, int, DeviceType> copyIndex,
       SubArray<1, uint32_t, DeviceType> diagonal_path_intersections,
-      SubArray<1, int, DeviceType, false, true> status)
+      SubArray<1, int, DeviceType, false, true> status,
+      // Width of the per-block diagonal merge-path search (Operations 6-9)
+      // and of the thread block that runs it. Read from the device's real
+      // warp/wavefront size (DeviceRuntime::GetWarpSize(), host-side only,
+      // so it is threaded through as a plain functor member rather than
+      // read from device code) instead of assuming the CUDA-oriented
+      // MGARDX_WARP_SIZE=32: the merge-path search here uses shared memory
+      // with an explicit sync between operations (not warp-implicit
+      // shuffle/ballot lockstep), so it is safe to size to whatever the
+      // hardware actually reports, letting each block search a full
+      // wavefront's worth of the diagonal per step.
+      SIZE warp_size)
       : histogram(histogram), CL(CL), dict_size(dict_size),
         lNodesFreq(lNodesFreq), lNodesLeader(lNodesLeader),
         iNodesFreq(iNodesFreq), iNodesLeader(iNodesLeader), tempFreq(tempFreq),
         tempIsLeaf(tempIsLeaf), tempIndex(tempIndex), copyFreq(copyFreq),
         copyIsLeaf(copyIsLeaf), copyIndex(copyIndex),
         diagonal_path_intersections(diagonal_path_intersections),
-        status(status) {
+        status(status), warp_size(warp_size) {
     HuffmanCLCustomizedFunctor<DeviceType>();
   }
 
@@ -451,9 +462,9 @@ public:
     //   combinedIndex);
     // }
     threadOffset =
-        FunctorBase<DeviceType>::GetThreadIdX() - MGARDX_WARP_SIZE / 2;
+        FunctorBase<DeviceType>::GetThreadIdX() - warp_size / 2;
 
-    if (FunctorBase<DeviceType>::GetThreadIdX() < MGARDX_WARP_SIZE) {
+    if (FunctorBase<DeviceType>::GetThreadIdX() < warp_size) {
       // Figure out the coordinates of our diagonal
       if (A_length >= B_length) {
         *x_top = MIN(combinedIndex, A_length);
@@ -488,7 +499,7 @@ public:
     // dict_size);
     getfrom_y = (*status((IDX)_mergeFront)) + current_y;
 
-    if (FunctorBase<DeviceType>::GetThreadIdX() < MGARDX_WARP_SIZE) {
+    if (FunctorBase<DeviceType>::GetThreadIdX() < warp_size) {
       if (getfrom_y >= dict_size)
         getfrom_y -= dict_size;
 
@@ -519,7 +530,7 @@ public:
     // If we find the meeting of the '1's and '0's, we found the
     // intersection of the path and diagonal
     if (FunctorBase<DeviceType>::GetThreadIdX() > 0 and                //
-        FunctorBase<DeviceType>::GetThreadIdX() < MGARDX_WARP_SIZE and //
+        FunctorBase<DeviceType>::GetThreadIdX() < warp_size and //
         (oneorzero[FunctorBase<DeviceType>::GetThreadIdX()] !=
          oneorzero[FunctorBase<DeviceType>::GetThreadIdX() - 1]) //
     ) {
@@ -536,8 +547,8 @@ public:
 
   MGARDX_EXEC void Operation9() {
     // Adjust the search window on the diagonal
-    if (FunctorBase<DeviceType>::GetThreadIdX() == MGARDX_WARP_SIZE / 2) {
-      if (oneorzero[MGARDX_WARP_SIZE - 1] != 0) {
+    if (FunctorBase<DeviceType>::GetThreadIdX() == warp_size / 2) {
+      if (oneorzero[warp_size - 1] != 0) {
         *x_bottom = current_x;
         *y_bottom = current_y;
       } else {
@@ -743,7 +754,7 @@ public:
   MGARDX_CONT size_t shared_memory_size() {
     size_t sm_size = 0;
     sm_size += 5 * sizeof(int32_t);
-    sm_size += DeviceRuntime<DeviceType>::GetWarpSize() * sizeof(int32_t);
+    sm_size += warp_size * sizeof(int32_t);
     return sm_size;
   }
 
@@ -764,6 +775,7 @@ private:
   SubArray<1, int, DeviceType> copyIndex;
   SubArray<1, uint32_t, DeviceType> diagonal_path_intersections;
   SubArray<1, int, DeviceType, false, true> status;
+  SIZE warp_size;
 
   int32_t *x_top;
   int32_t *y_top;
@@ -817,16 +829,17 @@ public:
   MGARDX_CONT
   Task<GenerateCLFunctor<T, DeviceType>> GenTask(int queue_idx) {
     using FunctorType = GenerateCLFunctor<T, DeviceType>;
+    SIZE warp_size = DeviceRuntime<DeviceType>::GetWarpSize();
     FunctorType Functor(histogram, CL, dict_size, lNodesFreq, lNodesLeader,
                         iNodesFreq, iNodesLeader, tempFreq, tempIsLeaf,
                         tempIndex, copyFreq, copyIsLeaf, copyIndex,
-                        diagonal_path_intersections, status);
+                        diagonal_path_intersections, status, warp_size);
 
     SIZE tbx, tby, tbz, gridx, gridy, gridz;
     size_t sm_size = Functor.shared_memory_size();
     tbz = 1;
     tby = 1;
-    tbx = DeviceRuntime<DeviceType>::GetWarpSize();
+    tbx = warp_size;
 
     int cg_blocks_sm =
         DeviceRuntime<DeviceType>::GetOccupancyMaxActiveBlocksPerSM(

@@ -51,6 +51,8 @@ void print_usage_message(std::string error) {
 \t\t (optional) -ll / --local-levels <int>: number of local refactoring levels (default: 1)\n\
 \t\t (optional) -gl / --global-levels <int>: number of global refactoring levels (default: 0)\n\
 \t\t (optional) -v / --verbose <0|1|2|3> 0: error; 1: error+info; 2: error+timing; 3: all\n\
+\t\t (optional) -w / --warm-up: run a throwaway compress+decompress pass on a small\n\
+\t\t\t array first to pay HIP's one-time per-kernel load cost before timing\n\
 \n\
 \t -x / --decompress: decompress mode\n\
 \t\t -i / --input <path to compressed data>\n\
@@ -535,7 +537,7 @@ int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
                     enum mgard_x::device_type dev_type, int verbose,
                     mgard_x::SIZE max_memory_footprint,
                     int num_local_levels, int num_global_levels,
-                    bool use_hybrid) {
+                    bool use_hybrid, bool warm_up) {
   mgard_x::Config config;
   config.log_level = verbose_to_log_level(verbose);
   // Hybrid (block-local + global) hierarchy decomposition is opt-in via
@@ -660,6 +662,40 @@ int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
   if (in_size != original_size * sizeof(T)) {
     std::cout << mgard_x::log::log_warn << "input file size mismatch "
               << in_size << " vs. " << original_size * sizeof(T) << "!\n";
+  }
+
+  // HIP pays a one-time cold-start cost (~10-50ms) the first time each
+  // distinct kernel template is launched in a process (lazy code-object
+  // loading), which otherwise gets fully attributed to whichever pipeline
+  // stage happens to launch that kernel first. Stages launched many times
+  // per compress() call (decomposition) amortize it away; single-shot
+  // stages (quantization, most Huffman kernels) pay it in full. Run a
+  // throwaway pass on a small array of the same dtype/config first so the
+  // real, timed run below only measures steady-state performance.
+  if (warm_up && !enable_roi) {
+    std::vector<mgard_x::SIZE> warmup_shape(D);
+    for (mgard_x::DIM i = 0; i < D; i++) {
+      warmup_shape[i] = std::min(shape[i], (mgard_x::SIZE)33);
+    }
+    size_t warmup_size = 1;
+    for (mgard_x::DIM i = 0; i < D; i++) warmup_size *= warmup_shape[i];
+    T *warmup_data = (T *)malloc(warmup_size * sizeof(T));
+    for (size_t i = 0; i < warmup_size; i++) warmup_data[i] = (T)(i % 10 + 1);
+    size_t warmup_compressed_size = warmup_size * sizeof(T) * 2;
+    void *warmup_compressed_data = (void *)malloc(warmup_compressed_size);
+    void *warmup_decompressed_data = malloc(warmup_size * sizeof(T));
+
+    mgard_x::Config warmup_config = config;
+    warmup_config.log_level = mgard_x::log::ERR;
+    mgard_x::compress(D, dtype, warmup_shape, tol, s, mode, warmup_data,
+                      warmup_compressed_data, warmup_compressed_size,
+                      warmup_config, false);
+    mgard_x::decompress(warmup_compressed_data, warmup_compressed_size,
+                        warmup_decompressed_data, warmup_config, false);
+
+    free(warmup_data);
+    free(warmup_compressed_data);
+    free(warmup_decompressed_data);
   }
 
   size_t compressed_size = original_size * sizeof(T) * 2;
@@ -827,6 +863,7 @@ bool try_compression(int argc, char *argv[]) {
   if (has_arg(argc, argv, "-v", "--verbose")) {
     verbose = get_arg<int>(argc, argv, "Verbose", "-v", "--verbose");
   }
+  bool warm_up = has_arg(argc, argv, "-w", "--warm-up");
   mgard_x::SIZE max_memory_footprint =
       std::numeric_limits<mgard_x::SIZE>::max();
   if (has_arg(argc, argv, "-m", "--max-memory")) {
@@ -862,13 +899,13 @@ bool try_compression(int argc, char *argv[]) {
                             output_file.c_str(), shape, tol, tol_map, enable_roi, s, mode, lossless,
                             domain_decomposition, block_size, dev_type, verbose,
                             max_memory_footprint, num_local_levels,
-                            num_global_levels, use_hybrid);
+                            num_global_levels, use_hybrid, warm_up);
   } else if (dtype == mgard_x::data_type::Float) {
     launch_compress<float>(shape.size(), dtype, input_file.c_str(),
                            output_file.c_str(), shape, tol, tol_map, enable_roi, s, mode, lossless,
                            domain_decomposition, block_size, dev_type, verbose,
                            max_memory_footprint, num_local_levels,
-                           num_global_levels, use_hybrid);
+                           num_global_levels, use_hybrid, warm_up);
   }
   mgard_x::release_cache(mgard_x::Config());
   return true;

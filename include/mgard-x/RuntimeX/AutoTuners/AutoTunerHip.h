@@ -66,8 +66,8 @@ public:
   static constexpr int lwpk[num_types][num_dims] = {{3, 5, 5, 5, 2, 1, 2, 0, 0},
                                                     {3, 6, 4, 1, 2, 1, 1, 0, 0}};
 
-  static constexpr int lwqzk[num_types][num_dims] = {{4, 4, 3, 3, 3, 0, 2, 0, 0},
-                                                      {2, 3, 3, 3, 3, 0, 2, 0, 0}};
+  static constexpr int lwqzk[num_types][num_dims] = {{4, 6, 5, 5, 4, 0, 2, 0, 0},
+                                                      {3, 4, 6, 5, 4, 0, 2, 0, 0}};
 
   static constexpr int lwdqzk[num_types][num_dims] = {{4, 4, 3, 3, 3, 0, 2, 0, 0},
                                                       {2, 3, 3, 3, 3, 0, 2, 0, 0}};
@@ -87,7 +87,7 @@ public:
   static constexpr int deflate[num_types][num_dims] = {{1, 3, 3, 3, 3, 3, 3, 3, 3},
                                                     {3, 3, 3, 3, 3, 3, 3, 3, 3}};
 
-  static constexpr int decode[num_types][num_dims] = {{1, 3, 3, 3, 3, 3, 3, 3, 3},
+  static constexpr int decode[num_types][num_dims] = {{5, 3, 3, 3, 3, 3, 3, 3, 3},
                                                     {3, 3, 3, 3, 3, 3, 3, 3, 3}};
 
 };

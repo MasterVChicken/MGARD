@@ -19,9 +19,10 @@ public:
   HistogramFunctor(SubArray<1, T, DeviceType> input_data,
                    SubArray<1, int, DeviceType, false, true> local_histogram,
                    SubArray<1, Q, DeviceType> output, SIZE N, int bins,
-                   int RPerBlock)
+                   int RPerBlock, SIZE warp_size)
       : input_data(input_data), local_histogram(local_histogram),
-        output(output), N(N), bins(bins), RPerBlock(RPerBlock) {
+        output(output), N(N), bins(bins), RPerBlock(RPerBlock),
+        warp_size(warp_size) {
     Functor<DeviceType>();
   }
 
@@ -33,16 +34,23 @@ public:
                            bins);
     }
 
-    warpid = (int)(FunctorBase<DeviceType>::GetThreadIdX() / MGARDX_WARP_SIZE);
-    lane = FunctorBase<DeviceType>::GetThreadIdX() % MGARDX_WARP_SIZE;
-    warps_block = FunctorBase<DeviceType>::GetBlockDimX() / MGARDX_WARP_SIZE;
+    // Grid-stride partitioning granularity: this is arithmetic work
+    // partitioning (which "warp group" a thread belongs to for load
+    // balancing), not a hardware lockstep/shuffle assumption, so it is safe
+    // to size to the real warp/wavefront (DeviceRuntime::GetWarpSize(),
+    // threaded through as warp_size) rather than the CUDA-oriented
+    // MGARDX_WARP_SIZE=32 constant. Matching the real wavefront also keeps
+    // each warp's global-memory accesses (input_data(i) below) coalesced.
+    warpid = (int)(FunctorBase<DeviceType>::GetThreadIdX() / warp_size);
+    lane = FunctorBase<DeviceType>::GetThreadIdX() % warp_size;
+    warps_block = FunctorBase<DeviceType>::GetBlockDimX() / warp_size;
 
     off_rep = (bins) * (FunctorBase<DeviceType>::GetThreadIdX() % RPerBlock);
 
     begin = (N / warps_block) * warpid +
-            MGARDX_WARP_SIZE * FunctorBase<DeviceType>::GetBlockIdX() + lane;
+            warp_size * FunctorBase<DeviceType>::GetBlockIdX() + lane;
     end = (N / warps_block) * (warpid + 1);
-    step = MGARDX_WARP_SIZE * FunctorBase<DeviceType>::GetGridDimX();
+    step = warp_size * FunctorBase<DeviceType>::GetGridDimX();
 
     // final warp handles data outside of the warps_block partitions
     if (warpid >= warps_block - 1)
@@ -103,6 +111,7 @@ private:
   SIZE N;
   int bins;
   int RPerBlock;
+  SIZE warp_size;
 
   int *Hs;
 
@@ -137,7 +146,7 @@ public:
     using FunctorType = HistogramFunctor<T, Q, CACHE_HISTOGRAM, DeviceType>;
 
     FunctorType functor(input_data, local_histogram, output, N, bins,
-                        RPerBlock);
+                        RPerBlock, DeviceRuntime<DeviceType>::GetWarpSize());
 
     SIZE tbx, tby, tbz, gridx, gridy, gridz;
     size_t sm_size = functor.shared_memory_size();

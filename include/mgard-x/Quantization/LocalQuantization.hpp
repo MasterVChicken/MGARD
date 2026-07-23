@@ -13,8 +13,8 @@ namespace mgard_x {
 template <typename T, typename Q, OPTION OP, typename DeviceType>
 class QuantizeLocalLevelFunctor : public Functor<DeviceType> {
  public:
-  MGARDX_EXEC QuantizeLocalLevelFunctor() {}
-  MGARDX_EXEC QuantizeLocalLevelFunctor(T quantizer,
+  MGARDX_CONT QuantizeLocalLevelFunctor() {}
+  MGARDX_CONT QuantizeLocalLevelFunctor(T quantizer,
                                         SubArray<1, T, DeviceType> v,
                                         SubArray<1, Q, DeviceType> quantized_v,
                                         bool prep_huffman, SIZE dict_size)
@@ -106,8 +106,8 @@ class QuantizeLocalLevelKernel : public Kernel {
 template <typename T, typename Q, OPTION OP, typename DeviceType>
 class QuantizeLocalLevelROIFunctor : public Functor<DeviceType> {
  public:
-  MGARDX_EXEC QuantizeLocalLevelROIFunctor() {}
-  MGARDX_EXEC QuantizeLocalLevelROIFunctor(
+  MGARDX_CONT QuantizeLocalLevelROIFunctor() {}
+  MGARDX_CONT QuantizeLocalLevelROIFunctor(
       SubArray<1, T, DeviceType> quantizers, SubArray<1, T, DeviceType> v,
       SubArray<1, Q, DeviceType> quantized_v, bool prep_huffman,
       SIZE dict_size)
@@ -202,8 +202,8 @@ class QuantizeLocalLevelROIKernel : public Kernel {
 template <typename T, typename DeviceType>
 class ComputeROIQuantizersFunctor : public Functor<DeviceType> {
  public:
-  MGARDX_EXEC ComputeROIQuantizersFunctor() {}
-  MGARDX_EXEC ComputeROIQuantizersFunctor(
+  MGARDX_CONT ComputeROIQuantizersFunctor() {}
+  MGARDX_CONT ComputeROIQuantizersFunctor(
       SubArray<1, double, DeviceType> tolerance_map, SIZE level_offset,
       SIZE num_blocks, double norm_factor, double denom, bool reciprocal,
       SubArray<1, T, DeviceType> quantizers)

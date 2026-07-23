@@ -18,6 +18,7 @@ The build scripts provided here are example scripts for building MGARD on system
 
 #### For AMD GPUs:
 * `build_mgard_hip_frontier.sh` builds MGARD for AMD MI-250X GPUs on the Frontier supercomputer at OLCF
+* `build_mgard_hip_mi300.sh` builds MGARD for AMD MI-300A GPUs (e.g. the `odyssey` node on OACISS)
 
 #### For Intel GPUs:
 * `build_mgard_sycl_gen9.sh` builds MGARD for Intel Gen9 integrated GPUs

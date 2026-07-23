@@ -461,8 +461,12 @@ public:
       SupportCooperativeGroups[d] = true;
       hipDeviceProp_t prop;
       hipGetDeviceProperties(&prop, d);
-      // Setting WarpSize[d] to true value (64) can trigger a bug
-      WarpSize[d] = MGARDX_WARP_SIZE; // equal to 32
+      // WarpSize[d] holds the real hardware wavefront size queried above
+      // (64 on CDNA, 32 on RDNA). Code that launches warp-width thread
+      // blocks or partitions work by warp (Histogram, GenerateCL) must read
+      // this value at runtime rather than assuming MGARDX_WARP_SIZE (a
+      // CUDA-oriented compile-time constant) to stay correct and efficient
+      // across architectures.
       // DeviceNames[d] = std::string(prop.name); // Not working in HIP
       DeviceNames[d] = std::string("AMD GPU");
     }
