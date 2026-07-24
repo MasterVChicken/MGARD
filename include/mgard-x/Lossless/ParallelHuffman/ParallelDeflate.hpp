@@ -129,17 +129,24 @@ public:
     SIZE deflate_group_size = GetDeflateGroupSize<DeviceType>(chunk_size);
     FunctorType functor(data, codebook, group_bits, primary_count, chunk_size,
                         groups_per_chunk, ngroups, deflate_group_size);
-    // Empirically tuned on MI300: this kernel has no shared memory or
-    // cross-thread communication (each thread independently sums bitwidths
-    // for its own group), so block size is a pure occupancy knob. A direct
-    // sweep (256/512/768/960) found a non-monotonic curve -- 256 and 512
-    // both measure ~113 GB/s (combined with DeflatePack below, via the CLI's
-    // "Huffman compress" timer), 768 measures ~120-124 GB/s, and 960 drops
-    // back to ~111 GB/s. 768 is the peak, likely an occupancy sweet spot for
-    // this kernel's register/LDS footprint rather than a value that keeps
-    // climbing like OutlierSeparator's. Revisit with a fresh sweep if this
-    // kernel's per-thread work changes.
-    SIZE tbx = 768;
+    SIZE tbx;
+    if constexpr (std::is_same<DeviceType, HIP>::value) {
+      // Empirically tuned on MI300: this kernel has no shared memory or
+      // cross-thread communication (each thread independently sums bitwidths
+      // for its own group), so block size is a pure occupancy knob. A direct
+      // sweep (256/512/768/960) found a non-monotonic curve -- 256 and 512
+      // both measure ~113 GB/s (combined with DeflatePack below, via the
+      // CLI's "Huffman compress" timer), 768 measures ~120-124 GB/s, and 960
+      // drops back to ~111 GB/s. 768 is the peak, likely an occupancy sweet
+      // spot for this kernel's register/LDS footprint rather than a value
+      // that keeps climbing like OutlierSeparator's. This tuning is
+      // HIP/CDNA3-specific and untested on other backends, so it is guarded
+      // here rather than applied unconditionally. Revisit with a fresh
+      // sweep if this kernel's per-thread work changes.
+      tbx = 768;
+    } else {
+      tbx = 256;
+    }
     size_t sm_size = functor.shared_memory_size();
     SIZE gridx = (ngroups - 1) / tbx + 1;
     return Task(functor, 1, 1, gridx, 1, 1, tbx, sm_size, queue_idx,
@@ -372,10 +379,16 @@ public:
     FunctorType functor(data, codebook, group_offsets, chunk_word_offsets,
                         condensed, primary_count, chunk_size, groups_per_chunk,
                         ngroups, deflate_group_size);
-    // Same empirical sweep and reasoning as DeflateGroupBitsKernel above --
-    // 768 is the measured occupancy sweet spot on MI300 (256/512 ~113 GB/s,
-    // 768 ~120-124 GB/s, 960 back down to ~111 GB/s).
-    SIZE tbx = 768;
+    // Same empirical sweep, reasoning, and HIP-only guard as
+    // DeflateGroupBitsKernel above -- 768 is the measured occupancy sweet
+    // spot on MI300 (256/512 ~113 GB/s, 768 ~120-124 GB/s, 960 back down to
+    // ~111 GB/s), untested on other backends.
+    SIZE tbx;
+    if constexpr (std::is_same<DeviceType, HIP>::value) {
+      tbx = 768;
+    } else {
+      tbx = 256;
+    }
     size_t sm_size = functor.shared_memory_size();
     SIZE gridx = (ngroups - 1) / tbx + 1;
     return Task(functor, 1, 1, gridx, 1, 1, tbx, sm_size, queue_idx,

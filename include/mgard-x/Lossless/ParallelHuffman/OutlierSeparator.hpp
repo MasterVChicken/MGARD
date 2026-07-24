@@ -143,15 +143,20 @@ public:
     size_t sm_size = functor.shared_memory_size();
     tbz = 1;
     tby = 1;
-    // Empirically tuned on MI300: a direct sweep (64/128/256/512/768/896/
-    // 960/1024) found throughput climbing steeply with block size --
-    // 256 (the original) measures ~224 GB/s, 960 measures ~815 GB/s, a
-    // >3.5x improvement with no logic change. 1024 (the hardware max)
-    // reliably hung the kernel launch on this system, so 960 is used as
-    // the largest safely-tested value rather than chasing the last ~7%
-    // theoretical gain from 1024 at the risk of a hang. Revisit if this
-    // regresses on other hardware.
-    tbx = 960;
+    if constexpr (std::is_same<DeviceType, HIP>::value) {
+      // Empirically tuned on MI300: a direct sweep (64/128/256/512/768/896/
+      // 960/1024) found throughput climbing steeply with block size --
+      // 256 (the original) measures ~224 GB/s, 960 measures ~815 GB/s, a
+      // >3.5x improvement with no logic change. 1024 (the hardware max)
+      // reliably hung the kernel launch on this system, so 960 is used as
+      // the largest safely-tested value rather than chasing the last ~7%
+      // theoretical gain from 1024 at the risk of a hang. This tuning is
+      // HIP/CDNA3-specific and untested on other backends, so it is guarded
+      // here rather than applied unconditionally.
+      tbx = 960;
+    } else {
+      tbx = 256;
+    }
     gridz = 1;
     gridy = 1;
     // RESTORE is a sparse scatter over the outliers only (outlier_value is
