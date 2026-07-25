@@ -50,7 +50,7 @@ public:
 
   MGARDX_EXEC void initialize_sm_8x8x8() {
     sm_v = (T *)FunctorBase<DeviceType>::GetSharedMemory();
-    sm_x = sm_v + 8 * 8 * 8;
+    sm_x = sm_v + SMV_SIZE_8x8x8;  // sm_v is padded for bank-conflict avoidance
     sm_y = sm_x + 5 * 8 * 8;
     sm_z = sm_y + 5 * 5 * 8;
   }
@@ -99,7 +99,7 @@ public:
     if (z == 0 && y == 0 && x == 0)
       sm_v[zero_const_offset] = (T)0;
 
-    offset = get_idx(ld1, ld2, z, y, x);
+    offset = offset8x8x8(z, y, x);  // padded sm_v layout
     sm_v[offset] = 0.0;
     // Removing this check can speed up
     // if (z_gl < v.shape(D - 3) && y_gl < v.shape(D - 2) &&
@@ -433,7 +433,7 @@ public:
   }
 
   MGARDX_CONT size_t shared_memory_size() {
-    size_t size = (Z * Y * X) + Z * Y * (X / 2 + 1) +
+    size_t size = SMV_SIZE_8x8x8 + Z * Y * (X / 2 + 1) +
                   Z * (Y / 2 + 1) * (X / 2 + 1) +
                   (Z / 2 + 1) * (Y / 2 + 1) * (X / 2 + 1) + 1;
     return size * sizeof(T);
@@ -450,7 +450,7 @@ protected:
   int tid, bid, op_tid;
   T left, right, middle;
   int offset;
-  int zero_const_offset = (Z * Y * X) + Z * Y * (X / 2 + 1) +
+  int zero_const_offset = SMV_SIZE_8x8x8 + Z * Y * (X / 2 + 1) +
                           Z * (Y / 2 + 1) * (X / 2 + 1) +
                           (Z / 2 + 1) * (Y / 2 + 1) * (X / 2 + 1);
   // #ifdef MGARDX_COMPILE_CUDA
@@ -505,7 +505,7 @@ public:
     if (this->z == 0 && this->y == 0 && this->x == 0)
       this->sm_v[this->zero_const_offset] = (T)0;
 
-    this->offset = get_idx(this->ld1, this->ld2, this->z, this->y, this->x);
+    this->offset = offset8x8x8(this->z, this->y, this->x);  // padded sm_v layout
     this->sm_v[this->offset] = 0.0;
     // Unlike the unfused functor, keep the bounds check: the input here is
     // not pre-padded to a multiple of 8, so edge blocks must zero-fill.

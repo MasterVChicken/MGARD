@@ -50,7 +50,7 @@ public:
 
   MGARDX_EXEC void initialize_sm_8x8x8() {
     sm_v = (T *)FunctorBase<DeviceType>::GetSharedMemory();
-    sm_x = sm_v + 8 * 8 * 8;
+    sm_x = sm_v + SMV_SIZE_8x8x8;  // sm_v is padded for bank-conflict avoidance
     sm_y = sm_x + 5 * 8 * 8;
     sm_z = sm_y + 5 * 5 * 8;
   }
@@ -422,14 +422,14 @@ public:
 
   // store data
   MGARDX_EXEC void Operation10() {
-    offset = get_idx(ld1, ld2, z, y, x);
+    offset = offset8x8x8(z, y, x);  // padded sm_v layout
     *v(z_gl, y_gl, x_gl) = sm_v[offset];
     // printf("v[%d, %d, %d] = %f\n", z_gl, y_gl, x_gl, sm_v[offset]);
     // }
   }
 
   MGARDX_CONT size_t shared_memory_size() {
-    size_t size = (Z * Y * X) + Z * Y * (X / 2 + 1) +
+    size_t size = SMV_SIZE_8x8x8 + Z * Y * (X / 2 + 1) +
                   Z * (Y / 2 + 1) * (X / 2 + 1) +
                   (Z / 2 + 1) * (Y / 2 + 1) * (X / 2 + 1) + 1;
     return size * sizeof(T);
@@ -446,7 +446,7 @@ private:
   int tid, bid, op_tid;
   T left, right, middle;
   int offset;
-  int zero_const_offset = (Z * Y * X) + Z * Y * (X / 2 + 1) +
+  int zero_const_offset = SMV_SIZE_8x8x8 + Z * Y * (X / 2 + 1) +
                           Z * (Y / 2 + 1) * (X / 2 + 1) +
                           (Z / 2 + 1) * (Y / 2 + 1) * (X / 2 + 1);
   // #ifdef MGARDX_COMPILE_CUDA
