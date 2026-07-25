@@ -125,8 +125,18 @@ using IDX = uint64_t;
 using ATOMIC_IDX = unsigned long long int;
 using SIZE = uint64_t;
 using DIM = uint8_t;
-using QUANTIZED_INT = int64_t;
-using QUANTIZED_UNSIGNED_INT = uint64_t;
+// Quantized coefficients are stored as 32-bit integers (the original MGARD
+// width). This halves the memory traffic of the DRAM-bound lossless stage
+// (Huffman histogram/deflate/outlier) and the fused kernel's coefficient
+// store, and halves the quantized buffer footprint, vs the previous 64-bit
+// width. Valid as long as |quantized value| < 2^31. This holds for all
+// typical tolerances and for any float input (float can't resolve tolerances
+// tight enough to overflow, and MGARD falls back to store-original first).
+// Genuine double input at rel tolerance <~1e-8 can exceed 2^31 and wrap,
+// corrupting those coefficients (the L-inf check then reports "not
+// satisfied"); such cases would need the 64-bit width restored here.
+using QUANTIZED_INT = int32_t;
+using QUANTIZED_UNSIGNED_INT = uint32_t;
 using HUFFMAN_CODE = uint64_t;
 using SERIALIZED_TYPE = unsigned char;
 using Byte = unsigned char;
