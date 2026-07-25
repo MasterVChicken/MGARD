@@ -11,11 +11,27 @@
 namespace mgard_x {
 // clang-format off
 
+// --- Padded shared-memory layout for the 8x8x8 input plane (sm_v) ---
+// The transform stores the 8^3 block in shared memory (sm_v) and then reads it
+// with power-of-two strides (coefficient stencils differ by 2/4/8 in y and z),
+// which collide on the 32 shared-memory banks (ncu measured avg 2.8-way load
+// conflicts, ~65% of shared-load wavefronts wasted). Pad sm_v's y-stride to 9
+// and z-stride to 71 (both coprime with 32) so those accesses scatter across
+// banks. Only sm_v is padded; sm_x/sm_y/sm_z keep their layouts. Every sm_v
+// access routes through offset8x8x8, so the constexpr offset tables below
+// regenerate for the padded layout automatically.
+static constexpr int SMV_LDY_8x8x8 = 9;    // physical x-row length (was 8)
+static constexpr int SMV_LDZ_8x8x8 = 71;   // physical z-plane stride (was 64)
+static constexpr int SMV_SIZE_8x8x8 = 568; // 7*71 + 7*9 + 7 + 1 (was 512)
+
 MGARDX_EXEC constexpr int offset8x8x8(SIZE z, SIZE y, SIZE x) {
-  return z * 8 * 8 + y * 8 + x;
+  return z * SMV_LDZ_8x8x8 + y * SMV_LDY_8x8x8 + x;
 }
 
 MGARDX_EXEC constexpr int offset8x8x8(SIZE z, SIZE y, SIZE x, SIZE ld1, SIZE ld2) {
+  // sm_v is the only array with an 8x8 leading layout; use the padded strides.
+  if (ld1 == 8 && ld2 == 8)
+    return z * SMV_LDZ_8x8x8 + y * SMV_LDY_8x8x8 + x;
   return z * ld1 * ld2 + y * ld1 + x;
 }
 
@@ -1952,7 +1968,7 @@ MGARDX_EXEC T const *MassTrans_Weights_8x8x8(SIZE i) {
 }
 
 MGARDX_EXEC int const *MassTrans_X_Offset_8x8x8(SIZE i) {
-  static constexpr int zero_offset = 8*8*8 + 8*8*5 + 8*5*5 + 5*5*5;
+  static constexpr int zero_offset = SMV_SIZE_8x8x8 + 8*8*5 + 8*5*5 + 5*5*5;
   #define OFFSET1(Z, Y)                            \
   {                                                \
     zero_offset,                                   \
