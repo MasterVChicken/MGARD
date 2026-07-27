@@ -62,10 +62,10 @@ void recompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
   }
 }
 
-}  // namespace in_cache_block
+} // namespace in_cache_block
 
-}  // namespace data_refactoring
+} // namespace data_refactoring
 
-}  // namespace mgard_x
+} // namespace mgard_x
 
 #endif

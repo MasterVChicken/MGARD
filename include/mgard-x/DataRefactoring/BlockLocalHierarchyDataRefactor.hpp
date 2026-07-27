@@ -10,11 +10,11 @@ namespace data_refactoring {
 
 template <DIM D, typename T, typename DeviceType>
 class BlockLocalHierarchyDataRefactor {
- public:
+public:
   BlockLocalHierarchyDataRefactor() : initialized(false) {}
 
   // Removing all checks for L since processed in HybridHierarchyDataRefactor
-  BlockLocalHierarchyDataRefactor(Hierarchy<D, T, DeviceType>& hierarchy,
+  BlockLocalHierarchyDataRefactor(Hierarchy<D, T, DeviceType> &hierarchy,
                                   Config config)
       : initialized(true), hierarchy(&hierarchy), config(config) {
     this->L = config.num_local_refactoring_level;
@@ -26,7 +26,7 @@ class BlockLocalHierarchyDataRefactor {
     coarse_buffers[1] = Array<D, T, DeviceType>(fine_shapes[0]);
   }
 
-  void Adapt(Hierarchy<D, T, DeviceType>& hierarchy, Config config,
+  void Adapt(Hierarchy<D, T, DeviceType> &hierarchy, Config config,
              int queue_idx) {
     this->initialized = true;
     this->hierarchy = &hierarchy;
@@ -180,9 +180,9 @@ class BlockLocalHierarchyDataRefactor {
     multi_dimension::CopyND(SubArray(temp_coarest), output_decomposed,
                             queue_idx);
 
-    SubArray<1, T, DeviceType> data_coeff(
-        {DecomposedCoeffSize()},
-        output_decomposed.data() + coarse_num_elems[this->L - 1]);
+    SubArray<1, T, DeviceType> data_coeff({DecomposedCoeffSize()},
+                                          output_decomposed.data() +
+                                              coarse_num_elems[this->L - 1]);
     multi_dimension::CopyND(decomposed_coeff, data_coeff, queue_idx);
 
     // PrintSubarray("Temp in decompose:",SubArray(temp_coarest));
@@ -197,14 +197,17 @@ class BlockLocalHierarchyDataRefactor {
     }
 
     // Initialize accumulated_local_coeff_size so that Recompose works correctly
-    // regardless of whether Decompose was called first (e.g., standalone decompress).
+    // regardless of whether Decompose was called first (e.g., standalone
+    // decompress).
     accumulated_local_coeff_size = DecomposedCoeffSize();
 
-    // Restore temp_coarest from input_decomposed (the first coarse_num_elems[L-1]
-    // elements). This is critical for standalone decompression where Decompose was
-    // never called and temp_coarest was never populated. After global Recompose,
-    // input_decomposed[0..coarse_num_elems[L-1]-1] holds the correctly reconstructed
-    // coarsest values, which we must use here instead of stale/zero temp_coarest.
+    // Restore temp_coarest from input_decomposed (the first
+    // coarse_num_elems[L-1] elements). This is critical for standalone
+    // decompression where Decompose was never called and temp_coarest was never
+    // populated. After global Recompose,
+    // input_decomposed[0..coarse_num_elems[L-1]-1] holds the correctly
+    // reconstructed coarsest values, which we must use here instead of
+    // stale/zero temp_coarest.
     multi_dimension::CopyND(
         SubArray<1, T, DeviceType>({coarse_num_elems[this->L - 1]},
                                    input_decomposed.data()),
@@ -277,7 +280,7 @@ class BlockLocalHierarchyDataRefactor {
   SIZE accumulated_local_coeff_size = 0;
   bool initialized;
   SIZE L;
-  Hierarchy<D, T, DeviceType>* hierarchy;
+  Hierarchy<D, T, DeviceType> *hierarchy;
   Config config;
 
   std::vector<SIZE> fine_num_elems;
@@ -294,7 +297,7 @@ class BlockLocalHierarchyDataRefactor {
   Array<1, T, DeviceType> temp_coarest;
 };
 
-}  // namespace data_refactoring
-}  // namespace mgard_x
+} // namespace data_refactoring
+} // namespace mgard_x
 
 #endif

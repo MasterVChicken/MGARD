@@ -6,7 +6,8 @@ enum compress_status_type compress_pipeline_gpu(
     Config &config, Byte *compressed_subdomain_data,
     SIZE &compressed_subdomain_size) {
   Timer timer_series;
-  if (log::level & log::TIME) timer_series.start();
+  if (log::level & log::TIME)
+    timer_series.start();
 
   using Cache = CompressorCache<D, T, DeviceType, CompressorType>;
   using HierarchyType = typename CompressorType::HierarchyType;
@@ -47,7 +48,6 @@ enum compress_status_type compress_pipeline_gpu(
       domain_decomposer.subdomain_shape(domain_decomposer.largest_subdomain()));
   log::info("Adapt Compressor to hierarchy");
   compressor.Adapt(hierarchy, config, 0);
-  
 
   DeviceRuntime<DeviceType>::SyncDevice();
 
@@ -219,17 +219,20 @@ enum compress_status_type compress_pipeline_gpu(
   if (profile) {
     std::cout << "comp: "
               << "\n";
-    for (float t : comp) std::cout << t << ", ";
+    for (float t : comp)
+      std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "h2d: "
               << "\n";
-    for (float t : h2d) std::cout << t << ", ";
+    for (float t : h2d)
+      std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "d2h: "
               << "\n";
-    for (float t : d2h) std::cout << t << ", ";
+    for (float t : d2h)
+      std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "size: "
@@ -261,7 +264,8 @@ enum compress_status_type decompress_pipeline_gpu(
     T local_tol, T s, T norm, enum error_bound_type local_ebtype,
     Config &config, Byte *compressed_subdomain_data) {
   Timer timer_series;
-  if (log::level & log::TIME) timer_series.start();
+  if (log::level & log::TIME)
+    timer_series.start();
 
   SIZE byte_offset = 0;
   using Cache = CompressorCache<D, T, DeviceType, CompressorType>;
@@ -482,10 +486,11 @@ enum compress_status_type decompress_pipeline_gpu(
           linearized_width, current_queue);
     }
 
-      // compressor.Dequantize(device_subdomain_buffer[current_buffer], local_ebtype, local_tol, s, norm, current_queue);
+    // compressor.Dequantize(device_subdomain_buffer[current_buffer],
+    // local_ebtype, local_tol, s, norm, current_queue);
 
-      // compressor.Recompose(device_subdomain_buffer[current_buffer],
-      //                      current_queue);
+    // compressor.Recompose(device_subdomain_buffer[current_buffer],
+    //                      current_queue);
 
     if (profile) {
       DeviceRuntime<DeviceType>::SyncDevice();
@@ -546,17 +551,20 @@ enum compress_status_type decompress_pipeline_gpu(
     // GB/s)"<< "\n";
     std::cout << "comp: "
               << "\n";
-    for (float t : comp) std::cout << t << ", ";
+    for (float t : comp)
+      std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "h2d: "
               << "\n";
-    for (float t : h2d) std::cout << t << ", ";
+    for (float t : h2d)
+      std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "d2h: "
               << "\n";
-    for (float t : d2h) std::cout << t << ", ";
+    for (float t : d2h)
+      std::cout << t << ", ";
     std::cout << "\n";
 
     std::cout << "size: "
@@ -580,4 +588,4 @@ enum compress_status_type decompress_pipeline_gpu(
   }
   return compress_status_type::Success;
 }
-}  // namespace mgard_x
+} // namespace mgard_x

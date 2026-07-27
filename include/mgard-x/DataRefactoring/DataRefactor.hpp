@@ -18,27 +18,29 @@ namespace data_refactoring {
 
 template <DIM D, typename T, typename DeviceType>
 class DataRefactor : public DataRefactorInterface<D, T, DeviceType> {
- public:
+public:
   DataRefactor() : initialized(false) {}
-  DataRefactor(Hierarchy<D, T, DeviceType>& hierarchy, Config config)
+  DataRefactor(Hierarchy<D, T, DeviceType> &hierarchy, Config config)
       : initialized(true), hierarchy(&hierarchy), config(config) {
     std::vector<SIZE> workspace_shape =
         hierarchy.level_shape(hierarchy.l_target());
-    for (DIM d = 0; d < D; d++) workspace_shape[d] += 2;
+    for (DIM d = 0; d < D; d++)
+      workspace_shape[d] += 2;
     w_array = Array<D, T, DeviceType>(workspace_shape);
     if (D > 3) {
       b_array = Array<D, T, DeviceType>(workspace_shape);
     }
   }
 
-  void Adapt(Hierarchy<D, T, DeviceType>& hierarchy, Config config,
+  void Adapt(Hierarchy<D, T, DeviceType> &hierarchy, Config config,
              int queue_idx) {
     this->initialized = true;
     this->hierarchy = &hierarchy;
     this->config = config;
     std::vector<SIZE> workspace_shape =
         hierarchy.level_shape(hierarchy.l_target());
-    for (DIM d = 0; d < D; d++) workspace_shape[d] += 2;
+    for (DIM d = 0; d < D; d++)
+      workspace_shape[d] += 2;
     w_array.resize(workspace_shape, queue_idx);
     if (D > 3) {
       b_array.resize(workspace_shape, queue_idx);
@@ -92,7 +94,8 @@ class DataRefactor : public DataRefactorInterface<D, T, DeviceType> {
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer.end();
-      timer.print("Global Decomposition", hierarchy->total_num_elems() * sizeof(T));
+      timer.print("Global Decomposition",
+                  hierarchy->total_num_elems() * sizeof(T));
       timer.clear();
     }
   }
@@ -105,7 +108,8 @@ class DataRefactor : public DataRefactorInterface<D, T, DeviceType> {
     }
     SubArray<D, T, DeviceType> w_subarray(w_array);
     SubArray<D, T, DeviceType> b_subarray;
-    if (D > 3) b_subarray = SubArray<D, T, DeviceType>(b_array);
+    if (D > 3)
+      b_subarray = SubArray<D, T, DeviceType>(b_array);
     if (config.decomposition == decomposition_type::MultiDim) {
       multi_dimension::recompose<D, T, DeviceType>(
           *hierarchy, data, w_subarray, b_subarray, start_level, stop_level,
@@ -117,7 +121,8 @@ class DataRefactor : public DataRefactorInterface<D, T, DeviceType> {
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer.end();
-      timer.print("Global Recomposition", hierarchy->total_num_elems() * sizeof(T));
+      timer.print("Global Recomposition",
+                  hierarchy->total_num_elems() * sizeof(T));
       timer.clear();
     }
   }
@@ -133,14 +138,14 @@ class DataRefactor : public DataRefactorInterface<D, T, DeviceType> {
   }
 
   bool initialized;
-  Hierarchy<D, T, DeviceType>* hierarchy;
+  Hierarchy<D, T, DeviceType> *hierarchy;
   Config config;
   Array<D, T, DeviceType> w_array;
   Array<D, T, DeviceType> b_array;
 };
 
-}  // namespace data_refactoring
+} // namespace data_refactoring
 
-}  // namespace mgard_x
+} // namespace mgard_x
 
 #endif

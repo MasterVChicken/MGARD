@@ -118,7 +118,8 @@ void GetCodebook(int dict_size, size_t primary_count,
     // Throw (instead of exit) so callers can catch and fall back to another
     // lossless backend (e.g. raw Zstd) or retry with a smaller huff_dict_size.
     // A longer dictionary makes the tree deeper, so a degenerate/low-entropy
-    // input can produce codewords exceeding the H-type budget (sizeof(H)*8 - 8).
+    // input can produce codewords exceeding the H-type budget (sizeof(H)*8 -
+    // 8).
     throw ProcessingException(
         "Cannot store all Huffman codewords in " +
         std::to_string(max_CW_bits + 8) +

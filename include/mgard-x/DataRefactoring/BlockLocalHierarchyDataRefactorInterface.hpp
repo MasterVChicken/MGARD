@@ -10,8 +10,8 @@ class BlockLocalHierarchyDataRefactor {
   virtual void Recompose(SubArray<D, T, DeviceType> data, int queue_idx) = 0;
 };
 
-}  // namespace data_refactoring
+} // namespace data_refactoring
 
-}  // namespace mgard_x
+} // namespace mgard_x
 
 #endif

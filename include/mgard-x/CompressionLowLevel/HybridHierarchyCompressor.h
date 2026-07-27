@@ -26,7 +26,7 @@ namespace mgard_x {
 template <DIM D, typename T, typename DeviceType>
 class HybridHierarchyCompressor
     : public LossyCompressorInterface<D, T, DeviceType> {
- public:
+public:
   using HierarchyType = Hierarchy<D, T, DeviceType>;
   //   using BlockLocalHierarchyDataRefactorType =
   //       data_refactoring::BlockLocalHierarchyDataRefactor<D, T, DeviceType>;
@@ -41,57 +41,57 @@ class HybridHierarchyCompressor
 
   HybridHierarchyCompressor();
 
-  HybridHierarchyCompressor(Hierarchy<D, T, DeviceType>& hierarchy,
+  HybridHierarchyCompressor(Hierarchy<D, T, DeviceType> &hierarchy,
                             Config config);
 
-  void Adapt(Hierarchy<D, T, DeviceType>& hierarchy, Config config,
+  void Adapt(Hierarchy<D, T, DeviceType> &hierarchy, Config config,
              int queue_idx);
 
   static size_t EstimateMemoryFootprint(std::vector<SIZE> shape, Config config);
 
-  void CalculateNorm(Array<D, T, DeviceType>& original_data,
-                     enum error_bound_type ebtype, T s, T& norm, int queue_idx);
+  void CalculateNorm(Array<D, T, DeviceType> &original_data,
+                     enum error_bound_type ebtype, T s, T &norm, int queue_idx);
 
-  void Decompose(Array<D, T, DeviceType>& original_data, int queue_idx);
+  void Decompose(Array<D, T, DeviceType> &original_data, int queue_idx);
 
-  void Quantize(Array<D, T, DeviceType>& original_data,
+  void Quantize(Array<D, T, DeviceType> &original_data,
                 enum error_bound_type ebtype, T tol, T s, T norm,
                 int queue_idx);
 
-  void LosslessCompress(Array<1, Byte, DeviceType>& compressed_data,
+  void LosslessCompress(Array<1, Byte, DeviceType> &compressed_data,
                         int queue_idx);
 
-  void Serialize(Array<1, Byte, DeviceType>& compressed_data, int queue_idx);
+  void Serialize(Array<1, Byte, DeviceType> &compressed_data, int queue_idx);
 
-  void Deserialize(Array<1, Byte, DeviceType>& compressed_data, int queue_idx);
+  void Deserialize(Array<1, Byte, DeviceType> &compressed_data, int queue_idx);
 
   void Recompose(Array<D, T, DeviceType> &decompressed_data,
                  bool orthogonal_projection, int queue_idx);
 
-  void Dequantize(Array<D, T, DeviceType>& decompressed_data,
+  void Dequantize(Array<D, T, DeviceType> &decompressed_data,
                   enum error_bound_type ebtype, T tol, T s, T norm,
                   int queue_idx);
 
-  void LosslessDecompress(Array<1, Byte, DeviceType>& compressed_data,
+  void LosslessDecompress(Array<1, Byte, DeviceType> &compressed_data,
                           int queue_idx);
 
-  void Compress(Array<D, T, DeviceType>& original_data,
-                enum error_bound_type ebtype, T tol, T s, T& norm,
-                Array<1, Byte, DeviceType>& compressed_data, int queue_idx);
-  void Decompress(Array<1, Byte, DeviceType>& compressed_data,
-                  enum error_bound_type ebtype, T tol, T s, T& norm,
-                  Array<D, T, DeviceType>& decompressed_data, int queue_idx);
+  void Compress(Array<D, T, DeviceType> &original_data,
+                enum error_bound_type ebtype, T tol, T s, T &norm,
+                Array<1, Byte, DeviceType> &compressed_data, int queue_idx);
+  void Decompress(Array<1, Byte, DeviceType> &compressed_data,
+                  enum error_bound_type ebtype, T tol, T s, T &norm,
+                  Array<D, T, DeviceType> &decompressed_data, int queue_idx);
 
-  static SIZE calculate_padded_size(Hierarchy<D, T, DeviceType>& hierarchy,
+  static SIZE calculate_padded_size(Hierarchy<D, T, DeviceType> &hierarchy,
                                     Config config);
 
   bool initialized;
-  Hierarchy<D, T, DeviceType>* hierarchy;
+  Hierarchy<D, T, DeviceType> *hierarchy;
   Config config;
   Array<1, T, DeviceType> norm_tmp_array;
   Array<1, T, DeviceType> norm_array;
-//   Array<1, T, DeviceType> local_decomposed_array;
-//   Array<1, QUANTIZED_INT, DeviceType> local_quantized_array;
+  //   Array<1, T, DeviceType> local_decomposed_array;
+  //   Array<1, QUANTIZED_INT, DeviceType> local_quantized_array;
   Array<1, T, DeviceType> hybrid_decomposed_array;
   Array<1, QUANTIZED_INT, DeviceType> hybrid_quantized_array;
   //   BlockLocalHierarchyDataRefactorType local_refactor;
@@ -101,6 +101,6 @@ class HybridHierarchyCompressor
   LosslessCompressorType lossless_compressor;
 };
 
-}  // namespace mgard_x
+} // namespace mgard_x
 
 #endif
