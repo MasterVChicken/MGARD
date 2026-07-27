@@ -5,10 +5,10 @@
  * Date: March 17, 2022
  */
 
+#include "../RuntimeX/Utilities/Exceptions.h"
 #include "BlockLocalHierarchyDataRefactor.hpp"
 #include "DataRefactor.hpp"
 #include "HybridHierarchyDataRefactorInterface.hpp"
-#include "../RuntimeX/Utilities/Exceptions.h"
 #include "InCacheBlock/DataRefactoring.h"
 #include "MultiDimension/DataRefactoring.h"
 #include "SingleDimension/DataRefactoring.h"
@@ -22,16 +22,16 @@ namespace data_refactoring {
 template <DIM D, typename T, typename DeviceType>
 class HybridHierarchyDataRefactor
     : public HybridHierarchyDataRefactorInterface<D, T, DeviceType> {
- public:
+public:
   HybridHierarchyDataRefactor() : initialized(false) {}
-  HybridHierarchyDataRefactor(Hierarchy<D, T, DeviceType>& hierarchy,
+  HybridHierarchyDataRefactor(Hierarchy<D, T, DeviceType> &hierarchy,
                               Config config)
       : initialized(true), hierarchy(&hierarchy), config(config) {
     this->L = config.num_local_refactoring_level;
     this->M = config.num_global_refactoring_level;
   }
 
-  void Adapt(Hierarchy<D, T, DeviceType>& hierarchy, Config config,
+  void Adapt(Hierarchy<D, T, DeviceType> &hierarchy, Config config,
              int queue_idx) {
     this->initialized = true;
     this->hierarchy = &hierarchy;
@@ -215,19 +215,19 @@ class HybridHierarchyDataRefactor
   }
 
   bool initialized;
-  Hierarchy<D, T, DeviceType>* hierarchy;
+  Hierarchy<D, T, DeviceType> *hierarchy;
   Hierarchy<D, T, DeviceType> global_hierarchy;
   Config config;
 
-  SIZE L;  // Number of local levels
-  SIZE M;  // Number of global levels
+  SIZE L; // Number of local levels
+  SIZE M; // Number of global levels
 
   BlockLocalHierarchyDataRefactor<D, T, DeviceType> local_refactor;
   DataRefactor<D, T, DeviceType> global_refactor;
 };
 
-}  // namespace data_refactoring
+} // namespace data_refactoring
 
-}  // namespace mgard_x
+} // namespace mgard_x
 
 #endif

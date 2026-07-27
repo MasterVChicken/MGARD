@@ -11,7 +11,6 @@
 #define HIP_ENABLE_WARP_SYNC_BUILTINS
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
-#include <hip/hip_runtime.h>
 #include <hipcub/hipcub.hpp>
 #include <iostream>
 // #include <mma.h>

@@ -145,8 +145,8 @@ public:
   GenTask(int queue_idx) {
     using FunctorType = HistogramFunctor<T, Q, CACHE_HISTOGRAM, DeviceType>;
 
-    FunctorType functor(input_data, local_histogram, output, N, bins,
-                        RPerBlock, DeviceRuntime<DeviceType>::GetWarpSize());
+    FunctorType functor(input_data, local_histogram, output, N, bins, RPerBlock,
+                        DeviceRuntime<DeviceType>::GetWarpSize());
 
     SIZE tbx, tby, tbz, gridx, gridy, gridz;
     size_t sm_size = functor.shared_memory_size();

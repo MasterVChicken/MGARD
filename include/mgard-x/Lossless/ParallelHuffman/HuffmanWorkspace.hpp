@@ -80,7 +80,8 @@ public:
     size += nchunk * sizeof(size_t);
 
     // Parallel deflate
-    SIZE groups_per_chunk = (chunk_size - 1) / GetDeflateGroupSize<DeviceType>(chunk_size) + 1;
+    SIZE groups_per_chunk =
+        (chunk_size - 1) / GetDeflateGroupSize<DeviceType>(chunk_size) + 1;
     size_t ngroups = nchunk * groups_per_chunk;
     size += ngroups * sizeof(size_t);       // group_bits
     size += (ngroups + 1) * sizeof(size_t); // group_offsets
@@ -141,7 +142,8 @@ public:
         Array<1, size_t, DeviceType>({(SIZE)nchunk});
 
     // Parallel deflate
-    SIZE groups_per_chunk = (chunk_size - 1) / GetDeflateGroupSize<DeviceType>(chunk_size) + 1;
+    SIZE groups_per_chunk =
+        (chunk_size - 1) / GetDeflateGroupSize<DeviceType>(chunk_size) + 1;
     SIZE ngroups = (SIZE)(nchunk * groups_per_chunk);
     deflate_group_bits_array = Array<1, size_t, DeviceType>({ngroups});
     deflate_group_offsets_array = Array<1, size_t, DeviceType>({ngroups + 1});
@@ -219,7 +221,8 @@ public:
     condense_actual_lengths_array.resize({(SIZE)nchunk}, queue_idx);
 
     // Parallel deflate
-    SIZE groups_per_chunk = (chunk_size - 1) / GetDeflateGroupSize<DeviceType>(chunk_size) + 1;
+    SIZE groups_per_chunk =
+        (chunk_size - 1) / GetDeflateGroupSize<DeviceType>(chunk_size) + 1;
     SIZE ngroups = (SIZE)(nchunk * groups_per_chunk);
     deflate_group_bits_array.resize({ngroups}, queue_idx);
     deflate_group_offsets_array.resize({ngroups + 1}, queue_idx);

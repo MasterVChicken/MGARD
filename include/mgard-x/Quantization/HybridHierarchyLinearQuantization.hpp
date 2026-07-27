@@ -21,16 +21,14 @@ namespace mgard_x {
 template <DIM D, typename T, typename Q, typename DeviceType>
 class HybridHierarchyQuantizer
     : public QuantizationInterface<D, T, Q, DeviceType> {
- public:
+public:
   HybridHierarchyQuantizer() : initialized(false) {}
 
-  HybridHierarchyQuantizer(Hierarchy<D, T, DeviceType>& hierarchy,
-                           Hierarchy<D, T, DeviceType>& global_hierarchy,
+  HybridHierarchyQuantizer(Hierarchy<D, T, DeviceType> &hierarchy,
+                           Hierarchy<D, T, DeviceType> &global_hierarchy,
                            Config config)
-      : initialized(true),
-        hierarchy(&hierarchy),
-        global_hierarchy(&global_hierarchy),
-        config(config) {
+      : initialized(true), hierarchy(&hierarchy),
+        global_hierarchy(&global_hierarchy), config(config) {
     this->L = config.num_local_refactoring_level;
     this->M = config.num_global_refactoring_level;
 
@@ -39,8 +37,8 @@ class HybridHierarchyQuantizer
     }
   }
 
-  void Adapt(Hierarchy<D, T, DeviceType>& hierarchy,
-             Hierarchy<D, T, DeviceType>& global_hierarchy, Config config,
+  void Adapt(Hierarchy<D, T, DeviceType> &hierarchy,
+             Hierarchy<D, T, DeviceType> &global_hierarchy, Config config,
              int queue_idx) {
     this->initialized = true;
     this->hierarchy = &hierarchy;
@@ -73,7 +71,7 @@ class HybridHierarchyQuantizer
   }
 
   // Set block-level tolerances according to ROI table
-  void SetBlockTolerances(const std::vector<double>& initial_block_tolerances,
+  void SetBlockTolerances(const std::vector<double> &initial_block_tolerances,
                           int queue_idx) {
     BuildROIToleranceMap(initial_block_tolerances);
     // Upload once here so Quantize/Dequantize don't have to re-upload the
@@ -90,8 +88,8 @@ class HybridHierarchyQuantizer
     if (this->L > 0) {
       if (this->config.enable_roi) {
         global_tol = GetMinToleranceForGlobal();
-      } 
-      global_tol = global_tol / (1 << this->L); 
+      }
+      global_tol = global_tol / (1 << this->L);
     }
     return global_tol;
   }
@@ -108,7 +106,7 @@ class HybridHierarchyQuantizer
   void Quantize(SubArray<1, T, DeviceType> original_data,
                 enum error_bound_type ebtype, T tol, T s, T norm,
                 SubArray<1, Q, DeviceType> quantized_data,
-                LosslessCompressorType& lossless, int queue_idx) {
+                LosslessCompressorType &lossless, int queue_idx) {
     if (this->L == 0 && this->M == 0) {
       throw ProcessingException("Both L and M cannot be zero");
     }
@@ -152,12 +150,10 @@ class HybridHierarchyQuantizer
 
       // Switch between ROI and Non-ROI
       if (config.enable_roi) {
-        local_quantizer.Quantize(local_data_v, ebtype, 0.0, s, norm,
-                                 local_data_q,
-                                 SubArray<1, double, DeviceType>(
-                                     device_roi_tolerance_map),
-                                 level_offsets, level_block_counts, lossless,
-                                 queue_idx);
+        local_quantizer.Quantize(
+            local_data_v, ebtype, 0.0, s, norm, local_data_q,
+            SubArray<1, double, DeviceType>(device_roi_tolerance_map),
+            level_offsets, level_block_counts, lossless, queue_idx);
       } else {
         local_quantizer.Quantize(local_data_v, ebtype, tol, s, norm,
                                  local_data_q, lossless, queue_idx);
@@ -177,7 +173,7 @@ class HybridHierarchyQuantizer
   void Dequantize(SubArray<1, T, DeviceType> original_data,
                   enum error_bound_type ebtype, T tol, T s, T norm,
                   SubArray<1, Q, DeviceType> quantized_data,
-                  LosslessCompressorType& lossless, int queue_idx) {
+                  LosslessCompressorType &lossless, int queue_idx) {
     if (this->L == 0 && this->M == 0) {
       throw ProcessingException("Both L and M cannot be zero");
     }
@@ -270,7 +266,7 @@ class HybridHierarchyQuantizer
   }
 
   // Build ROI tolerance map for all local levels (stored as 1D array)
-  void BuildROIToleranceMap(const std::vector<double>& initial_tolerances) {
+  void BuildROIToleranceMap(const std::vector<double> &initial_tolerances) {
     roi_tolerance_map.clear();
     level_offsets.clear();
     level_block_counts.clear();
@@ -308,9 +304,9 @@ class HybridHierarchyQuantizer
   }
 
   // Propagate error to next level
-  std::vector<double> PropagateTolerances(
-      const std::vector<double>& current_tolerances, SIZE curr_level,
-      SIZE next_level) {
+  std::vector<double>
+  PropagateTolerances(const std::vector<double> &current_tolerances,
+                      SIZE curr_level, SIZE next_level) {
     // Get current and next level block dimensions from computed shapes
     std::vector<SIZE> curr_blocks = GetBlockDimensions(curr_level);
     std::vector<SIZE> next_blocks = GetBlockDimensions(next_level);
@@ -355,9 +351,9 @@ class HybridHierarchyQuantizer
   //     4               6,7
   // Get contributing block indices from previous level for a given next-level
   // block
-  std::vector<SIZE> GetContributingBlocks(
-      const std::vector<SIZE>& next_coord,
-      const std::vector<SIZE>& curr_blocks) {
+  std::vector<SIZE>
+  GetContributingBlocks(const std::vector<SIZE> &next_coord,
+                        const std::vector<SIZE> &curr_blocks) {
     std::vector<std::vector<SIZE>> contrib_per_dim(D);
 
     // For each dimension, apply the 5->8 inverse mapping
@@ -369,21 +365,21 @@ class HybridHierarchyQuantizer
 
       // Apply the propagation pattern
       switch (offset) {
-        case 0:  // min(0, 1)
-          contrib_per_dim[d] = {base + 0, base + 1};
-          break;
-        case 1:  // min(1, 2, 3)
-          contrib_per_dim[d] = {base + 1, base + 2, base + 3};
-          break;
-        case 2:  // min(3, 4)
-          contrib_per_dim[d] = {base + 3, base + 4};
-          break;
-        case 3:  // min(4, 5, 6)
-          contrib_per_dim[d] = {base + 4, base + 5, base + 6};
-          break;
-        case 4:  // min(6, 7)
-          contrib_per_dim[d] = {base + 6, base + 7};
-          break;
+      case 0: // min(0, 1)
+        contrib_per_dim[d] = {base + 0, base + 1};
+        break;
+      case 1: // min(1, 2, 3)
+        contrib_per_dim[d] = {base + 1, base + 2, base + 3};
+        break;
+      case 2: // min(3, 4)
+        contrib_per_dim[d] = {base + 3, base + 4};
+        break;
+      case 3: // min(4, 5, 6)
+        contrib_per_dim[d] = {base + 4, base + 5, base + 6};
+        break;
+      case 4: // min(6, 7)
+        contrib_per_dim[d] = {base + 6, base + 7};
+        break;
       }
 
       // Filter out-of-bounds indices
@@ -401,19 +397,19 @@ class HybridHierarchyQuantizer
   }
 
   // Cartesian product of contributing indices across dimensions
-  std::vector<SIZE> CartesianProduct(
-      const std::vector<std::vector<SIZE>>& indices_per_dim,
-      const std::vector<SIZE>& blocks) {
+  std::vector<SIZE>
+  CartesianProduct(const std::vector<std::vector<SIZE>> &indices_per_dim,
+                   const std::vector<SIZE> &blocks) {
     std::vector<SIZE> result;
     std::vector<SIZE> coord(D);
     CartesianProductHelper(indices_per_dim, blocks, 0, coord, result);
     return result;
   }
 
-  void CartesianProductHelper(
-      const std::vector<std::vector<SIZE>>& indices_per_dim,
-      const std::vector<SIZE>& blocks, DIM dim, std::vector<SIZE>& coord,
-      std::vector<SIZE>& result) {
+  void
+  CartesianProductHelper(const std::vector<std::vector<SIZE>> &indices_per_dim,
+                         const std::vector<SIZE> &blocks, DIM dim,
+                         std::vector<SIZE> &coord, std::vector<SIZE> &result) {
     if (dim == D) {
       result.push_back(CoordToLinear(coord, blocks));
       return;
@@ -427,7 +423,7 @@ class HybridHierarchyQuantizer
 
   // Convert linear index to coordinate
   std::vector<SIZE> LinearToCoord(SIZE linear_idx,
-                                  const std::vector<SIZE>& dims) {
+                                  const std::vector<SIZE> &dims) {
     std::vector<SIZE> coord(D);
     for (int d = D - 1; d >= 0; --d) {
       coord[d] = linear_idx % dims[d];
@@ -437,8 +433,8 @@ class HybridHierarchyQuantizer
   }
 
   // Convert coordinate to linear index
-  SIZE CoordToLinear(const std::vector<SIZE>& coord,
-                     const std::vector<SIZE>& dims) {
+  SIZE CoordToLinear(const std::vector<SIZE> &coord,
+                     const std::vector<SIZE> &dims) {
     SIZE linear = 0;
     SIZE stride = 1;
     for (int d = D - 1; d >= 0; --d) {
@@ -451,7 +447,7 @@ class HybridHierarchyQuantizer
   // Get block dimensions at a specific level
   std::vector<SIZE> GetBlockDimensions(SIZE level) {
     // Use the fine shape for this level (before decomposition)
-    const std::vector<SIZE>& fine_shape = fine_shapes[level];
+    const std::vector<SIZE> &fine_shape = fine_shapes[level];
 
     // Calculate block size (8x8x8 for local decomposition)
     const SIZE BLOCK_SIZE = 8;
@@ -485,11 +481,11 @@ class HybridHierarchyQuantizer
   }
 
   bool initialized;
-  SIZE L;  // Number of local levels
-  SIZE M;  // Number of global levels
+  SIZE L; // Number of local levels
+  SIZE M; // Number of global levels
 
-  Hierarchy<D, T, DeviceType>* hierarchy;
-  Hierarchy<D, T, DeviceType>* global_hierarchy;
+  Hierarchy<D, T, DeviceType> *hierarchy;
+  Hierarchy<D, T, DeviceType> *global_hierarchy;
   Config config;
 
   LocalQuantizer<D, T, Q, DeviceType> local_quantizer;
@@ -515,6 +511,6 @@ class HybridHierarchyQuantizer
   std::vector<double> initial_block_tolerances;
 };
 
-}  // namespace mgard_x
+} // namespace mgard_x
 
 #endif

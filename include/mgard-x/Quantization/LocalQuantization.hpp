@@ -12,7 +12,7 @@ namespace mgard_x {
 // Non-ROI Version
 template <typename T, typename Q, OPTION OP, typename DeviceType>
 class QuantizeLocalLevelFunctor : public Functor<DeviceType> {
- public:
+public:
   MGARDX_CONT QuantizeLocalLevelFunctor() {}
   MGARDX_CONT QuantizeLocalLevelFunctor(T quantizer,
                                         SubArray<1, T, DeviceType> v,
@@ -59,7 +59,7 @@ class QuantizeLocalLevelFunctor : public Functor<DeviceType> {
 
   MGARDX_CONT size_t shared_memory_size() { return 0; }
 
- private:
+private:
   SIZE idx;
   T quantizer;
   SubArray<1, T, DeviceType> v;
@@ -70,7 +70,7 @@ class QuantizeLocalLevelFunctor : public Functor<DeviceType> {
 
 template <typename T, typename Q, OPTION OP, typename DeviceType>
 class QuantizeLocalLevelKernel : public Kernel {
- public:
+public:
   constexpr static bool EnableAutoTuning() { return false; }
   constexpr static std::string_view Name = "lvl_qk";
 
@@ -81,8 +81,8 @@ class QuantizeLocalLevelKernel : public Kernel {
       : quantizer(quantizer), v(v), quantized_v(quantized_v),
         prep_huffman(prep_huffman), dict_size(dict_size) {}
 
-  MGARDX_CONT Task<QuantizeLocalLevelFunctor<T, Q, OP, DeviceType>> GenTask(
-      int queue_idx) {
+  MGARDX_CONT Task<QuantizeLocalLevelFunctor<T, Q, OP, DeviceType>>
+  GenTask(int queue_idx) {
     using FunctorType = QuantizeLocalLevelFunctor<T, Q, OP, DeviceType>;
     FunctorType functor(quantizer, v, quantized_v, prep_huffman, dict_size);
 
@@ -94,7 +94,7 @@ class QuantizeLocalLevelKernel : public Kernel {
                 std::string(Name));
   }
 
- private:
+private:
   T quantizer;
   SubArray<1, T, DeviceType> v;
   SubArray<1, Q, DeviceType> quantized_v;
@@ -105,12 +105,11 @@ class QuantizeLocalLevelKernel : public Kernel {
 // ROI Version
 template <typename T, typename Q, OPTION OP, typename DeviceType>
 class QuantizeLocalLevelROIFunctor : public Functor<DeviceType> {
- public:
+public:
   MGARDX_CONT QuantizeLocalLevelROIFunctor() {}
   MGARDX_CONT QuantizeLocalLevelROIFunctor(
       SubArray<1, T, DeviceType> quantizers, SubArray<1, T, DeviceType> v,
-      SubArray<1, Q, DeviceType> quantized_v, bool prep_huffman,
-      SIZE dict_size)
+      SubArray<1, Q, DeviceType> quantized_v, bool prep_huffman, SIZE dict_size)
       : quantizers(quantizers), v(v), quantized_v(quantized_v),
         prep_huffman(prep_huffman), dict_size(dict_size) {
     Functor<DeviceType>();
@@ -152,7 +151,7 @@ class QuantizeLocalLevelROIFunctor : public Functor<DeviceType> {
 
   MGARDX_CONT size_t shared_memory_size() { return 0; }
 
- private:
+private:
   SIZE idx;
   SubArray<1, T, DeviceType> quantizers;
   SubArray<1, T, DeviceType> v;
@@ -163,7 +162,7 @@ class QuantizeLocalLevelROIFunctor : public Functor<DeviceType> {
 
 template <typename T, typename Q, OPTION OP, typename DeviceType>
 class QuantizeLocalLevelROIKernel : public Kernel {
- public:
+public:
   constexpr static bool EnableAutoTuning() { return false; }
   constexpr static std::string_view Name = "lvl_qk_roi";
 
@@ -175,8 +174,8 @@ class QuantizeLocalLevelROIKernel : public Kernel {
       : quantizers(quantizers), v(v), quantized_v(quantized_v),
         prep_huffman(prep_huffman), dict_size(dict_size) {}
 
-  MGARDX_CONT Task<QuantizeLocalLevelROIFunctor<T, Q, OP, DeviceType>> GenTask(
-      int queue_idx) {
+  MGARDX_CONT Task<QuantizeLocalLevelROIFunctor<T, Q, OP, DeviceType>>
+  GenTask(int queue_idx) {
     using FunctorType = QuantizeLocalLevelROIFunctor<T, Q, OP, DeviceType>;
     FunctorType functor(quantizers, v, quantized_v, prep_huffman, dict_size);
 
@@ -188,7 +187,7 @@ class QuantizeLocalLevelROIKernel : public Kernel {
                 std::string(Name));
   }
 
- private:
+private:
   SubArray<1, T, DeviceType> quantizers;
   SubArray<1, T, DeviceType> v;
   SubArray<1, Q, DeviceType> quantized_v;
@@ -201,12 +200,13 @@ class QuantizeLocalLevelROIKernel : public Kernel {
 // result (the tolerance map itself is uploaded once, not on every call).
 template <typename T, typename DeviceType>
 class ComputeROIQuantizersFunctor : public Functor<DeviceType> {
- public:
+public:
   MGARDX_CONT ComputeROIQuantizersFunctor() {}
-  MGARDX_CONT ComputeROIQuantizersFunctor(
-      SubArray<1, double, DeviceType> tolerance_map, SIZE level_offset,
-      SIZE num_blocks, double norm_factor, double denom, bool reciprocal,
-      SubArray<1, T, DeviceType> quantizers)
+  MGARDX_CONT
+  ComputeROIQuantizersFunctor(SubArray<1, double, DeviceType> tolerance_map,
+                              SIZE level_offset, SIZE num_blocks,
+                              double norm_factor, double denom, bool reciprocal,
+                              SubArray<1, T, DeviceType> quantizers)
       : tolerance_map(tolerance_map), level_offset(level_offset),
         num_blocks(num_blocks), norm_factor(norm_factor), denom(denom),
         reciprocal(reciprocal), quantizers(quantizers) {
@@ -221,14 +221,14 @@ class ComputeROIQuantizersFunctor : public Functor<DeviceType> {
     if (idx < num_blocks) {
       double block_tol = *tolerance_map(level_offset + idx) * norm_factor * 2;
       double block_quantizer = block_tol / denom;
-      *quantizers(idx) = reciprocal ? (T)(1.0 / block_quantizer)
-                                    : (T)block_quantizer;
+      *quantizers(idx) =
+          reciprocal ? (T)(1.0 / block_quantizer) : (T)block_quantizer;
     }
   }
 
   MGARDX_CONT size_t shared_memory_size() { return 0; }
 
- private:
+private:
   SIZE idx;
   SubArray<1, double, DeviceType> tolerance_map;
   SIZE level_offset;
@@ -241,7 +241,7 @@ class ComputeROIQuantizersFunctor : public Functor<DeviceType> {
 
 template <typename T, typename DeviceType>
 class ComputeROIQuantizersKernel : public Kernel {
- public:
+public:
   constexpr static bool EnableAutoTuning() { return false; }
   constexpr static std::string_view Name = "roi_qcalc";
 
@@ -254,8 +254,8 @@ class ComputeROIQuantizersKernel : public Kernel {
         num_blocks(num_blocks), norm_factor(norm_factor), denom(denom),
         reciprocal(reciprocal), quantizers(quantizers) {}
 
-  MGARDX_CONT Task<ComputeROIQuantizersFunctor<T, DeviceType>> GenTask(
-      int queue_idx) {
+  MGARDX_CONT Task<ComputeROIQuantizersFunctor<T, DeviceType>>
+  GenTask(int queue_idx) {
     using FunctorType = ComputeROIQuantizersFunctor<T, DeviceType>;
     FunctorType functor(tolerance_map, level_offset, num_blocks, norm_factor,
                         denom, reciprocal, quantizers);
@@ -268,7 +268,7 @@ class ComputeROIQuantizersKernel : public Kernel {
                 std::string(Name));
   }
 
- private:
+private:
   SubArray<1, double, DeviceType> tolerance_map;
   SIZE level_offset;
   SIZE num_blocks;
@@ -280,9 +280,9 @@ class ComputeROIQuantizersKernel : public Kernel {
 
 template <DIM D, typename T, typename Q, typename DeviceType>
 class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
- public:
+public:
   LocalQuantizer() : initialized(false) {}
-  LocalQuantizer(Hierarchy<D, T, DeviceType>& hierarchy, Config config)
+  LocalQuantizer(Hierarchy<D, T, DeviceType> &hierarchy, Config config)
       : initialized(true), hierarchy(&hierarchy), config(config) {
     this->L = config.num_local_refactoring_level;
     this->M = config.num_global_refactoring_level;
@@ -291,7 +291,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   }
 
   // Add logic to determine if roi or not
-  void Adapt(Hierarchy<D, T, DeviceType>& hierarchy, Config config,
+  void Adapt(Hierarchy<D, T, DeviceType> &hierarchy, Config config,
              int queue_idx) {
     this->initialized = true;
     this->hierarchy = &hierarchy;
@@ -339,7 +339,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
     layer_off.assign(this->L + 1, 0);
 
     // The length of coarsest layer (level 0)
-    layer_len[0] = coarse_num_elems[this->L-1];
+    layer_len[0] = coarse_num_elems[this->L - 1];
     layer_off[0] = 0;
 
     SIZE accum = layer_len[0];
@@ -352,7 +352,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   }
 
   // Calculate quantizers between levels(Used in Non-ROI)
-  void CalcQuantizers(size_t dof, T* quantizers, enum error_bound_type type,
+  void CalcQuantizers(size_t dof, T *quantizers, enum error_bound_type type,
                       T tol, T s, T norm, SIZE l_target,
                       enum decomposition_type decomposition, bool reciprocal) {
     double abs_tol = tol;
@@ -390,8 +390,8 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   void Quantize(SubArray<1, T, DeviceType> original_data,
                 enum error_bound_type ebtype, T tol, T s, T norm,
                 SubArray<1, Q, DeviceType> quantized_data,
-                LosslessCompressorType& lossless, int queue_idx) {
-    T* host_quantizers = new T[this->L + 1];
+                LosslessCompressorType &lossless, int queue_idx) {
+    T *host_quantizers = new T[this->L + 1];
     CalcQuantizers(hierarchy->total_num_elems(), host_quantizers, ebtype, tol,
                    s, norm, this->L, config.decomposition, true);
     bool prep_huffman = config.lossless != lossless_type::CPU_Lossless &&
@@ -438,8 +438,8 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   void Dequantize(SubArray<1, T, DeviceType> original_data,
                   enum error_bound_type ebtype, T tol, T s, T norm,
                   SubArray<1, Q, DeviceType> quantized_data,
-                  LosslessCompressorType& lossless, int queue_idx) {
-    T* host_quantizers = new T[this->L + 1];
+                  LosslessCompressorType &lossless, int queue_idx) {
+    T *host_quantizers = new T[this->L + 1];
     CalcQuantizers(hierarchy->total_num_elems(), host_quantizers, ebtype, tol,
                    s, norm, this->L, config.decomposition, false);
     bool prep_huffman = config.lossless != lossless_type::CPU_Lossless &&
@@ -487,9 +487,9 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
                 enum error_bound_type ebtype, double tol, T s, T norm,
                 SubArray<1, Q, DeviceType> quantized_data,
                 SubArray<1, double, DeviceType> device_roi_tolerance_map,
-                const std::vector<SIZE>& level_offsets,
-                const std::vector<SIZE>& level_block_counts,
-                LosslessCompressorType& lossless, int queue_idx) {
+                const std::vector<SIZE> &level_offsets,
+                const std::vector<SIZE> &level_block_counts,
+                LosslessCompressorType &lossless, int queue_idx) {
     if (s != std::numeric_limits<T>::infinity()) {
       throw ProcessingException("Only L-inf supported");
     }
@@ -559,9 +559,9 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
                   enum error_bound_type ebtype, double tol, T s, T norm,
                   SubArray<1, Q, DeviceType> quantized_data,
                   SubArray<1, double, DeviceType> device_roi_tolerance_map,
-                  const std::vector<SIZE>& level_offsets,
-                  const std::vector<SIZE>& level_block_counts,
-                  LosslessCompressorType& lossless, int queue_idx) {
+                  const std::vector<SIZE> &level_offsets,
+                  const std::vector<SIZE> &level_block_counts,
+                  LosslessCompressorType &lossless, int queue_idx) {
     if (s != std::numeric_limits<T>::infinity()) {
       throw ProcessingException("Only L-inf supported");
     }
@@ -627,7 +627,7 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   bool initialized;
   SIZE L;
   SIZE M;
-  Hierarchy<D, T, DeviceType>* hierarchy;
+  Hierarchy<D, T, DeviceType> *hierarchy;
   Config config;
 
   // For Non-ROI
@@ -643,6 +643,6 @@ class LocalQuantizer : public QuantizationInterface<D, T, Q, DeviceType> {
   std::vector<SIZE> coarse_shape;
 };
 
-}  // namespace mgard_x
+} // namespace mgard_x
 
 #endif

@@ -461,8 +461,7 @@ public:
     //   combinedIndex: %d\n", A_length, B_length, (*status((IDX)_tempLength)),
     //   combinedIndex);
     // }
-    threadOffset =
-        FunctorBase<DeviceType>::GetThreadIdX() - warp_size / 2;
+    threadOffset = FunctorBase<DeviceType>::GetThreadIdX() - warp_size / 2;
 
     if (FunctorBase<DeviceType>::GetThreadIdX() < warp_size) {
       // Figure out the coordinates of our diagonal
@@ -529,7 +528,7 @@ public:
     //             oneorzero[28], oneorzero[29], oneorzero[30], oneorzero[31]);
     // If we find the meeting of the '1's and '0's, we found the
     // intersection of the path and diagonal
-    if (FunctorBase<DeviceType>::GetThreadIdX() > 0 and                //
+    if (FunctorBase<DeviceType>::GetThreadIdX() > 0 and         //
         FunctorBase<DeviceType>::GetThreadIdX() < warp_size and //
         (oneorzero[FunctorBase<DeviceType>::GetThreadIdX()] !=
          oneorzero[FunctorBase<DeviceType>::GetThreadIdX() - 1]) //
