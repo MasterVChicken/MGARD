@@ -392,6 +392,41 @@ public:
     return level_quantizers;
   }
 
+  // Non-reciprocal dequantizers indexed by decompose level (level 0 = finest
+  // coefficients) for the fused dequantize+recompose path. Decompose level l
+  // corresponds to non-ROI layer L - l, i.e. quantizer index L - l.
+  std::vector<T> RecomposeLevelDequantizers(enum error_bound_type ebtype, T tol,
+                                            T s, T norm) {
+    std::vector<T> quantizers(this->L + 1);
+    CalcQuantizers(hierarchy->total_num_elems(), quantizers.data(), ebtype, tol,
+                   s, norm, this->L, config.decomposition, false);
+    std::vector<T> level_dequantizers(this->L);
+    for (SIZE l = 0; l < this->L; l++) {
+      level_dequantizers[l] = quantizers[this->L - l];
+    }
+    return level_dequantizers;
+  }
+
+  // Dequantize only the coarsest layer (layer 0). Used by the fused
+  // dequantize+recompose path when there is no global stage; the coefficient
+  // layers are dequantized inside the recompose kernels.
+  void DequantizeCoarsest(SubArray<1, T, DeviceType> v,
+                          SubArray<1, Q, DeviceType> quantized_v,
+                          enum error_bound_type ebtype, T tol, T s, T norm,
+                          int queue_idx) {
+    std::vector<T> quantizers(this->L + 1);
+    CalcQuantizers(hierarchy->total_num_elems(), quantizers.data(), ebtype, tol,
+                   s, norm, this->L, config.decomposition, false);
+    bool prep_huffman = config.lossless != lossless_type::CPU_Lossless &&
+                        config.lossless != lossless_type::BlockDelta &&
+                        config.lossless != lossless_type::LZ4;
+    DeviceLauncher<DeviceType>::Execute(
+        QuantizeLocalLevelKernel<T, Q, MGARDX_DEQUANTIZE, DeviceType>(
+            quantizers[0], v, quantized_v, prep_huffman,
+            config.huff_dict_size),
+        queue_idx);
+  }
+
   // Quantize only the coarsest layer (layer 0). Used by the fused
   // decompose+quantize path when there is no global stage; the coefficient
   // layers have already been quantized inside the decompose kernels.

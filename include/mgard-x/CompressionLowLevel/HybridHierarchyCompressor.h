@@ -79,6 +79,13 @@ public:
                   enum error_bound_type ebtype, T tol, T s, T norm,
                   int queue_idx);
 
+  // Fused Dequantize+Recompose (single pass over the local levels); used by
+  // Decompress() instead of Dequantize()+Recompose() when
+  // hybrid_quantizer.CanFuseQuantize(s) holds.
+  void DequantizeRecompose(Array<D, T, DeviceType> &decompressed_data,
+                           enum error_bound_type ebtype, T tol, T s, T norm,
+                           int queue_idx);
+
   void LosslessDecompress(Array<1, Byte, DeviceType> &compressed_data,
                           int queue_idx);
 

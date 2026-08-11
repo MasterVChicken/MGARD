@@ -40,6 +40,20 @@ template <DIM D, typename T, typename DeviceType>
 void recompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
                SubArray<1, T, DeviceType> coeff, int queue_idx);
 
+// Fused dequantize+recompose: same block recomposition as recompose(), but the
+// coefficients are read as Q symbols and dequantized in-kernel. Writes v with
+// bounds checks, so v does not need to be padded to a multiple of 8. Uses the
+// per-block quantizers (indexed by linearized thread-block id) when
+// use_block_quantizers is set (ROI mode), the scalar quantizer otherwise.
+template <DIM D, typename T, typename Q, typename DeviceType>
+void recompose_dequantize(SubArray<D, T, DeviceType> v,
+                          SubArray<D, T, DeviceType> coarse,
+                          SubArray<1, Q, DeviceType> quantized_coeff,
+                          T quantizer,
+                          SubArray<1, T, DeviceType> block_quantizers,
+                          bool use_block_quantizers, bool prep_huffman,
+                          SIZE dict_size, int queue_idx);
+
 } // namespace in_cache_block
 
 } // namespace data_refactoring

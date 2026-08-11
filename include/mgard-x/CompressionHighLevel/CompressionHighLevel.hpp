@@ -33,6 +33,7 @@
 #ifndef MGARD_X_COMPRESSION_HIGH_LEVEL_API_HPP
 #define MGARD_X_COMPRESSION_HIGH_LEVEL_API_HPP
 
+#include "FusedDequantizeRecompose.hpp"
 #if MGARD_ENABLE_OPENMP
 #include "CPUPipelines.hpp"
 #endif
