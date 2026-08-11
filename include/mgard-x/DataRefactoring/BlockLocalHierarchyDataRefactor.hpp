@@ -273,6 +273,96 @@ class BlockLocalHierarchyDataRefactor {
     }
   }
 
+  // Fused dequantize+recompose. Runs the same per-level 8x8x8 recomposition
+  // as Recompose(), but each level's coefficients are read from their final
+  // location in input_quantized and dequantized in-kernel, so the T-typed
+  // coefficient region of the decomposed array is never materialized. Only
+  // the coarsest level is consumed in T from the front of input_decomposed
+  // (produced by the global stage / coarsest dequantization). The staging
+  // copies of the unfused path also disappear: the coarsest level is read
+  // compactly in place (no temp_coarest restore), the ping-pong buffers are
+  // not memset (every coarse value read at level l was written by level l+1,
+  // or comes from input_decomposed), and the final level writes directly to
+  // the unpadded output (the fused kernel bounds-checks its stores).
+  //
+  // Level l's dequantizer: level_dequantizers[l] (non-reciprocal), or
+  // per-block level_block_dequantizers[l] in ROI mode (level_dequantizers
+  // empty). Indexing matches DecomposeQuantize (level 0 = finest).
+  template <typename Q>
+  void RecomposeDequantize(
+      SubArray<D, T, DeviceType> data,
+      SubArray<1, T, DeviceType> input_decomposed,
+      SubArray<1, Q, DeviceType> input_quantized,
+      const std::vector<T> &level_dequantizers,
+      const std::vector<SubArray<1, T, DeviceType>> &level_block_dequantizers,
+      bool prep_huffman, SIZE dict_size, int queue_idx) {
+    bool use_block_quantizers = level_dequantizers.empty();
+
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
+
+    // Coarsest level, read compactly in place from the front of
+    // input_decomposed instead of staging through temp_coarest.
+    SubArray<D, T, DeviceType> coarse(coarse_shapes[this->L - 1],
+                                      input_decomposed.data());
+    for (DIM d = 0; d < D; d++) {
+      coarse.setLd(d, coarse_shapes[this->L - 1][d]);
+    }
+    coarse.project(0, 1, 2);
+
+    SIZE accumulated = DecomposedCoeffSize();
+    for (SIZE l = 0; l < this->L; l++) {
+      SIZE level_idx = this->L - l - 1;
+
+      SubArray<1, Q, DeviceType> level_quantized(
+          {local_coeff_size[level_idx]},
+          input_quantized(input_quantized.shape(0) - accumulated));
+
+      int buffer_idx = l % 2;
+      SubArray<D, T, DeviceType> fine;
+      if (level_idx == 0) {
+        // Last level: write the reconstructed data directly to the unpadded
+        // output instead of staging it in a padded buffer and copying.
+        fine = data;
+      } else {
+        fine = SubArray<D, T, DeviceType>(fine_shapes[level_idx],
+                                          coarse_buffers[buffer_idx].data());
+        for (DIM d = 0; d < D; d++) {
+          fine.setLd(d, fine_shapes[0][d]);
+        }
+        fine.project(0, 1, 2);
+      }
+
+      in_cache_block::recompose_dequantize<D, T, Q, DeviceType>(
+          fine, coarse, level_quantized,
+          use_block_quantizers ? (T)0 : level_dequantizers[level_idx],
+          use_block_quantizers ? level_block_dequantizers[level_idx]
+                               : SubArray<1, T, DeviceType>(),
+          use_block_quantizers, prep_huffman, dict_size, queue_idx);
+
+      if (l < this->L - 1) {
+        coarse = SubArray<D, T, DeviceType>(coarse_shapes[level_idx - 1],
+                                            coarse_buffers[buffer_idx].data());
+        for (DIM d = 0; d < D; d++) {
+          coarse.setLd(d, fine_shapes[0][d]);
+        }
+        coarse.project(0, 1, 2);
+      }
+      accumulated -= local_coeff_size[level_idx];
+    }
+
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Local Recomposition+Dequantization (fused)",
+                  hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
+    }
+  }
+
   void Recompose(SubArray<D, T, DeviceType> data,
                  SubArray<1, T, DeviceType> input_decomposed, int queue_idx) {
     Timer timer;

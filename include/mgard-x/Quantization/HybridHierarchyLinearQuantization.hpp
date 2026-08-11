@@ -130,6 +130,32 @@ class HybridHierarchyQuantizer
                               global_data_q, lossless, queue_idx);
   }
 
+  // Dequantize the global (coarsest) region at the front of the decomposed
+  // array with the global quantizer. Shared between the unfused Dequantize()
+  // path and the fused dequantize+recompose path. Only valid when M > 0.
+  template <typename LosslessCompressorType>
+  void DequantizeGlobalPart(SubArray<1, T, DeviceType> original_data,
+                            enum error_bound_type ebtype, T tol, T s, T norm,
+                            SubArray<1, Q, DeviceType> quantized_data,
+                            LosslessCompressorType& lossless, int queue_idx) {
+    T global_tol = ErrorBudgetAllocation(tol);
+
+    std::vector<SIZE> global_shape =
+        global_hierarchy->level_shape(global_hierarchy->l_target());
+    SubArray<D, T, DeviceType> global_data_v(global_shape,
+                                             original_data.data());
+    SubArray<D, Q, DeviceType> global_data_q(global_shape,
+                                             quantized_data.data());
+    for (DIM d = 0; d < D; d++) {
+      global_data_v.setLd(d, global_shape[d]);
+      global_data_q.setLd(d, global_shape[d]);
+    }
+    global_data_v.project(0, 1, 2);
+    global_data_q.project(0, 1, 2);
+    global_quantizer.Dequantize(global_data_v, ebtype, global_tol, s, norm,
+                                global_data_q, lossless, queue_idx);
+  }
+
   template <typename LosslessCompressorType>
   void Quantize(SubArray<1, T, DeviceType> original_data,
                 enum error_bound_type ebtype, T tol, T s, T norm,
@@ -277,6 +303,98 @@ class HybridHierarchyQuantizer
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer.end();
       timer.print("Hybrid Decomposition+Quantization (fused)",
+                  hierarchy->total_num_elems() * sizeof(T));
+      timer.clear();
+    }
+  }
+
+  // Fused dequantize+recomposition driver (inverse of DecomposeQuantize):
+  // the coarsest region is first reconstructed as in the unfused path
+  // (global dequantize + global recompose when M > 0, otherwise a single
+  // coarsest-layer dequantization; skipped in ROI mode, which — like the
+  // unfused path — only covers the coarsest layer via the global stage),
+  // then the local levels are dequantized and recomposed in one kernel per
+  // level (coefficients never round-trip through global memory as T),
+  // writing the final level directly into the unpadded output.
+  template <typename RefactorType, typename LosslessCompressorType>
+  void DequantizeRecompose(RefactorType& refactor,
+                           SubArray<D, T, DeviceType> data,
+                           SubArray<1, T, DeviceType> decomposed_data,
+                           SubArray<1, Q, DeviceType> quantized_data,
+                           enum error_bound_type ebtype, T tol, T s, T norm,
+                           LosslessCompressorType& lossless, int queue_idx) {
+    if (!CanFuseQuantize(s)) {
+      throw ProcessingException(
+          "DequantizeRecompose requires L > 0, D == 3, and s == inf");
+    }
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
+
+    bool prep_huffman = config.lossless != lossless_type::CPU_Lossless &&
+                        config.lossless != lossless_type::BlockDelta &&
+                        config.lossless != lossless_type::LZ4;
+    SIZE huff_dict_size = config.huff_dict_size;
+
+    // Coarsest region first: it is the input of the local recomposition.
+    if (this->M > 0) {
+      DequantizeGlobalPart(decomposed_data, ebtype, tol, s, norm,
+                           quantized_data, lossless, queue_idx);
+      refactor.RecomposeGlobal(decomposed_data, queue_idx);
+    } else if (!config.enable_roi) {
+      SIZE coarsest_size = local_quantizer.layer_len[0];
+      SubArray<1, T, DeviceType> coarsest_v({coarsest_size},
+                                            decomposed_data.data());
+      SubArray<1, Q, DeviceType> coarsest_q({coarsest_size},
+                                            quantized_data.data());
+      local_quantizer.DequantizeCoarsest(coarsest_v, coarsest_q, ebtype, tol, s,
+                                         norm, queue_idx);
+    }
+
+    if (config.enable_roi) {
+      // Per-level per-block dequantizers from the device-resident tolerance
+      // map, same math and block ordering as the ROI Dequantize path (the
+      // fused kernel indexes them by thread-block id, which matches the
+      // idx / 387 mapping of the unfused ROI kernel).
+      double C = (1 + std::pow(3, D));
+      double norm_factor =
+          (ebtype == error_bound_type::REL) ? (double)norm : 1.0;
+      std::vector<Array<1, T, DeviceType>> device_dequantizers(this->L);
+      std::vector<SubArray<1, T, DeviceType>> block_dequantizers(this->L);
+      for (SIZE l = 0; l < this->L; ++l) {
+        SIZE level_offset = level_offsets[l];
+        SIZE num_blocks = level_block_counts[l];
+        double denom = std::pow(2, this->L - l + 1) * C;
+        device_dequantizers[l] =
+            Array<1, T, DeviceType>({num_blocks}, queue_idx);
+        DeviceLauncher<DeviceType>::Execute(
+            ComputeROIQuantizersKernel<T, DeviceType>(
+                SubArray<1, double, DeviceType>(device_roi_tolerance_map),
+                level_offset, num_blocks, norm_factor, denom,
+                /*reciprocal=*/false,
+                SubArray<1, T, DeviceType>(device_dequantizers[l])),
+            queue_idx);
+        block_dequantizers[l] =
+            SubArray<1, T, DeviceType>(device_dequantizers[l]);
+      }
+      refactor.local_refactor.RecomposeDequantize(
+          data, decomposed_data, quantized_data, std::vector<T>(),
+          block_dequantizers, prep_huffman, huff_dict_size, queue_idx);
+    } else {
+      std::vector<T> level_dequantizers =
+          local_quantizer.RecomposeLevelDequantizers(ebtype, tol, s, norm);
+      refactor.local_refactor.RecomposeDequantize(
+          data, decomposed_data, quantized_data, level_dequantizers,
+          std::vector<SubArray<1, T, DeviceType>>(), prep_huffman,
+          huff_dict_size, queue_idx);
+    }
+
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.end();
+      timer.print("Hybrid Dequantization+Recomposition (fused)",
                   hierarchy->total_num_elems() * sizeof(T));
       timer.clear();
     }

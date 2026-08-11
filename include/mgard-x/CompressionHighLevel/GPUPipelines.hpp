@@ -453,10 +453,9 @@ enum compress_status_type decompress_pipeline_gpu(
       }
       compressor.LosslessDecompress(device_compressed_buffer[current_buffer],
                                     current_queue);
-      compressor.Dequantize(device_subdomain_buffer[current_buffer],
-                            local_ebtype, local_tol, s, norm, current_queue);
-      compressor.Recompose(device_subdomain_buffer[current_buffer], true,
-                           current_queue);
+      DequantizeRecomposeStep(compressor,
+                              device_subdomain_buffer[current_buffer],
+                              local_ebtype, local_tol, s, norm, current_queue);
       if (log::level & log::TIME) {
         DeviceRuntime<DeviceType>::SyncQueue(0);
         timer_decompress_kernel.end();
