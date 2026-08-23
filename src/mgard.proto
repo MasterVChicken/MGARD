@@ -78,6 +78,54 @@ message DomainDecomposition {
   uint64 decomposition_size = 3;
 }
 
+// Per-block error tolerances for the region-of-interest (ROI) mode of the
+// hybrid hierarchy. The tolerances are the level-0 block tolerances the
+// compressor was given; the decompressor re-derives the deeper levels from
+// them exactly as the compressor did, so only level 0 is stored.
+//
+// Block order is the local quantizer's: row-major over
+// ceil(padded_shape[d] / local_block_size) for d = 0..dimension-1, with
+// padded_shape[d] the shape rounded up to a multiple of local_block_size.
+message RegionOfInterest {
+  // Number of blocks along each dimension at level 0. Stored so the reader can
+  // reject a tolerance map that does not match the grid it is applied to.
+  repeated uint64 block_dimensions = 1;
+
+  // ROI maps are piecewise constant in practice (a handful of distinct
+  // tolerances over large runs of blocks), so the run-length form is usually
+  // far smaller. The writer emits whichever encoding serializes smaller; both
+  // decode to the same block_count-length tolerance vector.
+  oneof encoding {
+    PackedTolerances packed = 2;
+    RunLengthTolerances run_length = 3;
+  }
+}
+
+message PackedTolerances { repeated double tolerances = 1; }
+
+message RunLengthTolerances {
+  repeated double values = 1;
+  repeated uint64 run_lengths = 2;
+}
+
+// Parameters of the hybrid (block-local + global) hierarchy, a.k.a. BlockMGARD.
+// Required to reconstruct: the number of local/global levels determines the
+// layout of the decomposed buffer and which (de)quantizers run, and the ROI
+// tolerance map determines the per-block quantization step.
+message HybridHierarchy {
+  // Number of block-local refactoring levels (Config::
+  // num_local_refactoring_level, "L").
+  uint64 num_local_levels = 1;
+  // Number of global refactoring levels (Config::
+  // num_global_refactoring_level, "M"). At least one of L and M is non-zero.
+  uint64 num_global_levels = 2;
+  // Edge length of the block-local transform block. Currently a compile-time
+  // constant (8), recorded so a future change stays readable.
+  uint64 local_block_size = 3;
+  // Absent when ROI mode was disabled.
+  RegionOfInterest region_of_interest = 4;
+}
+
 message FunctionDecomposition {
   enum Transform { MULTILEVEL_COEFFICIENTS = 0; }
   enum Hierarchy {
@@ -91,6 +139,8 @@ message FunctionDecomposition {
   Hierarchy hierarchy = 2;
   // Currently only relevant when `hierarchy == GHOST_NODES`.
   uint64 L_target = 3;
+  // Required when `hierarchy == HYBRID_HIERARCHY`, absent otherwise.
+  HybridHierarchy hybrid_hierarchy = 4;
 }
 
 message Quantization {

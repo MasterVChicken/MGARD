@@ -18,6 +18,12 @@ namespace mgard_x {
 
 enum class decomposition_type : uint8_t { MultiDim, SingleDim, Hybrid };
 
+// Edge length of the block-local transform block used by the hybrid
+// (BlockMGARD) hierarchy. The 8 -> 5 coarsening in the block-local refactor
+// and the ROI block grid are both built on this. Compile-time today; recorded
+// in the file header so a future change stays readable.
+constexpr uint64_t MGARDX_HYBRID_LOCAL_BLOCK_SIZE = 8;
+
 enum class decomposition_basis_type : uint8_t { Orthoganal, Hierarchical };
 
 enum class processor_type : uint8_t {

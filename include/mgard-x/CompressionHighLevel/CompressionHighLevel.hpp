@@ -189,6 +189,47 @@ general_compress_pipeline(std::vector<SIZE> shape, T tol, T s,
   // FillForCompression does not carry the BlockDelta block size; set it here so
   // it is persisted in (and restored from) the metadata header.
   m.block_delta_block_size = config.block_delta_block_size;
+  // Same for the hybrid (BlockMGARD) parameters: the decompressor cannot
+  // reconstruct the buffer layout or the per-block quantization steps without
+  // them.
+  if (config.decomposition == decomposition_type::Hybrid) {
+    m.hybrid_num_local_levels = (uint64_t)config.num_local_refactoring_level;
+    m.hybrid_num_global_levels = (uint64_t)config.num_global_refactoring_level;
+    m.hybrid_local_block_size = MGARDX_HYBRID_LOCAL_BLOCK_SIZE;
+    m.hybrid_enable_roi = config.enable_roi;
+    if (config.enable_roi) {
+      // Level-0 block grid: the local refactor pads each dimension up to a
+      // multiple of the block size, so the block count per dimension is just
+      // the ceiling division of the original shape.
+      m.hybrid_roi_block_dimensions.resize(shape.size());
+      size_t expected_blocks = 1;
+      for (DIM d = 0; d < shape.size(); d++) {
+        m.hybrid_roi_block_dimensions[d] =
+            (shape[d] + MGARDX_HYBRID_LOCAL_BLOCK_SIZE - 1) /
+            MGARDX_HYBRID_LOCAL_BLOCK_SIZE;
+        expected_blocks *= m.hybrid_roi_block_dimensions[d];
+      }
+      if (config.roi_tolerance_map.size() != expected_blocks) {
+        throw ProcessingException(
+            "ROI tolerance map holds " +
+            std::to_string(config.roi_tolerance_map.size()) +
+            " entries but the level-0 block grid of this shape needs " +
+            std::to_string(expected_blocks) + ".");
+      }
+      m.hybrid_roi_tolerance_map = config.roi_tolerance_map;
+      // Pre-existing limitation, surfaced here rather than left silent: the
+      // tolerance map is a single flat array indexed by each subdomain's own
+      // block id, so with more than one subdomain every subdomain re-reads the
+      // map from offset 0 and blocks get the wrong tolerances. The map is
+      // still recorded verbatim, so this warns rather than refuses -- the file
+      // round-trips exactly as it was compressed.
+      if (domain_decomposer.domain_decomposed()) {
+        log::warn("ROI tolerance map is applied per subdomain from offset 0, "
+                  "so ROI results are not correct under domain decomposition; "
+                  "compress without domain decomposition for correct ROI.");
+      }
+    }
+  }
   if (uniform) {
     m.FillForCompression(
         ebtype, tol, s, norm, config.decomposition, config.reorder,

@@ -701,10 +701,26 @@ int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
   return 0;
 }
 
+// Decompression parameters the user may override on the command line. The
+// hybrid (BlockMGARD) parameters now travel in the file header, so every field
+// here is unset by default and the metadata drives decompression; a field is
+// only applied when the corresponding flag was actually passed. Overriding is
+// kept for debugging a file whose header disagrees with the data.
+struct DecompressOverrides {
+  bool has_local_levels = false;
+  int num_local_levels = 0;
+  bool has_global_levels = false;
+  int num_global_levels = 0;
+  bool has_roi = false;
+  bool enable_roi = false;
+  // Also used, independently of any override, as the reference map for the
+  // optional -orig block-error report.
+  std::vector<double> tol_map;
+};
+
 int launch_decompress(const char *input_file, const char *output_file,
                       enum mgard_x::device_type dev_type, int verbose,
-                      bool enable_roi, std::vector<double> tol_map,
-                      int num_local_levels, int num_global_levels,
+                      const DecompressOverrides &overrides,
                       const char *original_file = nullptr,
                       enum mgard_x::error_bound_type ebtype = mgard_x::error_bound_type::ABS) {
   mgard_x::Config config;
@@ -712,12 +728,22 @@ int launch_decompress(const char *input_file, const char *output_file,
   config.dev_type = dev_type;
   config.auto_pin_host_buffers = true;
   config.auto_cache_release = true;
-  config.num_local_refactoring_level = num_local_levels;
-  config.num_global_refactoring_level = num_global_levels;
-  config.enable_roi = enable_roi;
-  if (enable_roi) {
-    config.roi_tolerance_map = tol_map;
+  // Leave the hybrid fields at their defaults unless explicitly overridden:
+  // decompress() restores them from the header, and overwriting them here with
+  // guesses is exactly the bug this replaces.
+  if (overrides.has_local_levels) {
+    config.num_local_refactoring_level = overrides.num_local_levels;
   }
+  if (overrides.has_global_levels) {
+    config.num_global_refactoring_level = overrides.num_global_levels;
+  }
+  if (overrides.has_roi) {
+    config.enable_roi = overrides.enable_roi;
+    if (overrides.enable_roi) {
+      config.roi_tolerance_map = overrides.tol_map;
+    }
+  }
+  const std::vector<double> &tol_map = overrides.tol_map;
 
   mgard_x::SERIALIZED_TYPE *compressed_data;
   size_t compressed_size = readfile(input_file, compressed_data);
@@ -742,8 +768,10 @@ int launch_decompress(const char *input_file, const char *output_file,
 
   writefile(output_file, original_size * elem_size, decompressed_data);
 
-  // Block-wise error verification (requires original data file)
-  if (original_file != nullptr && enable_roi && !tol_map.empty()) {
+  // Block-wise error verification. Purely diagnostic and independent of how
+  // the file was decompressed, so it runs whenever the user supplied both the
+  // original data and a reference tolerance map (-orig and -r).
+  if (original_file != nullptr && !tol_map.empty()) {
     void *orig_raw;
     size_t orig_bytes = readfile(original_file, orig_raw);
     if (orig_bytes == original_size * elem_size) {
@@ -886,27 +914,35 @@ bool try_decompression(int argc, char *argv[]) {
   if (has_arg(argc, argv, "-v", "--verbose")) {
     verbose = get_arg<int>(argc, argv, "Verbose", "-v", "--verbose");
   }
-  bool enable_roi = has_arg(argc, argv, "-roi", "--enable-roi");
-  std::vector<double> tol_map;
+  // All of these are optional overrides: the hybrid parameters are restored
+  // from the file header, so a plain "mgard-x -x -i f.mgard -o f.raw" now
+  // decompresses a BlockMGARD file correctly with no extra flags.
+  DecompressOverrides overrides;
+  if (has_arg(argc, argv, "-roi", "--enable-roi")) {
+    overrides.has_roi = true;
+    overrides.enable_roi = true;
+  }
   if (has_arg(argc, argv, "-r", "--roi-tolerance-map")) {
     std::string roi_file =
         get_arg<std::string>(argc, argv, "ROI tolerance map", "-r", "--roi-tolerance-map");
     double *roi_map_buffer;
     size_t roi_map_bytes = readfile(roi_file.c_str(), roi_map_buffer);
     size_t roi_map_size = roi_map_bytes / sizeof(double);
-    tol_map.resize(roi_map_size);
+    overrides.tol_map.resize(roi_map_size);
     for (size_t i = 0; i < roi_map_size; i++) {
-      tol_map[i] = static_cast<double>(roi_map_buffer[i]);
+      overrides.tol_map[i] = static_cast<double>(roi_map_buffer[i]);
     }
     free(roi_map_buffer);
   }
-  int num_local_levels = 1;
   if (has_arg(argc, argv, "-ll", "--local-levels")) {
-    num_local_levels = get_arg<int>(argc, argv, "Local levels", "-ll", "--local-levels");
+    overrides.has_local_levels = true;
+    overrides.num_local_levels =
+        get_arg<int>(argc, argv, "Local levels", "-ll", "--local-levels");
   }
-  int num_global_levels = 0;
   if (has_arg(argc, argv, "-gl", "--global-levels")) {
-    num_global_levels = get_arg<int>(argc, argv, "Global levels", "-gl", "--global-levels");
+    overrides.has_global_levels = true;
+    overrides.num_global_levels =
+        get_arg<int>(argc, argv, "Global levels", "-gl", "--global-levels");
   }
   // Optional: original data file for error verification
   std::string original_file;
@@ -919,7 +955,7 @@ bool try_decompression(int argc, char *argv[]) {
     ebtype = get_error_bound_mode(argc, argv);
   }
   launch_decompress(input_file.c_str(), output_file.c_str(), dev_type, verbose,
-                    enable_roi, tol_map, num_local_levels, num_global_levels,
+                    overrides,
                     original_file.empty() ? nullptr : original_file.c_str(),
                     ebtype);
   mgard_x::release_cache(mgard_x::Config());
