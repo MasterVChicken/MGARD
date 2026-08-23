@@ -25,6 +25,42 @@ template <typename Int> bool big_endian() {
   return not *reinterpret_cast<unsigned char const *>(&n);
 }
 
+// The width of the quantized-coefficient type is a build-time choice
+// (QUANTIZED_INT in DataTypes.h) that the reader must agree with, so it is
+// recorded in the header rather than assumed. Writing it means the width can
+// be changed later without turning existing files into garbage: a mismatch is
+// then a clean error instead of a misparse.
+mgard::pb::Quantization::Type QuantizationTypeForWidth(std::size_t width) {
+  switch (width) {
+  case 1:
+    return mgard::pb::Quantization::INT8_T;
+  case 2:
+    return mgard::pb::Quantization::INT16_T;
+  case 4:
+    return mgard::pb::Quantization::INT32_T;
+  case 8:
+    return mgard::pb::Quantization::INT64_T;
+  default:
+    throw mgard_x::InvalidDataException(
+        "unsupported quantized integer width.");
+  }
+}
+
+std::size_t WidthForQuantizationType(mgard::pb::Quantization::Type type) {
+  switch (type) {
+  case mgard::pb::Quantization::INT8_T:
+    return 1;
+  case mgard::pb::Quantization::INT16_T:
+    return 2;
+  case mgard::pb::Quantization::INT32_T:
+    return 4;
+  case mgard::pb::Quantization::INT64_T:
+    return 8;
+  default:
+    throw mgard_x::InvalidDataException("unrecognized quantization type.");
+  }
+}
+
 uint32_t ComputeCRC32(const std::vector<SERIALIZED_TYPE> &data,
                       std::size_t start = 0) {
   // `crc32_z` takes a `z_size_t`.
@@ -122,6 +158,76 @@ void SerializeBytes(const std::vector<SERIALIZED_TYPE> &data,
   vec.insert(vec.end(), data.begin(), data.end());
 }
 
+// Write `tolerances` into `roi` using whichever of the two encodings is
+// smaller. ROI maps are piecewise constant in practice (a few distinct
+// tolerances over long runs of blocks), where run-length is dramatically
+// smaller; a fully irregular map is bigger under run-length, so both are
+// built and the smaller one wins. Both decode to the same vector.
+void SerializeROITolerances(const std::vector<double> &tolerances,
+                            mgard::pb::RegionOfInterest &roi) {
+  mgard::pb::PackedTolerances packed;
+  google::protobuf::RepeatedField<double> &packed_values =
+      *packed.mutable_tolerances();
+  packed_values.Reserve(tolerances.size());
+  for (double t : tolerances) {
+    packed_values.Add(t);
+  }
+
+  mgard::pb::RunLengthTolerances run_length;
+  google::protobuf::RepeatedField<double> &rl_values =
+      *run_length.mutable_values();
+  google::protobuf::RepeatedField<google::protobuf::uint64> &rl_lengths =
+      *run_length.mutable_run_lengths();
+  for (std::size_t i = 0; i < tolerances.size();) {
+    std::size_t j = i;
+    // Bit-exact comparison: the decoded tolerances must reproduce the
+    // compressor's quantization steps exactly, so runs may only merge values
+    // that are identical, not merely close.
+    while (j < tolerances.size() && tolerances[j] == tolerances[i]) {
+      j++;
+    }
+    rl_values.Add(tolerances[i]);
+    rl_lengths.Add(static_cast<google::protobuf::uint64>(j - i));
+    i = j;
+  }
+
+  if (run_length.ByteSizeLong() < packed.ByteSizeLong()) {
+    *roi.mutable_run_length() = run_length;
+  } else {
+    *roi.mutable_packed() = packed;
+  }
+}
+
+// Inverse of SerializeROITolerances.
+std::vector<double>
+DeserializeROITolerances(const mgard::pb::RegionOfInterest &roi) {
+  std::vector<double> tolerances;
+  if (roi.has_packed()) {
+    const google::protobuf::RepeatedField<double> &values =
+        roi.packed().tolerances();
+    tolerances.assign(values.begin(), values.end());
+  } else if (roi.has_run_length()) {
+    const mgard::pb::RunLengthTolerances &run_length = roi.run_length();
+    if (run_length.values_size() != run_length.run_lengths_size()) {
+      throw mgard_x::InvalidDataException(
+          "ROI tolerance map has mismatched run values and run lengths.");
+    }
+    std::size_t total = 0;
+    for (int i = 0; i < run_length.run_lengths_size(); i++) {
+      total += run_length.run_lengths(i);
+    }
+    tolerances.reserve(total);
+    for (int i = 0; i < run_length.values_size(); i++) {
+      tolerances.insert(tolerances.end(), run_length.run_lengths(i),
+                        run_length.values(i));
+    }
+  } else {
+    throw mgard_x::InvalidDataException(
+        "ROI tolerance map is present but carries no tolerance encoding.");
+  }
+  return tolerances;
+}
+
 } // anonymous namespace
 
 namespace mgard_x {
@@ -147,6 +253,19 @@ void MetadataBase::InitializeConfig(Config &config) {
     config.block_delta_block_size = block_delta_block_size;
   }
   config.reorder = reorder;
+  // The hybrid parameters are only meaningful for a hybrid file, and Deserialize
+  // refuses to produce a hybrid file without them, so a Hybrid decomposition
+  // here always carries a full set. For non-hybrid files leave the caller's
+  // Config alone -- those fields are unused and overwriting them with zeros
+  // would break a subsequent hybrid compression through the same Config.
+  if (decomposition == decomposition_type::Hybrid) {
+    config.num_local_refactoring_level = (int)hybrid_num_local_levels;
+    config.num_global_refactoring_level = (int)hybrid_num_global_levels;
+    config.enable_roi = hybrid_enable_roi;
+    if (hybrid_enable_roi) {
+      config.roi_tolerance_map = hybrid_roi_tolerance_map;
+    }
+  }
 }
 
 void MetadataBase::PrintSummary() {
@@ -189,6 +308,26 @@ void MetadataBase::PrintSummary() {
     std::cout << "MultiDim\n";
   } else if (decomposition == decomposition_type::SingleDim) {
     std::cout << "SingleDim\n";
+  } else if (decomposition == decomposition_type::Hybrid) {
+    std::cout << "Hybrid\n";
+    std::cout << "Local refactoring levels: " << hybrid_num_local_levels
+              << "\n";
+    std::cout << "Global refactoring levels: " << hybrid_num_global_levels
+              << "\n";
+    std::cout << "Local block size: " << hybrid_local_block_size << "\n";
+    std::cout << "ROI: ";
+    if (hybrid_enable_roi) {
+      std::cout << "enabled (" << hybrid_roi_tolerance_map.size()
+                << " level-0 blocks";
+      if (!hybrid_roi_block_dimensions.empty()) {
+        std::cout << ", grid";
+        for (uint64_t n : hybrid_roi_block_dimensions)
+          std::cout << " " << n;
+      }
+      std::cout << ")\n";
+    } else {
+      std::cout << "disabled\n";
+    }
   }
   std::cout << "Reorder: " << reorder << "\n";
   std::cout << "Domain Decomposition: ";
@@ -386,7 +525,30 @@ std::vector<SERIALIZED_TYPE> MetadataBase::Serialize() {
     } else if (decomposition == decomposition_type::Hybrid) {
       function_decomposition.set_hierarchy(
           mgard::pb::FunctionDecomposition::HYBRID_HIERARCHY);
+      // The hybrid hierarchy cannot be reconstructed from the hierarchy enum
+      // alone: the local/global level counts fix the layout of the decomposed
+      // buffer and the ROI map fixes the per-block quantization step. Without
+      // them the decompressor would have to be handed the same parameters out
+      // of band, and silently produce garbage when it was not.
+      mgard::pb::HybridHierarchy &hybrid =
+          *function_decomposition.mutable_hybrid_hierarchy();
+      hybrid.set_num_local_levels(hybrid_num_local_levels);
+      hybrid.set_num_global_levels(hybrid_num_global_levels);
+      hybrid.set_local_block_size(hybrid_local_block_size);
+      if (hybrid_enable_roi) {
+        mgard::pb::RegionOfInterest &roi = *hybrid.mutable_region_of_interest();
+        google::protobuf::RepeatedField<google::protobuf::uint64>
+            &block_dimensions = *roi.mutable_block_dimensions();
+        block_dimensions.Reserve(hybrid_roi_block_dimensions.size());
+        for (uint64_t n : hybrid_roi_block_dimensions) {
+          block_dimensions.Add(n);
+        }
+        SerializeROITolerances(hybrid_roi_tolerance_map, roi);
+      }
     }
+    // Not populated by MGARD-X: the reader rebuilds the hierarchy (and hence
+    // the level count) from the shape, and under domain decomposition there is
+    // no single value to record. Written for format compatibility only.
     function_decomposition.set_l_target(l_target);
   }
 
@@ -395,9 +557,10 @@ std::vector<SERIALIZED_TYPE> MetadataBase::Serialize() {
     if (otype == operation_type::Compression) {
       quantization.set_method(mgard::pb::Quantization::COEFFICIENTWISE_LINEAR);
       quantization.set_bin_widths(mgard::pb::Quantization::PER_COEFFICIENT);
-      quantization.set_type(mgard::pb::Quantization::INT64_T);
-      quantization.set_big_endian(big_endian<std::int64_t>());
-      if (big_endian<std::int64_t>()) {
+      quantization.set_type(
+          ::QuantizationTypeForWidth(sizeof(mgard_x::QUANTIZED_INT)));
+      quantization.set_big_endian(big_endian<mgard_x::QUANTIZED_INT>());
+      if (big_endian<mgard_x::QUANTIZED_INT>()) {
         etype = endiness_type::Big_Endian;
       } else {
         etype = endiness_type::Little_Endian;
@@ -650,6 +813,58 @@ void MetadataBase::Deserialize(
     } else if (function_decomposition.hierarchy() ==
                mgard::pb::FunctionDecomposition::HYBRID_HIERARCHY) {
       decomposition = decomposition_type::Hybrid;
+      if (!function_decomposition.has_hybrid_hierarchy()) {
+        // Written by a build from before the hybrid parameters were added to
+        // the header. Its level counts and ROI map only ever existed in the
+        // caller's Config, so we cannot reconstruct it here. Failing loudly is
+        // the point: silently falling back to the Config defaults is what
+        // produced wrong output without any error.
+        throw InvalidDataException(
+            "this file uses the hybrid hierarchy but predates the hybrid "
+            "parameters being recorded in the header; it can only be "
+            "decompressed by supplying the original local/global level counts "
+            "and ROI tolerance map through Config.");
+      }
+      const mgard::pb::HybridHierarchy &hybrid =
+          function_decomposition.hybrid_hierarchy();
+      hybrid_num_local_levels = hybrid.num_local_levels();
+      hybrid_num_global_levels = hybrid.num_global_levels();
+      hybrid_local_block_size = hybrid.local_block_size();
+      if (hybrid_num_local_levels == 0 && hybrid_num_global_levels == 0) {
+        throw InvalidDataException(
+            "hybrid hierarchy records zero local and zero global levels.");
+      }
+      if (hybrid_local_block_size != MGARDX_HYBRID_LOCAL_BLOCK_SIZE) {
+        throw InvalidDataException(
+            "hybrid hierarchy was written with local block size " +
+            std::to_string(hybrid_local_block_size) +
+            ", but this build of MGARD-X only implements block size " +
+            std::to_string(MGARDX_HYBRID_LOCAL_BLOCK_SIZE) + ".");
+      }
+      hybrid_enable_roi = hybrid.has_region_of_interest();
+      if (hybrid_enable_roi) {
+        const mgard::pb::RegionOfInterest &roi = hybrid.region_of_interest();
+        const google::protobuf::RepeatedField<google::protobuf::uint64>
+            &block_dimensions = roi.block_dimensions();
+        hybrid_roi_block_dimensions.assign(block_dimensions.begin(),
+                                           block_dimensions.end());
+        hybrid_roi_tolerance_map = ::DeserializeROITolerances(roi);
+        if (hybrid_roi_block_dimensions.size() != total_dims) {
+          throw InvalidDataException(
+              "ROI block grid has a different dimension than the data.");
+        }
+        std::size_t expected = 1;
+        for (uint64_t n : hybrid_roi_block_dimensions) {
+          expected *= n;
+        }
+        if (hybrid_roi_tolerance_map.size() != expected) {
+          throw InvalidDataException(
+              "ROI tolerance map holds " +
+              std::to_string(hybrid_roi_tolerance_map.size()) +
+              " entries but its block grid describes " +
+              std::to_string(expected) + ".");
+        }
+      }
     } else {
       throw InvalidDataException(
           "this decomposition hierarchy mismatch the hierarchy used "
@@ -663,9 +878,22 @@ void MetadataBase::Deserialize(
     if (quantization.method() != mgard::pb::Quantization::NOOP_QUANTIZATION) {
       assert(quantization.bin_widths() ==
              mgard::pb::Quantization::PER_COEFFICIENT);
-      assert(quantization.type() == mgard::pb::Quantization::INT64_T);
-      assert(quantization.big_endian() == big_endian<std::int64_t>());
-      if (big_endian<std::int64_t>()) {
+      // Checked rather than asserted: this decides how the payload is read, so
+      // a mismatch must fail in release builds too. It fires when a file
+      // written by a build with a different QUANTIZED_INT width is read.
+      const std::size_t file_width =
+          ::WidthForQuantizationType(quantization.type());
+      if (file_width != sizeof(mgard_x::QUANTIZED_INT)) {
+        throw InvalidDataException(
+            "this file quantizes to " + std::to_string(file_width * 8) +
+            "-bit integers, but this build of MGARD-X uses " +
+            std::to_string(sizeof(mgard_x::QUANTIZED_INT) * 8) + "-bit.");
+      }
+      if (quantization.big_endian() != big_endian<mgard_x::QUANTIZED_INT>()) {
+        throw InvalidDataException(
+            "this file was written with the opposite endianness.");
+      }
+      if (big_endian<mgard_x::QUANTIZED_INT>()) {
         etype = endiness_type::Big_Endian;
       } else {
         etype = endiness_type::Little_Endian;

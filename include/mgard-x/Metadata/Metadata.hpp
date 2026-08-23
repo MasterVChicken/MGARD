@@ -38,6 +38,20 @@ struct MetadataBase {
   uint32_t l_target = 0;
   uint32_t reorder = 0;
 
+  // Hybrid (block-local + global) hierarchy, a.k.a. BlockMGARD. Only
+  // meaningful when `decomposition == decomposition_type::Hybrid`; these are
+  // the parameters the decompressor must reproduce exactly, so they travel in
+  // the header rather than being re-supplied by the caller.
+  uint64_t hybrid_num_local_levels = 0;
+  uint64_t hybrid_num_global_levels = 0;
+  // Edge length of the block-local transform block (compile-time 8 today).
+  uint64_t hybrid_local_block_size = 0;
+  bool hybrid_enable_roi = false;
+  // Level-0 per-block tolerances; deeper levels are re-derived on read.
+  std::vector<double> hybrid_roi_tolerance_map;
+  // Number of level-0 blocks per dimension, used to validate the map above.
+  std::vector<uint64_t> hybrid_roi_block_dimensions;
+
   bool domain_decomposed = false;
   enum domain_decomposition_type ddtype;
   uint8_t domain_decomposed_dim;

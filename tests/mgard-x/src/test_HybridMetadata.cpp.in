@@ -1,0 +1,191 @@
+/*
+ * Copyright 2026, Oak Ridge National Laboratory.
+ * MGARD-X: MultiGrid Adaptive Reduction of Data Portable across GPUs and CPUs
+ */
+
+#include "catch2/catch_test_macros.hpp"
+
+#include <cmath>
+#include <vector>
+
+#include "mgard-x/Config/Config.h"
+#include "mgard-x/Metadata/Metadata.hpp"
+#include "mgard-x/RuntimeX/RuntimeX.h"
+
+namespace mgard_x {
+
+using TestDevice = @DEVICE_TYPE@;
+
+namespace {
+
+// Fill the non-hybrid fields with something valid so Serialize/Deserialize
+// have a well-formed header to work with.
+Metadata<TestDevice> base_metadata(std::vector<SIZE> shape) {
+  Metadata<TestDevice> m;
+  m.FillForCompression<float>(
+      error_bound_type::ABS, (float)1e-3, std::numeric_limits<float>::infinity(),
+      (float)1.0, decomposition_type::Hybrid, /*reorder=*/0,
+      lossless_type::Huffman, /*huff_dict_size=*/8192,
+      /*huff_block_size=*/1024, shape, /*domain_decomposed=*/false,
+      domain_decomposition_type::MaxDim, /*domain_decomposed_dim=*/0,
+      /*domain_decomposed_size=*/0);
+  return m;
+}
+
+std::vector<uint64_t> block_grid(const std::vector<SIZE> &shape) {
+  std::vector<uint64_t> dims(shape.size());
+  for (size_t d = 0; d < shape.size(); d++) {
+    dims[d] = (shape[d] + MGARDX_HYBRID_LOCAL_BLOCK_SIZE - 1) /
+              MGARDX_HYBRID_LOCAL_BLOCK_SIZE;
+  }
+  return dims;
+}
+
+} // namespace
+
+TEST_CASE("hybrid level counts survive a metadata round trip",
+          "[HybridMetadata]") {
+  std::vector<SIZE> shape = {64, 64, 64};
+  Metadata<TestDevice> out = base_metadata(shape);
+  out.hybrid_num_local_levels = 2;
+  out.hybrid_num_global_levels = 1;
+  out.hybrid_local_block_size = MGARDX_HYBRID_LOCAL_BLOCK_SIZE;
+  out.hybrid_enable_roi = false;
+
+  std::vector<SERIALIZED_TYPE> bytes = out.MetadataBase::Serialize();
+
+  Metadata<TestDevice> in;
+  in.MetadataBase::Deserialize(bytes);
+
+  REQUIRE(in.decomposition == decomposition_type::Hybrid);
+  REQUIRE(in.hybrid_num_local_levels == 2);
+  REQUIRE(in.hybrid_num_global_levels == 1);
+  REQUIRE(in.hybrid_local_block_size == MGARDX_HYBRID_LOCAL_BLOCK_SIZE);
+  REQUIRE(in.hybrid_enable_roi == false);
+
+  // The whole point of recording these: a Config that never saw the original
+  // compression parameters comes back configured correctly.
+  Config config;
+  config.num_local_refactoring_level = 99;
+  config.num_global_refactoring_level = 99;
+  in.InitializeConfig(config);
+  REQUIRE(config.num_local_refactoring_level == 2);
+  REQUIRE(config.num_global_refactoring_level == 1);
+  REQUIRE(config.enable_roi == false);
+}
+
+TEST_CASE("ROI tolerance map survives a metadata round trip",
+          "[HybridMetadata]") {
+  std::vector<SIZE> shape = {64, 64, 64};
+  std::vector<uint64_t> dims = block_grid(shape);
+  size_t num_blocks = 1;
+  for (uint64_t n : dims)
+    num_blocks *= n;
+
+  // Piecewise constant, so the run-length encoding is the one that gets used.
+  std::vector<double> tolerances(num_blocks);
+  for (size_t i = 0; i < num_blocks; i++) {
+    tolerances[i] = (i < num_blocks / 2) ? 1e-3 : 1e-5;
+  }
+
+  Metadata<TestDevice> out = base_metadata(shape);
+  out.hybrid_num_local_levels = 1;
+  out.hybrid_num_global_levels = 0;
+  out.hybrid_local_block_size = MGARDX_HYBRID_LOCAL_BLOCK_SIZE;
+  out.hybrid_enable_roi = true;
+  out.hybrid_roi_block_dimensions = dims;
+  out.hybrid_roi_tolerance_map = tolerances;
+
+  std::vector<SERIALIZED_TYPE> bytes = out.MetadataBase::Serialize();
+
+  // Two runs must encode far smaller than one double per block.
+  REQUIRE(bytes.size() < num_blocks * sizeof(double));
+
+  Metadata<TestDevice> in;
+  in.MetadataBase::Deserialize(bytes);
+
+  REQUIRE(in.hybrid_enable_roi == true);
+  REQUIRE(in.hybrid_roi_block_dimensions == dims);
+  REQUIRE(in.hybrid_roi_tolerance_map.size() == num_blocks);
+  // Tolerances must come back bit-exact: they set the quantization step, so a
+  // rounded value would change the reconstruction.
+  for (size_t i = 0; i < num_blocks; i++) {
+    REQUIRE(in.hybrid_roi_tolerance_map[i] == tolerances[i]);
+  }
+
+  Config config;
+  in.InitializeConfig(config);
+  REQUIRE(config.enable_roi == true);
+  REQUIRE(config.roi_tolerance_map == tolerances);
+}
+
+TEST_CASE("an irregular ROI map still round trips exactly",
+          "[HybridMetadata]") {
+  // Every block distinct: run-length is the larger encoding here, so this
+  // exercises the packed branch of the writer.
+  std::vector<SIZE> shape = {16, 16, 16};
+  std::vector<uint64_t> dims = block_grid(shape);
+  size_t num_blocks = 1;
+  for (uint64_t n : dims)
+    num_blocks *= n;
+
+  std::vector<double> tolerances(num_blocks);
+  for (size_t i = 0; i < num_blocks; i++) {
+    tolerances[i] = 1e-3 * std::pow(0.9, (double)i);
+  }
+
+  Metadata<TestDevice> out = base_metadata(shape);
+  out.hybrid_num_local_levels = 1;
+  out.hybrid_num_global_levels = 0;
+  out.hybrid_local_block_size = MGARDX_HYBRID_LOCAL_BLOCK_SIZE;
+  out.hybrid_enable_roi = true;
+  out.hybrid_roi_block_dimensions = dims;
+  out.hybrid_roi_tolerance_map = tolerances;
+
+  std::vector<SERIALIZED_TYPE> bytes = out.MetadataBase::Serialize();
+  Metadata<TestDevice> in;
+  in.MetadataBase::Deserialize(bytes);
+
+  REQUIRE(in.hybrid_roi_tolerance_map.size() == num_blocks);
+  for (size_t i = 0; i < num_blocks; i++) {
+    REQUIRE(in.hybrid_roi_tolerance_map[i] == tolerances[i]);
+  }
+}
+
+TEST_CASE("a non-hybrid file leaves the caller's hybrid Config alone",
+          "[HybridMetadata]") {
+  std::vector<SIZE> shape = {64, 64, 64};
+  Metadata<TestDevice> out = base_metadata(shape);
+  out.decomposition = decomposition_type::MultiDim;
+
+  std::vector<SERIALIZED_TYPE> bytes = out.MetadataBase::Serialize();
+  Metadata<TestDevice> in;
+  in.MetadataBase::Deserialize(bytes);
+  REQUIRE(in.decomposition == decomposition_type::MultiDim);
+
+  Config config;
+  config.num_local_refactoring_level = 3;
+  config.num_global_refactoring_level = 2;
+  in.InitializeConfig(config);
+  // Untouched: overwriting these with zeros would break a later hybrid
+  // compression driven by the same Config.
+  REQUIRE(config.num_local_refactoring_level == 3);
+  REQUIRE(config.num_global_refactoring_level == 2);
+}
+
+TEST_CASE("the quantized integer width is recorded and checked",
+          "[HybridMetadata]") {
+  std::vector<SIZE> shape = {64, 64, 64};
+  Metadata<TestDevice> out = base_metadata(shape);
+  out.hybrid_num_local_levels = 1;
+  out.hybrid_num_global_levels = 0;
+  out.hybrid_local_block_size = MGARDX_HYBRID_LOCAL_BLOCK_SIZE;
+
+  std::vector<SERIALIZED_TYPE> bytes = out.MetadataBase::Serialize();
+  Metadata<TestDevice> in;
+  // Round trips cleanly against a build with the same QUANTIZED_INT width;
+  // Deserialize throws when the widths disagree.
+  REQUIRE_NOTHROW(in.MetadataBase::Deserialize(bytes));
+}
+
+} // namespace mgard_x
