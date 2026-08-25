@@ -255,6 +255,23 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::DequantizeRecompose(
     Array<D, T, DeviceType> &decompressed_data, enum error_bound_type ebtype,
     T tol, T s, T norm, int queue_idx) {
+  // Escape hatch for A/B benchmarking and debugging: set
+  // MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE to force the unfused path.
+  static const bool disable_fused_dr =
+      std::getenv("MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE") != nullptr;
+  if (!disable_fused_dr && hybrid_quantizer.CanFuseQuantize(s)) {
+    DequantizeRecomposeFused(decompressed_data, ebtype, tol, s, norm,
+                             queue_idx);
+  } else {
+    Dequantize(decompressed_data, ebtype, tol, s, norm, queue_idx);
+    Recompose(decompressed_data, true, queue_idx);
+  }
+}
+
+template <DIM D, typename T, typename DeviceType>
+void HybridHierarchyCompressor<D, T, DeviceType>::DequantizeRecomposeFused(
+    Array<D, T, DeviceType>& decompressed_data, enum error_bound_type ebtype,
+    T tol, T s, T norm, int queue_idx) {
   SubArray<1, T, DeviceType> decomposed_subarray(hybrid_decomposed_array);
   SubArray<1, QUANTIZED_INT, DeviceType> quantized_subarray(
       hybrid_quantized_array);
@@ -341,18 +358,7 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Compress(
   // after lossless",SubArray(compressed_data)); From printing result, we found
   // lossless didn't do anything to compressed_data
   if (config.compress_with_dryrun) {
-    static const bool disable_fused_dr =
-        std::getenv("MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE") != nullptr;
-    if (!disable_fused_dr && hybrid_quantizer.CanFuseQuantize(s)) {
-      DequantizeRecompose(original_data, ebtype, tol, s, norm, queue_idx);
-    } else {
-      Dequantize(original_data, ebtype, tol, s, norm, queue_idx);
-      // PrintSubarray("Original data after dequantization",
-      // SubArray(original_data));
-      Recompose(original_data, true, queue_idx);
-      // PrintSubarray("Original data after recompose",
-      // SubArray(original_data));
-    }
+    DequantizeRecompose(original_data, ebtype, tol, s, norm, queue_idx);
   }
 
   if (log::level & log::TIME) {
@@ -381,18 +387,7 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Decompress(
   decompressed_data.resize(hierarchy->level_shape(hierarchy->l_target()));
   Deserialize(compressed_data, queue_idx);
   LosslessDecompress(compressed_data, queue_idx);
-  // Escape hatch for A/B benchmarking and debugging: set
-  // MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE to force the unfused path.
-  static const bool disable_fused_dr =
-      std::getenv("MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE") != nullptr;
-  if (!disable_fused_dr && hybrid_quantizer.CanFuseQuantize(s)) {
-    DequantizeRecompose(decompressed_data, ebtype, tol, s, norm, queue_idx);
-  } else {
-    Dequantize(decompressed_data, ebtype, tol, s, norm, queue_idx);
-    // PrintSubarray("Dequantized", SubArray(hybrid_quantized_array));
-    Recompose(decompressed_data, true, queue_idx);
-    // PrintSubarray("Recomposed", SubArray(decompressed_data));
-  }
+  DequantizeRecompose(decompressed_data, ebtype, tol, s, norm, queue_idx);
 
   if (log::level & log::TIME) {
     DeviceRuntime<DeviceType>::SyncQueue(0);
