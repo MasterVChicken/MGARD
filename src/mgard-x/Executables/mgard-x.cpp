@@ -50,17 +50,18 @@ void print_usage_message(std::string error) {
 \t\t (optional) -hh / --hybrid: use hybrid (block-local + global) hierarchy\n\
 \t\t (optional) -ll / --local-levels <int>: number of local refactoring levels (default: 1)\n\
 \t\t (optional) -gl / --global-levels <int>: number of global refactoring levels (default: 0)\n\
-\t\t hybrid kernel fusion is on by default; set either environment variable to\n\
-\t\t run that stage as separate decomposition and quantization passes instead\n\
-\t\t (same reconstruction either way):\n\
-\t\t\t MGARD_X_DISABLE_FUSED_DECOMPOSE_QUANTIZE=1    (compression)\n\
-\t\t\t MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE=1  (decompression)\n\
+\t\t (optional) -nkf / --no-kernel-fusion: run the hybrid local stage as\n\
+\t\t\t separate decompose and quantize passes instead of fused kernels\n\
+\t\t\t (same reconstruction either way, but slower -- use it to time the\n\
+\t\t\t two stages apart). Fusion is on by default.\n\
 \t\t (optional) -v / --verbose <0|1|2|3> 0: error; 1: error+info; 2: error+timing; 3: all\n\
 \n\
 \t -x / --decompress: decompress mode\n\
 \t\t -i / --input <path to compressed data>\n\
 \t\t -o / --output <path to decompressed data>\n\
 \t\t -d / --device <auto|serial|cuda|hip>: device type\n\
+\t\t (optional) -nkf / --no-kernel-fusion: as above, for the dequantize+\n\
+\t\t\t recompose stage\n\
 \t\t (optional) -v / --verbose <0|1|2|3> 0: error; 1: error+info; 2: error+timing; 3: all\n");
   exit(0);
 }
@@ -540,9 +541,11 @@ int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
                     enum mgard_x::device_type dev_type, int verbose,
                     mgard_x::SIZE max_memory_footprint,
                     int num_local_levels, int num_global_levels,
-                    bool use_hybrid) {
+                    bool use_hybrid, bool kernel_fusion) {
   mgard_x::Config config;
   config.log_level = verbose_to_log_level(verbose);
+  config.fuse_decompose_quantize = kernel_fusion;
+  config.fuse_dequantize_recompose = kernel_fusion;
   // Hybrid (block-local + global) hierarchy decomposition is opt-in via
   // -hh/--hybrid; the default remains the standard multi-dim decomposition.
   if (use_hybrid) {
@@ -725,11 +728,14 @@ struct DecompressOverrides {
 
 int launch_decompress(const char *input_file, const char *output_file,
                       enum mgard_x::device_type dev_type, int verbose,
+                      bool kernel_fusion,
                       const DecompressOverrides &overrides,
                       const char *original_file = nullptr,
                       enum mgard_x::error_bound_type ebtype = mgard_x::error_bound_type::ABS) {
   mgard_x::Config config;
   config.log_level = verbose_to_log_level(verbose);
+  config.fuse_decompose_quantize = kernel_fusion;
+  config.fuse_dequantize_recompose = kernel_fusion;
   config.dev_type = dev_type;
   config.auto_pin_host_buffers = true;
   config.auto_cache_release = true;
@@ -873,6 +879,9 @@ bool try_compression(int argc, char *argv[]) {
   }
 
   bool use_hybrid = has_arg(argc, argv, "-hh", "--hybrid");
+
+  // Fusion is on by default; the flag selects the separate-pass path.
+  bool kernel_fusion = !has_arg(argc, argv, "-nkf", "--no-kernel-fusion");
   
   int num_global_levels = 0;  // default value
   if (has_arg(argc, argv, "-gl", "--global-levels")) {
@@ -895,13 +904,13 @@ bool try_compression(int argc, char *argv[]) {
                             output_file.c_str(), shape, tol, tol_map, enable_roi, s, mode, lossless,
                             domain_decomposition, block_size, dev_type, verbose,
                             max_memory_footprint, num_local_levels,
-                            num_global_levels, use_hybrid);
+                            num_global_levels, use_hybrid, kernel_fusion);
   } else if (dtype == mgard_x::data_type::Float) {
     launch_compress<float>(shape.size(), dtype, input_file.c_str(),
                            output_file.c_str(), shape, tol, tol_map, enable_roi, s, mode, lossless,
                            domain_decomposition, block_size, dev_type, verbose,
                            max_memory_footprint, num_local_levels,
-                           num_global_levels, use_hybrid);
+                           num_global_levels, use_hybrid, kernel_fusion);
   }
   mgard_x::release_cache(mgard_x::Config());
   return true;
@@ -959,8 +968,9 @@ bool try_decompression(int argc, char *argv[]) {
   if (has_arg(argc, argv, "-em", "--error-bound-mode")) {
     ebtype = get_error_bound_mode(argc, argv);
   }
+  bool kernel_fusion = !has_arg(argc, argv, "-nkf", "--no-kernel-fusion");
   launch_decompress(input_file.c_str(), output_file.c_str(), dev_type, verbose,
-                    overrides,
+                    kernel_fusion, overrides,
                     original_file.empty() ? nullptr : original_file.c_str(),
                     ebtype);
   mgard_x::release_cache(mgard_x::Config());

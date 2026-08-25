@@ -43,6 +43,14 @@ struct Config {
   int mdr_qoi_num_variables;
   std::vector<double> roi_tolerance_map;
   bool enable_roi;
+  // The hybrid (BlockMGARD) local stage fuses its decompose/recompose kernels
+  // with quantization/dequantization so coefficients never round-trip through
+  // global memory as T. These select the older separate-pass implementation,
+  // which the test suite still exercises. Purely a performance choice: both
+  // paths reconstruct identically, so a file compressed either way decompresses
+  // either way and nothing about the choice is recorded in the file header.
+  bool fuse_decompose_quantize;   // compression
+  bool fuse_dequantize_recompose; // decompression
 
   Config();
   void apply();
