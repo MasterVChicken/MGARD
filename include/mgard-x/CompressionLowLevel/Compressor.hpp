@@ -182,6 +182,14 @@ void Compressor<D, T, DeviceType>::Recompose(
 }
 
 template <DIM D, typename T, typename DeviceType>
+void Compressor<D, T, DeviceType>::DequantizeRecompose(
+    Array<D, T, DeviceType> &decompressed_data, enum error_bound_type ebtype,
+    T tol, T s, T norm, int queue_idx) {
+  Dequantize(decompressed_data, ebtype, tol, s, norm, queue_idx);
+  Recompose(decompressed_data, true, queue_idx);
+}
+
+template <DIM D, typename T, typename DeviceType>
 void Compressor<D, T, DeviceType>::Dequantize(
     Array<D, T, DeviceType> &decompressed_data, enum error_bound_type ebtype,
     T tol, T s, T norm, int queue_idx) {

@@ -82,6 +82,16 @@ public:
                   enum error_bound_type ebtype, T tol, T s, T norm,
                   int queue_idx);
 
+  // Dequantize + recompose as one step of the decompression pipelines. Here it
+  // is simply the two calls in sequence; a compressor that can do better (see
+  // HybridHierarchyCompressor, which fuses them into one pass over the local
+  // levels) overrides this and decides for itself. The pipelines call this
+  // rather than the two methods so they do not have to know which compressor
+  // they are driving.
+  void DequantizeRecompose(Array<D, T, DeviceType> &decompressed_data,
+                           enum error_bound_type ebtype, T tol, T s, T norm,
+                           int queue_idx);
+
   void LosslessDecompress(Array<1, Byte, DeviceType> &compressed_data,
                           int queue_idx);
 

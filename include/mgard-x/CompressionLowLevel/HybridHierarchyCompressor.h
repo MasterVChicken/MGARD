@@ -79,12 +79,21 @@ class HybridHierarchyCompressor
                   enum error_bound_type ebtype, T tol, T s, T norm,
                   int queue_idx);
 
-  // Fused Dequantize+Recompose (single pass over the local levels); used by
-  // Decompress() instead of Dequantize()+Recompose() when
-  // hybrid_quantizer.CanFuseQuantize(s) holds.
+  // Dequantize + recompose. Overrides the plain two-call version: picks the
+  // fused single-pass implementation below when the configuration allows it,
+  // and falls back to Dequantize() + Recompose() otherwise. This is the only
+  // place that choice is made, for both the pipelines and Decompress().
   void DequantizeRecompose(Array<D, T, DeviceType>& decompressed_data,
                            enum error_bound_type ebtype, T tol, T s, T norm,
                            int queue_idx);
+
+  // Fused Dequantize+Recompose: one pass over the local levels, coefficients
+  // never round-trip through global memory as T. Requires
+  // hybrid_quantizer.CanFuseQuantize(s); throws otherwise. Call
+  // DequantizeRecompose() instead unless you specifically want the fused path.
+  void DequantizeRecomposeFused(Array<D, T, DeviceType>& decompressed_data,
+                                enum error_bound_type ebtype, T tol, T s,
+                                T norm, int queue_idx);
 
   void LosslessDecompress(Array<1, Byte, DeviceType>& compressed_data,
                           int queue_idx);

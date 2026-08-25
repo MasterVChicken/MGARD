@@ -62,6 +62,13 @@ public:
 
   void Recompose(Array<D, T, DeviceType> &decompressed_data, int queue_idx);
 
+  // Same contract as Compressor::DequantizeRecompose. Spelled out here rather
+  // than inherited because this Recompose() takes no orthogonal_projection
+  // argument.
+  void DequantizeRecompose(Array<D, T, DeviceType> &decompressed_data,
+                           enum error_bound_type ebtype, T tol, T s, T norm,
+                           int queue_idx);
+
   void Dequantize(Array<D, T, DeviceType> &decompressed_data,
                   enum error_bound_type ebtype, T tol, T s, T norm,
                   int queue_idx);
