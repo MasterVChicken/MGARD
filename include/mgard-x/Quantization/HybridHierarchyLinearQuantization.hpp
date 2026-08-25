@@ -8,6 +8,8 @@
 #ifndef MGARD_X_HYBRID_HIERARCHY_LINEAR_QUANTIZATION_TEMPLATE
 #define MGARD_X_HYBRID_HIERARCHY_LINEAR_QUANTIZATION_TEMPLATE
 
+#include <string>
+
 #include "../RuntimeX/RuntimeX.h"
 #include "LinearQuantization.hpp"
 #include "LocalQuantization.hpp"
@@ -212,6 +214,22 @@ public:
   // the same L-inf-only constraint as the local quantizer.
   bool CanFuseQuantize(T s) {
     return this->L > 0 && D == 3 && s == std::numeric_limits<T>::infinity();
+  }
+
+  // Which of the conditions above ruled the fused path out, for logging. Kept
+  // next to CanFuseQuantize so the two cannot drift apart. Returns an empty
+  // string when fusing is possible.
+  std::string WhyCannotFuseQuantize(T s) {
+    if (this->L == 0) {
+      return "no block-local levels";
+    }
+    if (D != 3) {
+      return "fused kernel is 3D only";
+    }
+    if (s != std::numeric_limits<T>::infinity()) {
+      return "fused kernel requires s = inf";
+    }
+    return "";
   }
 
   // Fused decompose+quantization driver: the local levels are decomposed and

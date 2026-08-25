@@ -49,6 +49,11 @@ void print_usage_message(std::string error) {
 \t\t (optional) -hh / --hybrid: use hybrid (block-local + global) hierarchy\n\
 \t\t (optional) -ll / --local-levels <int>: number of local refactoring levels (default: 1)\n\
 \t\t (optional) -gl / --global-levels <int>: number of global refactoring levels (default: 0)\n\
+\t\t hybrid kernel fusion is on by default; set either environment variable to\n\
+\t\t run that stage as separate decomposition and quantization passes instead\n\
+\t\t (same reconstruction either way):\n\
+\t\t\t MGARD_X_DISABLE_FUSED_DECOMPOSE_QUANTIZE=1    (compression)\n\
+\t\t\t MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE=1  (decompression)\n\
 \t\t (optional) -v / --verbose <0|1|2|3> 0: error; 1: error+info; 2: error+timing; 3: all\n\
 \t\t (optional) -w / --warm-up: run a throwaway compress+decompress pass on a small\n\
 \t\t\t array first to pay HIP's one-time per-kernel load cost before timing\n\
