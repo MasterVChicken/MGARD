@@ -64,6 +64,8 @@ Config::Config() {
   cpu_mode = cpu_parallelization_mode::INTER_BLOCK;
   mdr_qoi_mode = false;
   mdr_qoi_num_variables = 3;
+  fuse_decompose_quantize = true;
+  fuse_dequantize_recompose = true;
 }
 
 void Config::apply() { log::level = log_level; }

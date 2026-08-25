@@ -47,27 +47,6 @@ Config hybrid_config(int num_local_levels, int num_global_levels) {
   return config;
 }
 
-// The fusion switches are environment variables, read fresh on every call, so
-// a single test process can drive both paths by flipping them here.
-void SetFusion(const char *name, bool fused) {
-  if (fused) {
-    unsetenv(name);
-  } else {
-    setenv(name, "1", 1);
-  }
-}
-
-struct ScopedFusion {
-  ScopedFusion(bool fuse_compress, bool fuse_decompress) {
-    SetFusion("MGARD_X_DISABLE_FUSED_DECOMPOSE_QUANTIZE", fuse_compress);
-    SetFusion("MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE", fuse_decompress);
-  }
-  ~ScopedFusion() {
-    unsetenv("MGARD_X_DISABLE_FUSED_DECOMPOSE_QUANTIZE");
-    unsetenv("MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE");
-  }
-};
-
 // Compress with `fuse_compress`, decompress with `fuse_decompress`, and return
 // both the compressed bytes and the reconstruction.
 template <typename T, typename DevType>
@@ -79,12 +58,12 @@ void round_trip(std::vector<SIZE> shape, int num_local_levels,
   constexpr DIM D = 3;
   const T s = std::numeric_limits<T>::infinity();
 
-  ScopedFusion fusion(fuse_compress, fuse_decompress);
-
   Config compress_config =
       hybrid_config<T, DevType>(num_local_levels, num_global_levels);
+  compress_config.fuse_decompose_quantize = fuse_compress;
   Config decompress_config =
       hybrid_config<T, DevType>(num_local_levels, num_global_levels);
+  decompress_config.fuse_dequantize_recompose = fuse_decompress;
 
   Hierarchy<D, T, DevType> compress_hierarchy(shape, compress_config);
   HybridHierarchyCompressor<D, T, DevType> compressor;
@@ -130,8 +109,9 @@ void round_trip(std::vector<SIZE> shape, int num_local_levels,
 // depends on memory layout -- compressing the same data twice in one process,
 // or running the same binary with a different-sized environment block, shifts
 // stack alignment, changes how the vectorized loops round, and moves a few
-// coefficients across a quantization boundary. Measured: a 4 KB environment
-// variable changes the compressed size of a 64^3 float input by 424 bytes.
+// coefficients across a quantization boundary. Measured, back when the switch
+// was an environment variable: a 4 KB environment variable changes the
+// compressed size of a 64^3 float input by 424 bytes.
 //
 // So equality of bytes, of size, or of the reconstruction is not a property
 // this code has, with or without fusion. What must hold -- and what the switch

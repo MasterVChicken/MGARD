@@ -15,7 +15,6 @@
 #include "../Config/Config.h"
 #include "../Hierarchy/Hierarchy.h"
 #include "../RuntimeX/RuntimeX.h"
-#include "../Utilities/KernelFusion.h"
 #include "../Utilities/Types.h"
 #include "CompressorCache.hpp"
 #include "HybridHierarchyCompressor.h"
@@ -256,16 +255,15 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::DequantizeRecompose(
     Array<D, T, DeviceType> &decompressed_data, enum error_bound_type ebtype,
     T tol, T s, T norm, int queue_idx) {
-  if (FuseDequantizeRecomposeEnabled() && hybrid_quantizer.CanFuseQuantize(s)) {
+  if (config.fuse_dequantize_recompose && hybrid_quantizer.CanFuseQuantize(s)) {
     log::info("Local dequantize+recompose kernels: fused");
     DequantizeRecomposeFused(decompressed_data, ebtype, tol, s, norm,
                              queue_idx);
   } else {
     log::info("Local dequantize+recompose kernels: separate (" +
-              (FuseDequantizeRecomposeEnabled()
+              (config.fuse_dequantize_recompose
                    ? hybrid_quantizer.WhyCannotFuseQuantize(s)
-                   : std::string("MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE "
-                                 "is set")) +
+                   : std::string("kernel fusion disabled")) +
               ")");
     Dequantize(decompressed_data, ebtype, tol, s, norm, queue_idx);
     Recompose(decompressed_data, true, queue_idx);
@@ -327,15 +325,14 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Compress(
 
   if (log::level & log::TIME)
     timer_compress_kernel.start();
-  if (FuseDecomposeQuantizeEnabled() && hybrid_quantizer.CanFuseQuantize(s)) {
+  if (config.fuse_decompose_quantize && hybrid_quantizer.CanFuseQuantize(s)) {
     log::info("Local decompose+quantize kernels: fused");
     DecomposeQuantize(original_data, ebtype, tol, s, norm, queue_idx);
   } else {
     log::info("Local decompose+quantize kernels: separate (" +
-              (FuseDecomposeQuantizeEnabled()
+              (config.fuse_decompose_quantize
                    ? hybrid_quantizer.WhyCannotFuseQuantize(s)
-                   : std::string("MGARD_X_DISABLE_FUSED_DECOMPOSE_QUANTIZE "
-                                 "is set")) +
+                   : std::string("kernel fusion disabled")) +
               ")");
     Decompose(original_data, queue_idx);
     // log::info("After decompose()");
