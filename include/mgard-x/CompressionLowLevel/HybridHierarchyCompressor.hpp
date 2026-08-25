@@ -15,6 +15,7 @@
 #include "../Config/Config.h"
 #include "../Hierarchy/Hierarchy.h"
 #include "../RuntimeX/RuntimeX.h"
+#include "../Utilities/KernelFusion.h"
 #include "../Utilities/Types.h"
 #include "CompressorCache.hpp"
 #include "HybridHierarchyCompressor.h"
@@ -256,14 +257,17 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::DequantizeRecompose(
     Array<D, T, DeviceType>& decompressed_data, enum error_bound_type ebtype,
     T tol, T s, T norm, int queue_idx) {
-  // Escape hatch for A/B benchmarking and debugging: set
-  // MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE to force the unfused path.
-  static const bool disable_fused_dr =
-      std::getenv("MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE") != nullptr;
-  if (!disable_fused_dr && hybrid_quantizer.CanFuseQuantize(s)) {
+  if (FuseDequantizeRecomposeEnabled() && hybrid_quantizer.CanFuseQuantize(s)) {
+    log::info("Local dequantize+recompose kernels: fused");
     DequantizeRecomposeFused(decompressed_data, ebtype, tol, s, norm,
                              queue_idx);
   } else {
+    log::info("Local dequantize+recompose kernels: separate (" +
+              (FuseDequantizeRecomposeEnabled()
+                   ? hybrid_quantizer.WhyCannotFuseQuantize(s)
+                   : std::string("MGARD_X_DISABLE_FUSED_DEQUANTIZE_RECOMPOSE "
+                                 "is set")) +
+              ")");
     Dequantize(decompressed_data, ebtype, tol, s, norm, queue_idx);
     Recompose(decompressed_data, true, queue_idx);
   }
@@ -324,13 +328,16 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Compress(
   // log::info("Before decompose()");
 
   if (log::level & log::TIME) timer_compress_kernel.start();
-  // Escape hatch for A/B benchmarking and debugging: set
-  // MGARD_X_DISABLE_FUSED_DECOMPOSE_QUANTIZE to force the unfused path.
-  static const bool disable_fused =
-      std::getenv("MGARD_X_DISABLE_FUSED_DECOMPOSE_QUANTIZE") != nullptr;
-  if (!disable_fused && hybrid_quantizer.CanFuseQuantize(s)) {
+  if (FuseDecomposeQuantizeEnabled() && hybrid_quantizer.CanFuseQuantize(s)) {
+    log::info("Local decompose+quantize kernels: fused");
     DecomposeQuantize(original_data, ebtype, tol, s, norm, queue_idx);
   } else {
+    log::info("Local decompose+quantize kernels: separate (" +
+              (FuseDecomposeQuantizeEnabled()
+                   ? hybrid_quantizer.WhyCannotFuseQuantize(s)
+                   : std::string("MGARD_X_DISABLE_FUSED_DECOMPOSE_QUANTIZE "
+                                 "is set")) +
+              ")");
     Decompose(original_data, queue_idx);
     Quantize(original_data, ebtype, tol, s, norm, queue_idx);
   }
