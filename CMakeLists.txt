@@ -216,8 +216,11 @@ if (MGARD_ENABLE_LEGACY_CUDA)
   install(TARGETS mgard-gpu)
 endif()
 
-if (MGARD_ENABLE_HIP) 
-  find_package(HIP REQUIRED)
+if (MGARD_ENABLE_HIP)
+  # __syncwarp(), used by SubGroup<HIP>::sync() for wavefront-level
+  # synchronization, is opt-in before ROCm 7.0 and default-on from 7.0
+  # onward -- require 7.0 so it needs no HIP_ENABLE_WARP_SYNC_BUILTINS define.
+  find_package(HIP 7.0 REQUIRED)
   enable_language(HIP)
   target_compile_definitions(mgard-library PUBLIC MGARD_ENABLE_HIP)
   set (CMAKE_HIP_FLAGS  "${CMAKE_HIP_FLAGS} -w")

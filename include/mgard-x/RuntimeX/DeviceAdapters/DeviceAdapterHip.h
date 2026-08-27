@@ -622,6 +622,9 @@ template <> struct SubGroup<HIP> {
   }
   __device__ mask_t ballot(int pred) const { return (mask_t)__ballot(pred); }
   __device__ int ffs(mask_t m) const { return __ffsll((long long)m); }
+  // __syncwarp() is opt-in (behind HIP_ENABLE_WARP_SYNC_BUILTINS) before ROCm
+  // 7.0 and default-on from 7.0 onward; see the HIP find_package version
+  // floor in the top-level CMakeLists.txt.
   __device__ void sync() const { __syncwarp(); }
 };
 

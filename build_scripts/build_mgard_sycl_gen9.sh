@@ -78,7 +78,6 @@ mgard_x_install_dir=${install_dir}
 mkdir -p ${mgard_x_build_dir}
 cmake -S ${mgard_x_src_dir} -B ${mgard_x_build_dir} \
     -DCMAKE_PREFIX_PATH="${zstd_install_dir}/lib/cmake/zstd;${protobuf_install_dir};${catch2_install_dir}"\
-    -DMGARD_ENABLE_SERIAL=OFF\
     -DMGARD_ENABLE_SYCL=ON\
     -DCMAKE_CXX_FLAGS="-O2 -fsycl -fsycl-targets=spir64_gen -Xsycl-target-backend \"-device gen9\""\
     -DMGARD_ENABLE_DOCS=OFF\
