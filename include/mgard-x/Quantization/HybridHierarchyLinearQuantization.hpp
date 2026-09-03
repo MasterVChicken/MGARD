@@ -111,7 +111,7 @@ public:
   void QuantizeGlobalPart(SubArray<1, T, DeviceType> original_data,
                           enum error_bound_type ebtype, T tol, T s, T norm,
                           SubArray<1, Q, DeviceType> quantized_data,
-                          LosslessCompressorType& lossless, int queue_idx) {
+                          LosslessCompressorType &lossless, int queue_idx) {
     T global_tol = ErrorBudgetAllocation(tol);
 
     std::vector<SIZE> global_shape =
@@ -137,7 +137,7 @@ public:
   void DequantizeGlobalPart(SubArray<1, T, DeviceType> original_data,
                             enum error_bound_type ebtype, T tol, T s, T norm,
                             SubArray<1, Q, DeviceType> quantized_data,
-                            LosslessCompressorType& lossless, int queue_idx) {
+                            LosslessCompressorType &lossless, int queue_idx) {
     T global_tol = ErrorBudgetAllocation(tol);
 
     std::vector<SIZE> global_shape =
@@ -240,12 +240,12 @@ public:
   // coarsest-layer quantization (skipped in ROI mode, which — like the
   // unfused path — only covers the coarsest layer via the global stage).
   template <typename RefactorType, typename LosslessCompressorType>
-  void DecomposeQuantize(RefactorType& refactor,
+  void DecomposeQuantize(RefactorType &refactor,
                          SubArray<D, T, DeviceType> data,
                          SubArray<1, T, DeviceType> decomposed_data,
                          SubArray<1, Q, DeviceType> quantized_data,
                          enum error_bound_type ebtype, T tol, T s, T norm,
-                         LosslessCompressorType& lossless, int queue_idx) {
+                         LosslessCompressorType &lossless, int queue_idx) {
     if (!CanFuseQuantize(s)) {
       throw ProcessingException(
           "DecomposeQuantize requires L > 0, D == 3, and s == inf");
@@ -331,12 +331,12 @@ public:
   // level (coefficients never round-trip through global memory as T),
   // writing the final level directly into the unpadded output.
   template <typename RefactorType, typename LosslessCompressorType>
-  void DequantizeRecompose(RefactorType& refactor,
+  void DequantizeRecompose(RefactorType &refactor,
                            SubArray<D, T, DeviceType> data,
                            SubArray<1, T, DeviceType> decomposed_data,
                            SubArray<1, Q, DeviceType> quantized_data,
                            enum error_bound_type ebtype, T tol, T s, T norm,
-                           LosslessCompressorType& lossless, int queue_idx) {
+                           LosslessCompressorType &lossless, int queue_idx) {
     if (!CanFuseQuantize(s)) {
       throw ProcessingException(
           "DequantizeRecompose requires L > 0, D == 3, and s == inf");

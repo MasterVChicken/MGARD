@@ -780,12 +780,11 @@ struct DecompressOverrides {
   std::vector<double> tol_map;
 };
 
-int launch_decompress(const char *input_file, const char *output_file,
-                      enum mgard_x::device_type dev_type, int verbose,
-                      bool kernel_fusion,
-                      const DecompressOverrides &overrides,
-                      const char *original_file = nullptr,
-                      enum mgard_x::error_bound_type ebtype = mgard_x::error_bound_type::ABS) {
+int launch_decompress(
+    const char *input_file, const char *output_file,
+    enum mgard_x::device_type dev_type, int verbose, bool kernel_fusion,
+    const DecompressOverrides &overrides, const char *original_file = nullptr,
+    enum mgard_x::error_bound_type ebtype = mgard_x::error_bound_type::ABS) {
   mgard_x::Config config;
   config.log_level = verbose_to_log_level(verbose);
   config.fuse_decompose_quantize = kernel_fusion;

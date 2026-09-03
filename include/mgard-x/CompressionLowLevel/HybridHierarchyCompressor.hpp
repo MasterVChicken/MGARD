@@ -272,7 +272,7 @@ void HybridHierarchyCompressor<D, T, DeviceType>::DequantizeRecompose(
 
 template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::DequantizeRecomposeFused(
-    Array<D, T, DeviceType>& decompressed_data, enum error_bound_type ebtype,
+    Array<D, T, DeviceType> &decompressed_data, enum error_bound_type ebtype,
     T tol, T s, T norm, int queue_idx) {
   SubArray<1, T, DeviceType> decomposed_subarray(hybrid_decomposed_array);
   SubArray<1, QUANTIZED_INT, DeviceType> quantized_subarray(

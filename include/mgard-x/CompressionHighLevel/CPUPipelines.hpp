@@ -397,8 +397,8 @@ enum compress_status_type decompress_pipeline_cpu(
         compressor[curr_subdomain_id].LosslessDecompress(
             device_compressed_buffer[curr_subdomain_id], 0);
         compressor[curr_subdomain_id].DequantizeRecompose(
-            device_subdomain_buffer[curr_subdomain_id], local_ebtype,
-            local_tol, s, norm, 0);
+            device_subdomain_buffer[curr_subdomain_id], local_ebtype, local_tol,
+            s, norm, 0);
       } else {
         log::info("Skipping decompression as original data was saved instead");
         device_subdomain_buffer[curr_subdomain_id].resize(
@@ -444,8 +444,8 @@ enum compress_status_type decompress_pipeline_cpu(
         compressor[curr_subdomain_id].LosslessDecompress(
             device_compressed_buffer[curr_subdomain_id], 0);
         compressor[curr_subdomain_id].DequantizeRecompose(
-            device_subdomain_buffer[curr_subdomain_id], local_ebtype,
-            local_tol, s, norm, 0);
+            device_subdomain_buffer[curr_subdomain_id], local_ebtype, local_tol,
+            s, norm, 0);
       } else {
         log::info("Skipping decompression as original data was saved instead");
         device_subdomain_buffer[curr_subdomain_id].resize(

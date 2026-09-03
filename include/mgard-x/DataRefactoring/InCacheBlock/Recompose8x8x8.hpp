@@ -50,7 +50,7 @@ public:
 
   MGARDX_EXEC void initialize_sm_8x8x8() {
     sm_v = (T *)FunctorBase<DeviceType>::GetSharedMemory();
-    sm_x = sm_v + SMV_SIZE_8x8x8;  // sm_v is padded for bank-conflict avoidance
+    sm_x = sm_v + SMV_SIZE_8x8x8; // sm_v is padded for bank-conflict avoidance
     sm_y = sm_x + 5 * 8 * 8;
     sm_z = sm_y + 5 * 5 * 8;
   }
@@ -422,7 +422,7 @@ public:
 
   // store data
   MGARDX_EXEC void Operation10() {
-    offset = offset8x8x8(z, y, x);  // padded sm_v layout
+    offset = offset8x8x8(z, y, x); // padded sm_v layout
     *v(z_gl, y_gl, x_gl) = sm_v[offset];
     // printf("v[%d, %d, %d] = %f\n", z_gl, y_gl, x_gl, sm_v[offset]);
     // }
@@ -598,7 +598,8 @@ public:
         use_block_quantizers(use_block_quantizers), prep_huffman(prep_huffman),
         dict_size(dict_size) {}
 
-  MGARDX_CONT Task<RecomposeDequantize8x8x8Functor<D, T, Q, 8, 8, 8, DeviceType>>
+  MGARDX_CONT
+  Task<RecomposeDequantize8x8x8Functor<D, T, Q, 8, 8, 8, DeviceType>>
   GenTask(int queue_idx) {
     using FunctorType =
         RecomposeDequantize8x8x8Functor<D, T, Q, 8, 8, 8, DeviceType>;

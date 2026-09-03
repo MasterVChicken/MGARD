@@ -41,8 +41,7 @@ mgard::pb::Quantization::Type QuantizationTypeForWidth(std::size_t width) {
   case 8:
     return mgard::pb::Quantization::INT64_T;
   default:
-    throw mgard_x::InvalidDataException(
-        "unsupported quantized integer width.");
+    throw mgard_x::InvalidDataException("unsupported quantized integer width.");
   }
 }
 
@@ -253,11 +252,12 @@ void MetadataBase::InitializeConfig(Config &config) {
     config.block_delta_block_size = block_delta_block_size;
   }
   config.reorder = reorder;
-  // The hybrid parameters are only meaningful for a hybrid file, and Deserialize
-  // refuses to produce a hybrid file without them, so a Hybrid decomposition
-  // here always carries a full set. For non-hybrid files leave the caller's
-  // Config alone -- those fields are unused and overwriting them with zeros
-  // would break a subsequent hybrid compression through the same Config.
+  // The hybrid parameters are only meaningful for a hybrid file, and
+  // Deserialize refuses to produce a hybrid file without them, so a Hybrid
+  // decomposition here always carries a full set. For non-hybrid files leave
+  // the caller's Config alone -- those fields are unused and overwriting them
+  // with zeros would break a subsequent hybrid compression through the same
+  // Config.
   if (decomposition == decomposition_type::Hybrid) {
     config.num_local_refactoring_level = (int)hybrid_num_local_levels;
     config.num_global_refactoring_level = (int)hybrid_num_global_levels;

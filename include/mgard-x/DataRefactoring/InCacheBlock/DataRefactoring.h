@@ -30,8 +30,7 @@ void decompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
 template <DIM D, typename T, typename Q, typename DeviceType>
 void decompose_quantize(SubArray<D, T, DeviceType> v,
                         SubArray<D, T, DeviceType> coarse,
-                        SubArray<1, Q, DeviceType> quantized_coeff,
-                        T quantizer,
+                        SubArray<1, Q, DeviceType> quantized_coeff, T quantizer,
                         SubArray<1, T, DeviceType> block_quantizers,
                         bool use_block_quantizers, bool prep_huffman,
                         SIZE dict_size, int queue_idx);

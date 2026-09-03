@@ -422,8 +422,7 @@ public:
                         config.lossless != lossless_type::LZ4;
     DeviceLauncher<DeviceType>::Execute(
         QuantizeLocalLevelKernel<T, Q, MGARDX_DEQUANTIZE, DeviceType>(
-            quantizers[0], v, quantized_v, prep_huffman,
-            config.huff_dict_size),
+            quantizers[0], v, quantized_v, prep_huffman, config.huff_dict_size),
         queue_idx);
   }
 
@@ -442,8 +441,7 @@ public:
                         config.lossless != lossless_type::LZ4;
     DeviceLauncher<DeviceType>::Execute(
         QuantizeLocalLevelKernel<T, Q, MGARDX_QUANTIZE, DeviceType>(
-            quantizers[0], v, quantized_v, prep_huffman,
-            config.huff_dict_size),
+            quantizers[0], v, quantized_v, prep_huffman, config.huff_dict_size),
         queue_idx);
   }
 
