@@ -6,12 +6,15 @@
 
 #include "catch2/catch_template_test_macros.hpp"
 #include "catch2/catch_test_macros.hpp"
+#include "catch2/generators/catch_generators.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
 #include "mgard-x/RuntimeX/RuntimeX.h"
 #include "mgard-x/DataRefactoring/DataRefactor.hpp"
+#include "mgard-x/DataRefactoring/InCacheBlock/DataRefactoring.h"
 #include "mgard-x/Utilities/ErrorCalculator.h"
 
 namespace mgard_x {
@@ -99,6 +102,434 @@ TEMPLATE_TEST_CASE("Hierarchical Decomposition 3D", "[mgard-x][@DEVICE_TYPE@]",
   SECTION("small")  { run_refactoring_test<3, TestType, TestDevice>({17, 17, 17}, false); }
   SECTION("medium") { run_refactoring_test<3, TestType, TestDevice>({33, 33, 33}, false); }
   SECTION("large")  { run_refactoring_test<3, TestType, TestDevice>({65, 65, 65}, false); }
+}
+
+
+
+// ---------------------------------------------------------------------------
+// In-cache block (8x8x8) refactoring
+//
+// The in-cache path decomposes each 8x8x8 block independently in shared
+// memory, emitting a 5x5x5 coarse brick plus 8^3 - 5^3 = 387 coefficients per
+// block. These cases drive the exported kernels directly rather than through
+// BlockLocalHierarchyDataRefactor (covered by test_HybridHierarchy), so a
+// layout or boundary regression shows up on a single level.
+// ---------------------------------------------------------------------------
+
+namespace in_cache_block = data_refactoring::in_cache_block;
+
+constexpr SIZE in_cache_block_size = 8;
+constexpr SIZE in_cache_coarse_size = 5;
+constexpr SIZE in_cache_coeff_per_block = 387;
+
+// Number of 8x8x8 blocks along each dimension (partial blocks included).
+static std::vector<SIZE> in_cache_grid(const std::vector<SIZE> &shape) {
+  std::vector<SIZE> grid(shape.size());
+  for (DIM d = 0; d < shape.size(); d++)
+    grid[d] = (shape[d] - 1) / in_cache_block_size + 1;
+  return grid;
+}
+
+static std::vector<SIZE> in_cache_coarse_shape(const std::vector<SIZE> &shape) {
+  std::vector<SIZE> coarse_shape = in_cache_grid(shape);
+  for (DIM d = 0; d < coarse_shape.size(); d++)
+    coarse_shape[d] *= in_cache_coarse_size;
+  return coarse_shape;
+}
+
+static SIZE in_cache_num_coeff(const std::vector<SIZE> &shape) {
+  std::vector<SIZE> grid = in_cache_grid(shape);
+  SIZE num_blocks = 1;
+  for (auto g : grid)
+    num_blocks *= g;
+  return num_blocks * in_cache_coeff_per_block;
+}
+
+static SIZE num_elems(const std::vector<SIZE> &shape) {
+  SIZE n = 1;
+  for (auto s : shape)
+    n *= s;
+  return n;
+}
+
+// Separable product of sines: smooth along every dimension, so the block-local
+// interpolation has structure to resolve in all three directions (the 1D
+// linear-index sine used above degenerates to noise across y and z).
+template <typename T>
+static void fill_smooth_3d(std::vector<T> &data,
+                           const std::vector<SIZE> &shape) {
+  const double pi = std::acos(-1.0);
+  for (SIZE z = 0; z < shape[0]; z++) {
+    for (SIZE y = 0; y < shape[1]; y++) {
+      for (SIZE x = 0; x < shape[2]; x++) {
+        double v = std::sin(2.0 * pi * z / shape[0]) *
+                   std::sin(2.0 * pi * y / shape[1] + 0.5) *
+                   std::sin(2.0 * pi * x / shape[2] + 1.0);
+        data[(z * shape[1] + y) * shape[2] + x] = static_cast<T>(v);
+      }
+    }
+  }
+}
+
+// Host mirror of the in-kernel quantizer. Must stay bit-identical to
+// DecomposeQuantize8x8x8Functor::Operation9 (and QuantizeLocalLevelFunctor
+// with volume == 1): scale, round half away from zero by truncating
+// 0.5 + |t * q|, then fold in the Huffman dictionary shift.
+template <typename T, typename Q>
+static Q host_quantize(T t, T quantizer, bool prep_huffman, SIZE dict_size) {
+  Q quantized = static_cast<Q>(std::copysign((T)0.5 + std::fabs(t * quantizer), t));
+  if (prep_huffman)
+    quantized += dict_size / 2;
+  return quantized;
+}
+
+template <typename T, typename Q>
+static T host_dequantize(Q quantized, T dequantizer, bool prep_huffman,
+                         SIZE dict_size) {
+  if (prep_huffman)
+    quantized -= dict_size / 2;
+  return dequantizer * (T)quantized;
+}
+
+// Copy an Array back to the host into a vector we own: hostCopy() hands back a
+// buffer tied to the Array, and several of these tests hold two of them alive
+// at once.
+template <DIM D, typename T, typename DevType>
+static std::vector<T> device_to_host(Array<D, T, DevType> &array, SIZE n) {
+  T *host = array.hostCopy(false, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+  return std::vector<T>(host, host + n);
+}
+
+// decompose -> recompose through the unfused in-cache kernels is a numerical
+// identity: no quantization is involved, only the forward and inverse block
+// transforms. The unfused kernels read and write v without bounds checks, so
+// every extent must be a multiple of 8.
+template <typename T, typename DevType>
+void run_in_cache_block_test(std::vector<SIZE> shape) {
+  constexpr DIM D = 3;
+  SIZE n = num_elems(shape);
+
+  std::vector<T> original(n);
+  fill_smooth_3d(original, shape);
+
+  Array<D, T, DevType> v(shape);
+  v.load(original.data());
+  Array<D, T, DevType> coarse(in_cache_coarse_shape(shape));
+  Array<1, T, DevType> coeff({in_cache_num_coeff(shape)});
+
+  in_cache_block::decompose<D, T, DevType>(SubArray(v), SubArray(coarse),
+                                           SubArray(coeff), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  // Zero v so the reconstruction can only come from coarse + coeff.
+  v.memset(0, 0);
+  in_cache_block::recompose<D, T, DevType>(SubArray(v), SubArray(coarse),
+                                           SubArray(coeff), 0);
+  T *result = v.hostCopy(false, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  const double tolerance = std::is_same<T, double>::value ? 1e-10 : 1e-3;
+  double error = L_inf_error(n, original.data(), result, error_bound_type::REL);
+  CAPTURE(error);
+  REQUIRE(error < tolerance);
+}
+
+// A constant field is reproduced exactly by the multilinear interpolant, so
+// every coefficient must vanish and the coarse brick must carry the constant
+// through unchanged (a zero correction on top of a constant coarse grid).
+template <typename T, typename DevType>
+void run_in_cache_block_constant_test(std::vector<SIZE> shape) {
+  constexpr DIM D = 3;
+  const T value = static_cast<T>(3.25);
+  std::vector<SIZE> coarse_shape = in_cache_coarse_shape(shape);
+  SIZE num_coeff = in_cache_num_coeff(shape);
+  SIZE num_coarse = num_elems(coarse_shape);
+
+  std::vector<T> original(num_elems(shape), value);
+
+  Array<D, T, DevType> v(shape);
+  v.load(original.data());
+  Array<D, T, DevType> coarse(coarse_shape);
+  Array<1, T, DevType> coeff({num_coeff});
+
+  in_cache_block::decompose<D, T, DevType>(SubArray(v), SubArray(coarse),
+                                           SubArray(coeff), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  std::vector<T> coeff_h = device_to_host(coeff, num_coeff);
+  std::vector<T> coarse_h = device_to_host(coarse, num_coarse);
+
+  double max_coeff = 0.0, max_coarse_deviation = 0.0;
+  for (SIZE i = 0; i < num_coeff; i++)
+    max_coeff = std::max(max_coeff, std::abs((double)coeff_h[i]));
+  for (SIZE i = 0; i < num_coarse; i++)
+    max_coarse_deviation =
+        std::max(max_coarse_deviation, std::abs((double)coarse_h[i] - value));
+
+  const double tolerance = std::is_same<T, double>::value ? 1e-12 : 1e-5;
+  CAPTURE(max_coeff, max_coarse_deviation);
+  REQUIRE(max_coeff < tolerance);
+  REQUIRE(max_coarse_deviation < tolerance);
+}
+
+// The fused decompose+quantize / dequantize+recompose kernels run the same
+// transform as the unfused pair and only differ in how coefficients cross the
+// kernel boundary. So they must agree exactly with running the unfused kernels
+// and quantizing on the host -- not merely to within a tolerance.
+template <typename T, typename DevType>
+void run_in_cache_block_fused_test(std::vector<SIZE> shape, bool prep_huffman) {
+  constexpr DIM D = 3;
+  using Q = QUANTIZED_INT;
+  const SIZE dict_size = 8192;
+  const T quantizer = static_cast<T>(1024);  // reciprocal of the bin width
+  const T dequantizer = (T)1 / quantizer;
+
+  SIZE n = num_elems(shape);
+  std::vector<SIZE> coarse_shape = in_cache_coarse_shape(shape);
+  SIZE num_coarse = num_elems(coarse_shape);
+  SIZE num_coeff = in_cache_num_coeff(shape);
+
+  std::vector<T> original(n);
+  fill_smooth_3d(original, shape);
+
+  // Unfused reference decomposition.
+  Array<D, T, DevType> v_ref(shape);
+  v_ref.load(original.data());
+  Array<D, T, DevType> coarse_ref(coarse_shape);
+  Array<1, T, DevType> coeff_ref({num_coeff});
+  in_cache_block::decompose<D, T, DevType>(
+      SubArray(v_ref), SubArray(coarse_ref), SubArray(coeff_ref), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+  std::vector<T> coarse_ref_h = device_to_host(coarse_ref, num_coarse);
+  std::vector<T> coeff_ref_h = device_to_host(coeff_ref, num_coeff);
+
+  // Fused decomposition + quantization.
+  Array<D, T, DevType> v(shape);
+  v.load(original.data());
+  Array<D, T, DevType> coarse_fused(coarse_shape);
+  Array<1, Q, DevType> quantized({num_coeff});
+  in_cache_block::decompose_quantize<D, T, Q, DevType>(
+      SubArray(v), SubArray(coarse_fused), SubArray(quantized), quantizer,
+      SubArray<1, T, DevType>(), false, prep_huffman, dict_size, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+  std::vector<T> coarse_fused_h = device_to_host(coarse_fused, num_coarse);
+  std::vector<Q> quantized_h = device_to_host(quantized, num_coeff);
+
+  // The coarse brick is never quantized, so it must come out bit-identical.
+  SIZE coarse_mismatches = 0;
+  for (SIZE i = 0; i < num_coarse; i++)
+    coarse_mismatches += (coarse_fused_h[i] != coarse_ref_h[i]);
+  REQUIRE(coarse_mismatches == 0);
+
+  SIZE coeff_mismatches = 0;
+  for (SIZE i = 0; i < num_coeff; i++) {
+    Q expected = host_quantize<T, Q>(coeff_ref_h[i], quantizer, prep_huffman,
+                                     dict_size);
+    coeff_mismatches += (quantized_h[i] != expected);
+  }
+  REQUIRE(coeff_mismatches == 0);
+
+  // Inverse: unfused recompose fed host-dequantized coefficients must match
+  // the fused dequantize+recompose bit for bit.
+  std::vector<T> dequantized_h(num_coeff);
+  for (SIZE i = 0; i < num_coeff; i++)
+    dequantized_h[i] = host_dequantize<T, Q>(quantized_h[i], dequantizer,
+                                             prep_huffman, dict_size);
+  Array<1, T, DevType> coeff_deq({num_coeff});
+  coeff_deq.load(dequantized_h.data());
+
+  Array<D, T, DevType> v_unfused(shape);
+  v_unfused.memset(0, 0);
+  in_cache_block::recompose<D, T, DevType>(
+      SubArray(v_unfused), SubArray(coarse_ref), SubArray(coeff_deq), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+  std::vector<T> unfused_h = device_to_host(v_unfused, n);
+
+  Array<D, T, DevType> v_fused(shape);
+  v_fused.memset(0, 0);
+  in_cache_block::recompose_dequantize<D, T, Q, DevType>(
+      SubArray(v_fused), SubArray(coarse_fused), SubArray(quantized),
+      dequantizer, SubArray<1, T, DevType>(), false, prep_huffman, dict_size,
+      0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+  std::vector<T> fused_h = device_to_host(v_fused, n);
+
+  SIZE data_mismatches = 0;
+  for (SIZE i = 0; i < n; i++)
+    data_mismatches += (fused_h[i] != unfused_h[i]);
+  REQUIRE(data_mismatches == 0);
+
+  // Bound the round trip against the quantization step itself. Recompose is a
+  // linear operator, so perturbing every coefficient by at most half a bin
+  // (0.5 / quantizer) perturbs the reconstruction by at most that half-bin
+  // times the operator's gain. Measured gain here is ~1.55 (worst case across
+  // these shapes and both precisions: 7.56e-4 against a 4.88e-4 half-bin), so
+  // 4x leaves headroom for a different data set without letting a real
+  // amplification regression through.
+  //
+  // For scale: the shipped error budget in LocalQuantization::CalcQuantizers
+  // spends a factor of 2^(l+1) * (1 + 3^D) = 112 on one local level in 3D, so
+  // a step of 1/1024 is what the compressor would pick for tol = 0.055. That
+  // is the worst case the scheme is designed to survive; this assertion is the
+  // much tighter statement that the actual gain is O(1).
+  const double half_bin = 0.5 / (double)quantizer;
+  double error =
+      L_inf_error(n, original.data(), fused_h.data(), error_bound_type::ABS);
+  CAPTURE(error, half_bin, error / half_bin);
+  REQUIRE(error < 4.0 * half_bin);
+}
+
+// The fused kernels bounds-check their global reads and writes so they can
+// consume and produce unpadded arrays directly, standing in for the explicit
+// zero-padding the unfused path needs. Running them on an unpadded shape must
+// reproduce the unfused result on the same data padded up to a multiple of 8.
+template <typename T, typename DevType>
+void run_in_cache_block_padding_test(std::vector<SIZE> shape) {
+  constexpr DIM D = 3;
+  using Q = QUANTIZED_INT;
+  const SIZE dict_size = 8192;
+  const T quantizer = static_cast<T>(1024);
+  const T dequantizer = (T)1 / quantizer;
+
+  std::vector<SIZE> padded_shape(D);
+  for (DIM d = 0; d < D; d++)
+    padded_shape[d] = in_cache_grid(shape)[d] * in_cache_block_size;
+
+  SIZE n = num_elems(shape);
+  SIZE n_padded = num_elems(padded_shape);
+  std::vector<SIZE> coarse_shape = in_cache_coarse_shape(shape);
+  SIZE num_coarse = num_elems(coarse_shape);
+  SIZE num_coeff = in_cache_num_coeff(shape);
+
+  std::vector<T> original(n);
+  fill_smooth_3d(original, shape);
+
+  // The same data zero-padded to the next multiple of 8 in every dimension.
+  std::vector<T> padded(n_padded, (T)0);
+  for (SIZE z = 0; z < shape[0]; z++)
+    for (SIZE y = 0; y < shape[1]; y++)
+      for (SIZE x = 0; x < shape[2]; x++)
+        padded[(z * padded_shape[1] + y) * padded_shape[2] + x] =
+            original[(z * shape[1] + y) * shape[2] + x];
+
+  // Unfused reference on the padded input.
+  Array<D, T, DevType> v_padded(padded_shape);
+  v_padded.load(padded.data());
+  Array<D, T, DevType> coarse_ref(coarse_shape);
+  Array<1, T, DevType> coeff_ref({num_coeff});
+  in_cache_block::decompose<D, T, DevType>(
+      SubArray(v_padded), SubArray(coarse_ref), SubArray(coeff_ref), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+  std::vector<T> coarse_ref_h = device_to_host(coarse_ref, num_coarse);
+  std::vector<T> coeff_ref_h = device_to_host(coeff_ref, num_coeff);
+
+  // Fused on the unpadded input.
+  Array<D, T, DevType> v(shape);
+  v.load(original.data());
+  Array<D, T, DevType> coarse_fused(coarse_shape);
+  Array<1, Q, DevType> quantized({num_coeff});
+  in_cache_block::decompose_quantize<D, T, Q, DevType>(
+      SubArray(v), SubArray(coarse_fused), SubArray(quantized), quantizer,
+      SubArray<1, T, DevType>(), false, false, dict_size, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+  std::vector<T> coarse_fused_h = device_to_host(coarse_fused, num_coarse);
+  std::vector<Q> quantized_h = device_to_host(quantized, num_coeff);
+
+  SIZE coarse_mismatches = 0;
+  for (SIZE i = 0; i < num_coarse; i++)
+    coarse_mismatches += (coarse_fused_h[i] != coarse_ref_h[i]);
+  REQUIRE(coarse_mismatches == 0);
+
+  SIZE coeff_mismatches = 0;
+  for (SIZE i = 0; i < num_coeff; i++) {
+    Q expected =
+        host_quantize<T, Q>(coeff_ref_h[i], quantizer, false, dict_size);
+    coeff_mismatches += (quantized_h[i] != expected);
+  }
+  REQUIRE(coeff_mismatches == 0);
+
+  // Inverse: the fused kernel writes only the in-range positions, so it must
+  // match the padded unfused reconstruction cropped back to the true extent.
+  std::vector<T> dequantized_h(num_coeff);
+  for (SIZE i = 0; i < num_coeff; i++)
+    dequantized_h[i] =
+        host_dequantize<T, Q>(quantized_h[i], dequantizer, false, dict_size);
+  Array<1, T, DevType> coeff_deq({num_coeff});
+  coeff_deq.load(dequantized_h.data());
+
+  Array<D, T, DevType> v_padded_out(padded_shape);
+  v_padded_out.memset(0, 0);
+  in_cache_block::recompose<D, T, DevType>(
+      SubArray(v_padded_out), SubArray(coarse_ref), SubArray(coeff_deq), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+  std::vector<T> padded_out_h = device_to_host(v_padded_out, n_padded);
+
+  // Seed with a sentinel: the fused store is bounds-checked against the
+  // unpadded extent, so it must still write every in-range element (the
+  // threads it drops are the ones with no position in the array at all).
+  const T sentinel = static_cast<T>(-12345);
+  std::vector<T> seeded(n, sentinel);
+  Array<D, T, DevType> v_fused(shape);
+  v_fused.load(seeded.data());
+  in_cache_block::recompose_dequantize<D, T, Q, DevType>(
+      SubArray(v_fused), SubArray(coarse_fused), SubArray(quantized),
+      dequantizer, SubArray<1, T, DevType>(), false, false, dict_size, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+  std::vector<T> fused_h = device_to_host(v_fused, n);
+
+  SIZE unwritten = 0;
+  for (SIZE i = 0; i < n; i++)
+    unwritten += (fused_h[i] == sentinel);
+  REQUIRE(unwritten == 0);
+
+  SIZE data_mismatches = 0;
+  for (SIZE z = 0; z < shape[0]; z++)
+    for (SIZE y = 0; y < shape[1]; y++)
+      for (SIZE x = 0; x < shape[2]; x++)
+        data_mismatches +=
+            (fused_h[(z * shape[1] + y) * shape[2] + x] !=
+             padded_out_h[(z * padded_shape[1] + y) * padded_shape[2] + x]);
+  REQUIRE(data_mismatches == 0);
+}
+
+TEMPLATE_TEST_CASE("In-Cache Block Decomposition 3D",
+                   "[mgard-x][in-cache][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("single block")  { run_in_cache_block_test<TestType, TestDevice>({8, 8, 8}); }
+  SECTION("cubic")         { run_in_cache_block_test<TestType, TestDevice>({64, 64, 64}); }
+  SECTION("non-cubic")     { run_in_cache_block_test<TestType, TestDevice>({40, 64, 24}); }
+}
+
+TEMPLATE_TEST_CASE("In-Cache Block Decomposition of a constant field",
+                   "[mgard-x][in-cache][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("single block") { run_in_cache_block_constant_test<TestType, TestDevice>({8, 8, 8}); }
+  SECTION("multi block")  { run_in_cache_block_constant_test<TestType, TestDevice>({32, 24, 16}); }
+}
+
+TEMPLATE_TEST_CASE("In-Cache Block fused quantization matches the unfused path",
+                   "[mgard-x][in-cache][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  bool prep_huffman = GENERATE(false, true);
+  CAPTURE(prep_huffman);
+  SECTION("single block") {
+    run_in_cache_block_fused_test<TestType, TestDevice>({8, 8, 8}, prep_huffman);
+  }
+  SECTION("cubic") {
+    run_in_cache_block_fused_test<TestType, TestDevice>({64, 64, 64}, prep_huffman);
+  }
+  SECTION("non-cubic") {
+    run_in_cache_block_fused_test<TestType, TestDevice>({40, 64, 24}, prep_huffman);
+  }
+}
+
+TEMPLATE_TEST_CASE("In-Cache Block fused path handles unpadded shapes",
+                   "[mgard-x][in-cache][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("partial block")     { run_in_cache_block_padding_test<TestType, TestDevice>({5, 5, 5}); }
+  SECTION("ragged, all dims")  { run_in_cache_block_padding_test<TestType, TestDevice>({60, 60, 60}); }
+  SECTION("ragged, one dim")   { run_in_cache_block_padding_test<TestType, TestDevice>({64, 64, 39}); }
 }
 
 } // namespace mgard_x

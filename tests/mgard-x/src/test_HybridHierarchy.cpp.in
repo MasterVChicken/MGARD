@@ -9,10 +9,17 @@
 #include "catch2/generators/catch_generators.hpp"
 
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 #include "mgard-x/RuntimeX/RuntimeX.h"
+// CompressionHighLevel.h declares the public API in terms of Config but does
+// not include it.
+#include "mgard-x/Config/Config.h"
+#include "mgard-x/CompressionHighLevel/CompressionHighLevel.h"
 #include "mgard-x/CompressionLowLevel/HybridHierarchyCompressor.hpp"
 #include "mgard-x/DataRefactoring/BlockLocalHierarchyDataRefactor.hpp"
 #include "mgard-x/DataRefactoring/HybridHierarchyDataRefactor.hpp"
@@ -243,6 +250,603 @@ TEMPLATE_TEST_CASE("Hybrid Hierarchy Compressor 3D",
   SECTION("padded (L=1, M=0)") {
     run_hybrid_compressor_test<TestType, TestDevice>({60, 60, 60}, 1, 0,
                                                      ebtype, tol);
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Hybrid refactor internals
+//
+// The cases above drive Decompose/Recompose end to end. These pin the seams
+// the rest of the hybrid stack leans on but that no test reached: the
+// factored-out global entry points, reconstruction from a refactor that never
+// ran Decompose, the shape contract between the local and global stages, and
+// the L == M == 0 guard.
+// ---------------------------------------------------------------------------
+
+// Copy a decomposed buffer back to the host so two variants can be compared.
+template <typename T, typename DevType>
+static std::vector<T> decomposed_to_host(Array<1, T, DevType> &array, SIZE n) {
+  T *host = array.hostCopy(false, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+  return std::vector<T>(host, host + n);
+}
+
+template <typename T, typename DevType>
+static void adapt_refactor(
+    data_refactoring::HybridHierarchyDataRefactor<3, T, DevType> &refactor,
+    Hierarchy<3, T, DevType> &hierarchy, Config config) {
+  refactor.Adapt(hierarchy, config, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+}
+
+// Decompose() with both stages enabled must be exactly the local stage
+// followed by DecomposeGlobal(), and Recompose() exactly RecomposeGlobal()
+// followed by the local stage. The fused quantization path drives the stages
+// through those two entry points while the unfused path calls Decompose /
+// Recompose, so if the two ever drift the fused and unfused compressors
+// silently disagree -- a divergence that today only surfaces end to end.
+template <typename T, typename DevType>
+void run_hybrid_stage_split_test(std::vector<SIZE> shape, int num_local_levels,
+                                 int num_global_levels) {
+  constexpr DIM D = 3;
+  SIZE n = 1;
+  for (auto sz : shape)
+    n *= sz;
+
+  std::vector<T> original(n);
+  fill_smooth_data<D, T>(original, shape);
+
+  Config config;
+  config.num_local_refactoring_level = num_local_levels;
+  config.num_global_refactoring_level = num_global_levels;
+  Hierarchy<D, T, DevType> hierarchy(shape, config);
+
+  data_refactoring::HybridHierarchyDataRefactor<D, T, DevType> monolithic;
+  data_refactoring::HybridHierarchyDataRefactor<D, T, DevType> staged;
+  adapt_refactor(monolithic, hierarchy, config);
+  adapt_refactor(staged, hierarchy, config);
+
+  SIZE decomposed_size = (SIZE)monolithic.DecomposedDataSize();
+
+  Array<D, T, DevType> data_a(shape);
+  data_a.load(original.data());
+  Array<1, T, DevType> decomposed_a({decomposed_size});
+  monolithic.Decompose(SubArray(data_a), SubArray(decomposed_a), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  Array<D, T, DevType> data_b(shape);
+  data_b.load(original.data());
+  Array<1, T, DevType> decomposed_b({decomposed_size});
+  staged.local_refactor.Decompose(SubArray(data_b), SubArray(decomposed_b), 0);
+  staged.DecomposeGlobal(SubArray(decomposed_b), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  std::vector<T> host_a = decomposed_to_host(decomposed_a, decomposed_size);
+  std::vector<T> host_b = decomposed_to_host(decomposed_b, decomposed_size);
+
+  SIZE decompose_mismatches = 0;
+  for (SIZE i = 0; i < decomposed_size; i++)
+    decompose_mismatches += (host_a[i] != host_b[i]);
+  REQUIRE(decompose_mismatches == 0);
+
+  // Same split on the way back. Both stages run in place over the decomposed
+  // buffer, so each variant needs its own copy of it.
+  Array<1, T, DevType> input_c({decomposed_size});
+  input_c.load(host_a.data());
+  Array<D, T, DevType> out_c(shape);
+  out_c.memset(0, 0);
+  monolithic.Recompose(SubArray(out_c), SubArray(input_c), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  Array<1, T, DevType> input_d({decomposed_size});
+  input_d.load(host_a.data());
+  Array<D, T, DevType> out_d(shape);
+  out_d.memset(0, 0);
+  staged.RecomposeGlobal(SubArray(input_d), 0);
+  staged.local_refactor.Recompose(SubArray(out_d), SubArray(input_d), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  T *host_c = out_c.hostCopy(false, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+  std::vector<T> reconstructed_c(host_c, host_c + n);
+  T *host_d = out_d.hostCopy(false, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  SIZE recompose_mismatches = 0;
+  for (SIZE i = 0; i < n; i++)
+    recompose_mismatches += (reconstructed_c[i] != host_d[i]);
+  REQUIRE(recompose_mismatches == 0);
+
+  // And the split path is still a faithful round trip, not merely consistent.
+  const double tolerance = std::is_same<T, double>::value ? 1e-10 : 1e-3;
+  double error = L_inf_error(n, original.data(), host_d, error_bound_type::REL);
+  CAPTURE(error);
+  REQUIRE(error < tolerance);
+}
+
+// Decompression in the wild runs on a refactor that never saw Decompose: the
+// object is Adapted from file metadata and handed the decomposed bytes. The
+// block-local stage restores its coarsest staging buffer and coefficient
+// offset from that input precisely so this works, so reconstruct through a
+// second, independently Adapted refactor rather than reusing the first.
+template <typename T, typename DevType>
+void run_hybrid_standalone_recompose_test(std::vector<SIZE> shape,
+                                          int num_local_levels,
+                                          int num_global_levels) {
+  constexpr DIM D = 3;
+  SIZE n = 1;
+  for (auto sz : shape)
+    n *= sz;
+
+  std::vector<T> original(n);
+  fill_smooth_data<D, T>(original, shape);
+
+  Config config;
+  config.num_local_refactoring_level = num_local_levels;
+  config.num_global_refactoring_level = num_global_levels;
+  Hierarchy<D, T, DevType> hierarchy(shape, config);
+
+  data_refactoring::HybridHierarchyDataRefactor<D, T, DevType> compressor_side;
+  adapt_refactor(compressor_side, hierarchy, config);
+
+  SIZE decomposed_size = (SIZE)compressor_side.DecomposedDataSize();
+  Array<D, T, DevType> data(shape);
+  data.load(original.data());
+  Array<1, T, DevType> decomposed({decomposed_size});
+  compressor_side.Decompose(SubArray(data), SubArray(decomposed), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  // Hand the decomposed buffer to a refactor with no decomposition history.
+  Hierarchy<D, T, DevType> decompress_hierarchy(shape, config);
+  data_refactoring::HybridHierarchyDataRefactor<D, T, DevType>
+      decompressor_side;
+  adapt_refactor(decompressor_side, decompress_hierarchy, config);
+
+  REQUIRE((SIZE)decompressor_side.DecomposedDataSize() == decomposed_size);
+
+  Array<D, T, DevType> reconstructed(shape);
+  reconstructed.memset(0, 0);
+  decompressor_side.Recompose(SubArray(reconstructed), SubArray(decomposed), 0);
+
+  T *result = reconstructed.hostCopy(false, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  const double tolerance = std::is_same<T, double>::value ? 1e-10 : 1e-3;
+  double error = L_inf_error(n, original.data(), result, error_bound_type::REL);
+  CAPTURE(error);
+  REQUIRE(error < tolerance);
+}
+
+// The global stage is built on the output shape of the local stage. Adapt()
+// derives that shape independently of the block-local refactor's own
+// bookkeeping, so a change to either 8 -> 5 coarsening rule must move both.
+template <typename T, typename DevType>
+void run_hybrid_shape_contract_test(std::vector<SIZE> shape,
+                                    int num_local_levels,
+                                    int num_global_levels) {
+  constexpr DIM D = 3;
+  Config config;
+  config.num_local_refactoring_level = num_local_levels;
+  config.num_global_refactoring_level = num_global_levels;
+  Hierarchy<D, T, DevType> hierarchy(shape, config);
+
+  data_refactoring::HybridHierarchyDataRefactor<D, T, DevType> refactor;
+  adapt_refactor(refactor, hierarchy, config);
+
+  std::vector<SIZE> local_coarsest =
+      refactor.local_refactor.coarse_shapes[num_local_levels - 1];
+  std::vector<SIZE> global_finest =
+      refactor.global_hierarchy.level_shape(
+          refactor.global_hierarchy.l_target());
+
+  REQUIRE(global_finest.size() == local_coarsest.size());
+  for (DIM d = 0; d < D; d++) {
+    CAPTURE(d, local_coarsest[d], global_finest[d]);
+    REQUIRE(global_finest[d] == local_coarsest[d]);
+  }
+
+  // Each local level coarsens every extent by ceil(n / 8) * 5.
+  std::vector<SIZE> expected = shape;
+  for (int l = 0; l < num_local_levels; l++)
+    for (DIM d = 0; d < D; d++)
+      expected[d] = ((expected[d] - 1) / 8 + 1) * 5;
+  for (DIM d = 0; d < D; d++) {
+    CAPTURE(d, expected[d], local_coarsest[d]);
+    REQUIRE(local_coarsest[d] == expected[d]);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid stages compose into Decompose/Recompose",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("L=1, M=1") {
+    run_hybrid_stage_split_test<TestType, TestDevice>({64, 64, 64}, 1, 1);
+  }
+  SECTION("L=1, M=2") {
+    run_hybrid_stage_split_test<TestType, TestDevice>({64, 64, 64}, 1, 2);
+  }
+  SECTION("L=2, M=2") {
+    run_hybrid_stage_split_test<TestType, TestDevice>({64, 64, 64}, 2, 2);
+  }
+  SECTION("non-cubic (L=1, M=2)") {
+    run_hybrid_stage_split_test<TestType, TestDevice>({40, 64, 56}, 1, 2);
+  }
+  SECTION("padded (L=1, M=1)") {
+    run_hybrid_stage_split_test<TestType, TestDevice>({60, 60, 60}, 1, 1);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid Recompose works without a prior Decompose",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("pure local (L=1, M=0)") {
+    run_hybrid_standalone_recompose_test<TestType, TestDevice>({64, 64, 64}, 1,
+                                                               0);
+  }
+  SECTION("pure local (L=2, M=0)") {
+    run_hybrid_standalone_recompose_test<TestType, TestDevice>({64, 64, 64}, 2,
+                                                               0);
+  }
+  SECTION("pure global (L=0, M=2)") {
+    run_hybrid_standalone_recompose_test<TestType, TestDevice>({64, 64, 64}, 0,
+                                                               2);
+  }
+  SECTION("hybrid (L=1, M=2)") {
+    run_hybrid_standalone_recompose_test<TestType, TestDevice>({64, 64, 64}, 1,
+                                                               2);
+  }
+  SECTION("hybrid, padded (L=1, M=2)") {
+    run_hybrid_standalone_recompose_test<TestType, TestDevice>({60, 60, 60}, 1,
+                                                               2);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid global stage is built on the local coarse shape",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("cubic (L=1)") {
+    run_hybrid_shape_contract_test<TestType, TestDevice>({64, 64, 64}, 1, 2);
+  }
+  SECTION("cubic (L=2)") {
+    run_hybrid_shape_contract_test<TestType, TestDevice>({64, 64, 64}, 2, 2);
+  }
+  SECTION("non-cubic (L=1)") {
+    run_hybrid_shape_contract_test<TestType, TestDevice>({40, 64, 56}, 1, 2);
+  }
+  SECTION("padded, ragged (L=1)") {
+    run_hybrid_shape_contract_test<TestType, TestDevice>({65, 48, 39}, 1, 1);
+  }
+}
+
+TEST_CASE("Hybrid refactor rejects having no levels at all",
+          "[mgard-x][hybrid][@DEVICE_TYPE@]") {
+  DeviceRuntime<TestDevice>::Initialize();
+  using T = float;
+  constexpr DIM D = 3;
+  std::vector<SIZE> shape{64, 64, 64};
+
+  Config config;
+  config.num_local_refactoring_level = 1;
+  Hierarchy<D, T, TestDevice> hierarchy(shape, config);
+
+  Config empty_config;
+  empty_config.num_local_refactoring_level = 0;
+  empty_config.num_global_refactoring_level = 0;
+
+  data_refactoring::HybridHierarchyDataRefactor<D, T, TestDevice> refactor;
+  REQUIRE_THROWS_AS(refactor.Adapt(hierarchy, empty_config, 0),
+                    ProcessingException);
+}
+
+
+// ---------------------------------------------------------------------------
+// End-to-end pipeline (public compress/decompress API)
+//
+// The compressor case above drives HybridHierarchyCompressor directly: no
+// metadata header, no serialization, and the same Config handed to both
+// sides. test_HybridMetadata covers the header in isolation, with no
+// compression. Nothing joined the two, so the contract that actually matters
+// to a caller -- write a hybrid file, hand the bytes back with no Config at
+// all, get the data within tolerance -- went unchecked, as did the public API
+// itself.
+// ---------------------------------------------------------------------------
+
+// A free() that matches the allocation the API performs when
+// output_pre_allocated is false.
+struct MallocedBuffer {
+  void *ptr = nullptr;
+  size_t size = 0;
+  ~MallocedBuffer() { std::free(ptr); }
+  MallocedBuffer() = default;
+  MallocedBuffer(const MallocedBuffer &) = delete;
+  MallocedBuffer &operator=(const MallocedBuffer &) = delete;
+};
+
+template <typename T> static data_type data_type_of() {
+  return std::is_same<T, double>::value ? data_type::Double : data_type::Float;
+}
+
+static Config hybrid_config(int num_local_levels, int num_global_levels) {
+  Config config;
+  config.decomposition = decomposition_type::Hybrid;
+  config.num_local_refactoring_level = num_local_levels;
+  config.num_global_refactoring_level = num_global_levels;
+  return config;
+}
+
+// Compress through the public API and hand the bytes back to decompress with a
+// *default* Config. The hybrid level counts have to survive the round trip
+// through the metadata header (MetadataBase::InitializeConfig restores them),
+// because a real decompressor has only the file.
+template <typename T, typename DevType>
+void run_pipeline_test(std::vector<SIZE> shape, int num_local_levels,
+                       int num_global_levels, enum error_bound_type ebtype,
+                       double tol) {
+  constexpr DIM D = 3;
+  // Start from a clean CompressorCache so this case measures one shape in
+  // isolation rather than inheriting buffers sized by whatever ran before.
+  // The shape-switch case below deliberately does not do this.
+  release_cache<DevType>();
+  SIZE n = 1;
+  for (auto sz : shape)
+    n *= sz;
+
+  std::vector<T> original(n);
+  fill_smooth_data<D, T>(original, shape);
+
+  const double s = std::numeric_limits<double>::infinity();
+
+  MallocedBuffer compressed;
+  REQUIRE(compress<DevType>(D, data_type_of<T>(), shape, tol, s, ebtype,
+                            original.data(), compressed.ptr, compressed.size,
+                            hybrid_config(num_local_levels, num_global_levels),
+                            false) == compress_status_type::Success);
+  REQUIRE(compressed.ptr != nullptr);
+  REQUIRE(compressed.size > 0);
+  // Deliberately no assertion that the stream beats the raw size: nothing in
+  // the API promises a ratio at an arbitrary tolerance, and at tol=1e-3 a
+  // 60^3 float block genuinely does not compress. Recorded for context only.
+  CAPTURE(compressed.size, n * sizeof(T));
+
+  // Decompress knowing nothing but the bytes.
+  MallocedBuffer decompressed;
+  data_type recovered_dtype;
+  std::vector<SIZE> recovered_shape;
+  REQUIRE(decompress<DevType>(compressed.ptr, compressed.size,
+                              decompressed.ptr, recovered_dtype,
+                              recovered_shape, false) ==
+          compress_status_type::Success);
+
+  REQUIRE(recovered_dtype == data_type_of<T>());
+  REQUIRE(recovered_shape == shape);
+
+  const T *result = (const T *)decompressed.ptr;
+  double error = L_inf_error(n, original.data(), result, ebtype);
+  CAPTURE(error, tol, compressed.size, n * sizeof(T));
+  REQUIRE(error < tol);
+}
+
+// Passing a Config to decompress must not change the result: the hybrid
+// parameters come from the file either way. If the decompressor ever started
+// honoring caller-supplied level counts over the file's, a hybrid stream would
+// decode against the wrong buffer layout -- and the default-Config path above
+// would be the one that broke.
+template <typename T, typename DevType>
+void run_pipeline_config_independence_test(std::vector<SIZE> shape,
+                                           int num_local_levels,
+                                           int num_global_levels) {
+  constexpr DIM D = 3;
+  SIZE n = 1;
+  for (auto sz : shape)
+    n *= sz;
+
+  std::vector<T> original(n);
+  fill_smooth_data<D, T>(original, shape);
+
+  // Start from a clean CompressorCache so this case measures one shape in
+  // isolation rather than inheriting buffers sized by whatever ran before.
+  // The shape-switch case below deliberately does not do this.
+  release_cache<DevType>();
+  const double s = std::numeric_limits<double>::infinity();
+  const double tol = 1e-3;
+
+  MallocedBuffer compressed;
+  REQUIRE(compress<DevType>(D, data_type_of<T>(), shape, tol, s,
+                            error_bound_type::REL, original.data(),
+                            compressed.ptr, compressed.size,
+                            hybrid_config(num_local_levels, num_global_levels),
+                            false) == compress_status_type::Success);
+
+  MallocedBuffer from_default;
+  REQUIRE(decompress<DevType>(compressed.ptr, compressed.size,
+                              from_default.ptr, false) ==
+          compress_status_type::Success);
+
+  // A Config that disagrees with the file about the level split.
+  MallocedBuffer from_wrong_config;
+  REQUIRE(decompress<DevType>(compressed.ptr, compressed.size,
+                              from_wrong_config.ptr, hybrid_config(2, 1),
+                              false) == compress_status_type::Success);
+
+  const T *a = (const T *)from_default.ptr;
+  const T *b = (const T *)from_wrong_config.ptr;
+  SIZE mismatches = 0;
+  for (SIZE i = 0; i < n; i++)
+    mismatches += (a[i] != b[i]);
+  REQUIRE(mismatches == 0);
+}
+
+// The hybrid switch must actually reach the pipeline. Compressing the same
+// data with and without it has to produce different streams while both stay
+// inside the requested bound -- otherwise the flag could be silently dropped
+// somewhere between Config and the compressor and every tolerance check above
+// would still pass.
+template <typename T, typename DevType>
+void run_pipeline_hybrid_is_distinct_test(std::vector<SIZE> shape,
+                                          int num_local_levels,
+                                          int num_global_levels) {
+  constexpr DIM D = 3;
+  SIZE n = 1;
+  for (auto sz : shape)
+    n *= sz;
+
+  std::vector<T> original(n);
+  fill_smooth_data<D, T>(original, shape);
+
+  const double s = std::numeric_limits<double>::infinity();
+  const double tol = 1e-3;
+
+  // Start from a clean CompressorCache so this case measures one shape in
+  // isolation rather than inheriting buffers sized by whatever ran before.
+  // The shape-switch case below deliberately does not do this.
+  release_cache<DevType>();
+  MallocedBuffer hybrid_stream;
+  REQUIRE(compress<DevType>(D, data_type_of<T>(), shape, tol, s,
+                            error_bound_type::REL, original.data(),
+                            hybrid_stream.ptr, hybrid_stream.size,
+                            hybrid_config(num_local_levels, num_global_levels),
+                            false) == compress_status_type::Success);
+
+  Config plain;  // default decomposition, no hybrid levels
+  MallocedBuffer plain_stream;
+  REQUIRE(compress<DevType>(D, data_type_of<T>(), shape, tol, s,
+                            error_bound_type::REL, original.data(),
+                            plain_stream.ptr, plain_stream.size, plain,
+                            false) == compress_status_type::Success);
+
+  bool streams_differ = hybrid_stream.size != plain_stream.size ||
+                        std::memcmp(hybrid_stream.ptr, plain_stream.ptr,
+                                    hybrid_stream.size) != 0;
+  CAPTURE(hybrid_stream.size, plain_stream.size);
+  REQUIRE(streams_differ);
+
+  // Both must still honor the bound, so "different" cannot mean "broken".
+  for (MallocedBuffer *stream : {&hybrid_stream, &plain_stream}) {
+    MallocedBuffer out;
+    REQUIRE(decompress<DevType>(stream->ptr, stream->size, out.ptr, false) ==
+            compress_status_type::Success);
+    double error = L_inf_error(n, original.data(), (const T *)out.ptr,
+                               error_bound_type::REL);
+    CAPTURE(error);
+    REQUIRE(error < tol);
+  }
+}
+
+// Compressing a second, differently-shaped dataset in the same process must
+// not disturb the first result. The public API keeps a CompressorCache whose
+// device_subdomain_buffer is resized per call, so a shape change exercises
+// Array::resize's in-place path -- and a buffer left describing the previous
+// shape corrupts the output silently: Success is returned, the ratio looks
+// ordinary, and only the data is wrong.
+template <typename T, typename DevType>
+void run_pipeline_shape_switch_test(std::vector<std::vector<SIZE>> shapes,
+                                    int num_local_levels,
+                                    int num_global_levels) {
+  constexpr DIM D = 3;
+  const double s = std::numeric_limits<double>::infinity();
+  const double tol = 1e-3;
+
+  for (const auto &shape : shapes) {
+    SIZE n = 1;
+    for (auto sz : shape)
+      n *= sz;
+    std::vector<T> original(n);
+    fill_smooth_data<D, T>(original, shape);
+
+    MallocedBuffer compressed;
+    REQUIRE(compress<DevType>(
+                D, data_type_of<T>(), shape, tol, s, error_bound_type::REL,
+                original.data(), compressed.ptr, compressed.size,
+                hybrid_config(num_local_levels, num_global_levels), false) ==
+            compress_status_type::Success);
+
+    MallocedBuffer decompressed;
+    REQUIRE(decompress<DevType>(compressed.ptr, compressed.size,
+                                decompressed.ptr, false) ==
+            compress_status_type::Success);
+
+    double error = L_inf_error(n, original.data(), (const T *)decompressed.ptr,
+                               error_bound_type::REL);
+    CAPTURE(shape[0], shape[1], shape[2], error, tol);
+    REQUIRE(error < tol);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid pipeline survives a shape change in one process",
+                   "[mgard-x][hybrid][pipeline][@DEVICE_TYPE@]", float,
+                   double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  // Shrinking the fastest-varying extent is the case that breaks: the cached
+  // subdomain buffer keeps the wider leading dimension of the first shape.
+  SECTION("shrink fastest dim") {
+    run_pipeline_shape_switch_test<TestType, TestDevice>(
+        {{64, 64, 64}, {64, 64, 56}}, 1, 0);
+  }
+  SECTION("shrink middle dim") {
+    run_pipeline_shape_switch_test<TestType, TestDevice>(
+        {{64, 64, 64}, {64, 56, 64}}, 1, 0);
+  }
+  SECTION("shrink slowest dim only") {
+    run_pipeline_shape_switch_test<TestType, TestDevice>(
+        {{64, 64, 64}, {56, 64, 64}}, 1, 0);
+  }
+  SECTION("grow then shrink") {
+    run_pipeline_shape_switch_test<TestType, TestDevice>(
+        {{40, 40, 40}, {64, 64, 64}, {60, 60, 60}}, 1, 0);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid end-to-end pipeline round trip",
+                   "[mgard-x][hybrid][pipeline][@DEVICE_TYPE@]", float,
+                   double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  enum error_bound_type ebtype =
+      GENERATE(error_bound_type::REL, error_bound_type::ABS);
+  double tol = GENERATE(1e-2, 1e-3);
+  CAPTURE(static_cast<int>(ebtype), tol);
+  SECTION("pure local (L=1, M=0)") {
+    run_pipeline_test<TestType, TestDevice>({64, 64, 64}, 1, 0, ebtype, tol);
+  }
+  SECTION("hybrid (L=1, M=2)") {
+    run_pipeline_test<TestType, TestDevice>({64, 64, 64}, 1, 2, ebtype, tol);
+  }
+  SECTION("two local levels (L=2, M=1)") {
+    run_pipeline_test<TestType, TestDevice>({64, 64, 64}, 2, 1, ebtype, tol);
+  }
+  SECTION("padded (L=1, M=0)") {
+    run_pipeline_test<TestType, TestDevice>({60, 60, 60}, 1, 0, ebtype, tol);
+  }
+  SECTION("non-cubic (L=1, M=2)") {
+    run_pipeline_test<TestType, TestDevice>({40, 64, 56}, 1, 2, ebtype, tol);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid decompression reads its levels from the file",
+                   "[mgard-x][hybrid][pipeline][@DEVICE_TYPE@]", float,
+                   double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("pure local (L=1, M=0)") {
+    run_pipeline_config_independence_test<TestType, TestDevice>({64, 64, 64}, 1,
+                                                                0);
+  }
+  SECTION("hybrid (L=1, M=2)") {
+    run_pipeline_config_independence_test<TestType, TestDevice>({64, 64, 64}, 1,
+                                                                2);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid pipeline differs from the standard pipeline",
+                   "[mgard-x][hybrid][pipeline][@DEVICE_TYPE@]", float,
+                   double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("pure local (L=1, M=0)") {
+    run_pipeline_hybrid_is_distinct_test<TestType, TestDevice>({64, 64, 64}, 1,
+                                                               0);
+  }
+  SECTION("hybrid (L=1, M=2)") {
+    run_pipeline_hybrid_is_distinct_test<TestType, TestDevice>({64, 64, 64}, 1,
+                                                               2);
   }
 }
 

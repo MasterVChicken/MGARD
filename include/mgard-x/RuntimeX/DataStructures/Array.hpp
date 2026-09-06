@@ -346,6 +346,15 @@ bool Array<D, T, DeviceType, Pitched, Managed>::resize(std::vector<SIZE> shape,
         // We can reuse existing allocation
         inplace_resizable = true;
         __shape = shape;
+        // Keep the leading dimensions in step with the shape, as initialize()
+        // and the pitched branch above both do. A non-pitched array is dense,
+        // and callers rely on that: several of them derive a stride from the
+        // shape rather than asking the array for its ld (see the
+        // setLd(fine_shapes[0][d]) sites in
+        // BlockLocalHierarchyDataRefactor). Leaving a shrunk array with the
+        // wider ld of its previous shape leaves those two strides disagreeing
+        // over the same buffer, which silently corrupts the data.
+        __ldvs = __shape;
         linearized_width = 1;
         for (DIM d = 0; d < D - 1; d++) {
           linearized_width *= __shape[d];
