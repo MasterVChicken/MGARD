@@ -2,9 +2,10 @@ namespace mgard_x {
 
 template <DIM D, typename T, typename DeviceType, typename CompressorType>
 enum compress_status_type compress_pipeline_cpu(
-    <D, T, CompressorType, DeviceType> &domain_decomposer, T local_tol, T s,
-    T &norm, enum error_bound_type local_ebtype, Config &config,
-    Byte *compressed_subdomain_data, SIZE &compressed_subdomain_size) {
+    DomainDecomposer<D, T, CompressorType, DeviceType> &domain_decomposer,
+    T local_tol, T s, T &norm, enum error_bound_type local_ebtype,
+    Config &config, Byte *compressed_subdomain_data,
+    SIZE &compressed_subdomain_size) {
   Timer timer_series;
   if (log::level & log::TIME)
     timer_series.start();
@@ -228,6 +229,10 @@ enum compress_status_type compress_pipeline_cpu(
     d2h.push_back(timer_profile.get());
   }
 
+  SIZE total_size = 0;
+  for (auto s : size)
+    total_size += s;
+
   if (profile) {
     std::cout << "comp: "
               << "\n";
@@ -249,9 +254,6 @@ enum compress_status_type compress_pipeline_cpu(
 
     std::cout << "size: "
               << "\n";
-    SIZE total_size = 0;
-    for (auto s : size)
-      total_size += s;
     std::cout << total_size << "\n";
 
     std::cout << "comp_speed: "
@@ -490,6 +492,10 @@ enum compress_status_type decompress_pipeline_cpu(
     d2h.push_back(timer_profile.get());
   }
 
+  SIZE total_size = 0;
+  for (auto s : size)
+    total_size += s;
+
   if (profile) {
     std::cout << "comp: "
               << "\n";
@@ -511,9 +517,6 @@ enum compress_status_type decompress_pipeline_cpu(
 
     std::cout << "size: "
               << "\n";
-    SIZE total_size = 0;
-    for (auto s : size)
-      total_size += s;
     std::cout << total_size << "\n";
 
     std::cout << "comp_speed: "
