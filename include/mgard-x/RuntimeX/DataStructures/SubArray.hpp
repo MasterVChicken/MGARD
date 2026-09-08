@@ -355,6 +355,11 @@ MGARDX_CONT void SubArray<D, T, DeviceType, Pitched, Managed>::project(
   projected_dim_slowest = dim_slowest;
   projected_dim_medium = dim_medium;
   projected_dim_fastest = dim_fastest;
+  // Callers routinely pass the 3D triple (0, 1, 2) or (D-3, D-2, D-1); on a
+  // 1D or 2D SubArray the leading dimensions wrap or fall off the end, so
+  // clamp all three into range before indexing __ldvs.
+  if (projected_dim_fastest >= D)
+    projected_dim_fastest = D - 1;
   if (projected_dim_slowest >= D)
     projected_dim_slowest = 0;
   if (projected_dim_medium >= D)

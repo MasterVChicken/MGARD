@@ -143,7 +143,7 @@ public:
       for (DIM d = 0; d < D; d++) {
         coarse.setLd(d, fine_shapes[0][d]);
       }
-      coarse.project(0, 1, 2);
+      coarse.project(D - 3, D - 2, D - 1);
 
       in_cache_block::decompose<D, T, DeviceType>(fine, coarse, local_coeff,
                                                   queue_idx);
@@ -153,7 +153,7 @@ public:
         for (DIM d = 0; d < D; d++) {
           fine.setLd(d, fine_shapes[0][d]);
         }
-        fine.project(0, 1, 2);
+        fine.project(D - 3, D - 2, D - 1);
       }
     }
 
@@ -171,7 +171,7 @@ public:
     for (DIM d = 0; d < D; d++) {
       coarsest.setLd(d, fine_shapes[0][d]);
     }
-    coarsest.project(0, 1, 2);
+    coarsest.project(D - 3, D - 2, D - 1);
     // log::info("Find read buffer idx: " + std::to_string(final_buffer_id));
 
     // Write the coarsest level directly into output_decomposed instead of
@@ -183,7 +183,7 @@ public:
     for (DIM d = 0; d < D; d++) {
       coarsest_out.setLd(d, coarse_shapes[this->L - 1][d]);
     }
-    coarsest_out.project(0, 1, 2);
+    coarsest_out.project(D - 3, D - 2, D - 1);
     multi_dimension::CopyND(coarsest, coarsest_out, queue_idx);
 
     SubArray<1, T, DeviceType> data_coeff({DecomposedCoeffSize()},
@@ -248,7 +248,7 @@ public:
           coarse.setLd(d, fine_shapes[0][d]);
         }
       }
-      coarse.project(0, 1, 2);
+      coarse.project(D - 3, D - 2, D - 1);
 
       in_cache_block::decompose_quantize<D, T, Q, DeviceType>(
           fine, coarse, level_quantized,
@@ -311,7 +311,7 @@ public:
     for (DIM d = 0; d < D; d++) {
       coarse.setLd(d, coarse_shapes[this->L - 1][d]);
     }
-    coarse.project(0, 1, 2);
+    coarse.project(D - 3, D - 2, D - 1);
 
     SIZE accumulated = DecomposedCoeffSize();
     for (SIZE l = 0; l < this->L; l++) {
@@ -333,7 +333,7 @@ public:
         for (DIM d = 0; d < D; d++) {
           fine.setLd(d, fine_shapes[0][d]);
         }
-        fine.project(0, 1, 2);
+        fine.project(D - 3, D - 2, D - 1);
       }
 
       in_cache_block::recompose_dequantize<D, T, Q, DeviceType>(
@@ -349,7 +349,7 @@ public:
         for (DIM d = 0; d < D; d++) {
           coarse.setLd(d, fine_shapes[0][d]);
         }
-        coarse.project(0, 1, 2);
+        coarse.project(D - 3, D - 2, D - 1);
       }
       accumulated -= local_coeff_size[level_idx];
     }
@@ -409,7 +409,7 @@ public:
       for (DIM d = 0; d < D; d++) {
         fine.setLd(d, fine_shapes[0][d]);
       }
-      fine.project(0, 1, 2);
+      fine.project(D - 3, D - 2, D - 1);
       // log::info("Buffer idx for fine buffer: " +
       // std::to_string(buffer_idx));
 
@@ -422,7 +422,7 @@ public:
         for (DIM d = 0; d < D; d++) {
           coarse.setLd(d, fine_shapes[0][d]);
         }
-        coarse.project(0, 1, 2);
+        coarse.project(D - 3, D - 2, D - 1);
       }
       accumulated_local_coeff_size -= local_coeff_size[level_idx];
     }
@@ -443,7 +443,7 @@ public:
     for (DIM d = 0; d < D; d++) {
       src.setLd(d, fine_shapes[0][d]);
     }
-    src.project(0, 1, 2);
+    src.project(D - 3, D - 2, D - 1);
 
     SubArray<D, T, DeviceType> dst(
         hierarchy->level_shape(hierarchy->l_target()), data.data());

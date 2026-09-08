@@ -124,8 +124,8 @@ public:
       global_data_v.setLd(d, global_shape[d]);
       global_data_q.setLd(d, global_shape[d]);
     }
-    global_data_v.project(0, 1, 2);
-    global_data_q.project(0, 1, 2);
+    global_data_v.project(D - 3, D - 2, D - 1);
+    global_data_q.project(D - 3, D - 2, D - 1);
     global_quantizer.Quantize(global_data_v, ebtype, global_tol, s, norm,
                               global_data_q, lossless, queue_idx);
   }
@@ -150,8 +150,8 @@ public:
       global_data_v.setLd(d, global_shape[d]);
       global_data_q.setLd(d, global_shape[d]);
     }
-    global_data_v.project(0, 1, 2);
-    global_data_q.project(0, 1, 2);
+    global_data_v.project(D - 3, D - 2, D - 1);
+    global_data_q.project(D - 3, D - 2, D - 1);
     global_quantizer.Dequantize(global_data_v, ebtype, global_tol, s, norm,
                                 global_data_q, lossless, queue_idx);
   }
@@ -448,8 +448,8 @@ public:
         global_data_v.setLd(d, global_shape[d]);
         global_data_q.setLd(d, global_shape[d]);
       }
-      global_data_v.project(0, 1, 2);
-      global_data_q.project(0, 1, 2);
+      global_data_v.project(D - 3, D - 2, D - 1);
+      global_data_q.project(D - 3, D - 2, D - 1);
       global_quantizer.Dequantize(global_data_v, ebtype, global_tol, s, norm,
                                   global_data_q, lossless, queue_idx);
     }

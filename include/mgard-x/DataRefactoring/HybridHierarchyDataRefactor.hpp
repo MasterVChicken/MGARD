@@ -118,7 +118,7 @@ public:
     for (DIM d = 0; d < D; d++) {
       global_input_data.setLd(d, global_shape[d]);
     }
-    global_input_data.project(0, 1, 2);
+    global_input_data.project(D - 3, D - 2, D - 1);
 
     global_refactor.Decompose(global_input_data, true, queue_idx);
   }
@@ -136,7 +136,7 @@ public:
     for (DIM d = 0; d < D; d++) {
       global_input_data.setLd(d, global_shape[d]);
     }
-    global_input_data.project(0, 1, 2);
+    global_input_data.project(D - 3, D - 2, D - 1);
 
     global_refactor.Recompose(global_input_data, true, queue_idx);
   }
@@ -161,7 +161,7 @@ public:
       for (DIM d = 0; d < D; d++) {
         global_input_data.setLd(d, original_shape[d]);
       }
-      global_input_data.project(0, 1, 2);
+      global_input_data.project(D - 3, D - 2, D - 1);
 
       multi_dimension::CopyND(data, global_input_data, queue_idx);
 
@@ -206,7 +206,7 @@ public:
       for (DIM d = 0; d < D; d++) {
         global_input_data.setLd(d, original_shape[d]);
       }
-      global_input_data.project(0, 1, 2);
+      global_input_data.project(D - 3, D - 2, D - 1);
 
       global_refactor.Recompose(global_input_data, true, queue_idx);
 
@@ -223,7 +223,7 @@ public:
       for (DIM d = 0; d < D; d++) {
         global_input_data.setLd(d, local_coarest_shape[d]);
       }
-      global_input_data.project(0, 1, 2);
+      global_input_data.project(D - 3, D - 2, D - 1);
 
       // Global recomposition
       global_refactor.Recompose(global_input_data, true, queue_idx);
