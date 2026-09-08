@@ -103,7 +103,13 @@ private:
 };
 
 // ROI Version
-template <typename T, typename Q, OPTION OP, typename DeviceType>
+//
+// The coefficient array is a row-major sequence of block-local blocks, each
+// contributing hybrid_local_coeff_per_block(D) coefficients, so a
+// coefficient's block index -- and therefore its ROI quantizer -- is
+// idx / that count. The count is dimension dependent (3 in 1D, 39 in 2D,
+// 387 in 3D), hence the D template parameter.
+template <DIM D, typename T, typename Q, OPTION OP, typename DeviceType>
 class QuantizeLocalLevelROIFunctor : public Functor<DeviceType> {
 public:
   MGARDX_CONT QuantizeLocalLevelROIFunctor() {}
@@ -121,7 +127,7 @@ public:
           FunctorBase<DeviceType>::GetThreadIdX();
 
     if (idx < v.shape(0)) {
-      SIZE block_idx = idx / 387;
+      SIZE block_idx = idx / kCoeffPerBlock;
 
       T quantizer = *quantizers(block_idx);
 
@@ -152,6 +158,7 @@ public:
   MGARDX_CONT size_t shared_memory_size() { return 0; }
 
 private:
+  static constexpr SIZE kCoeffPerBlock = (SIZE)hybrid_local_coeff_per_block(D);
   SIZE idx;
   SubArray<1, T, DeviceType> quantizers;
   SubArray<1, T, DeviceType> v;
@@ -160,7 +167,7 @@ private:
   SIZE dict_size;
 };
 
-template <typename T, typename Q, OPTION OP, typename DeviceType>
+template <DIM D, typename T, typename Q, OPTION OP, typename DeviceType>
 class QuantizeLocalLevelROIKernel : public Kernel {
 public:
   constexpr static bool EnableAutoTuning() { return false; }
@@ -174,9 +181,9 @@ public:
       : quantizers(quantizers), v(v), quantized_v(quantized_v),
         prep_huffman(prep_huffman), dict_size(dict_size) {}
 
-  MGARDX_CONT Task<QuantizeLocalLevelROIFunctor<T, Q, OP, DeviceType>>
+  MGARDX_CONT Task<QuantizeLocalLevelROIFunctor<D, T, Q, OP, DeviceType>>
   GenTask(int queue_idx) {
-    using FunctorType = QuantizeLocalLevelROIFunctor<T, Q, OP, DeviceType>;
+    using FunctorType = QuantizeLocalLevelROIFunctor<D, T, Q, OP, DeviceType>;
     FunctorType functor(quantizers, v, quantized_v, prep_huffman, dict_size);
 
     SIZE tbx = 256, tby = 1, tbz = 1;
@@ -606,7 +613,7 @@ public:
           quantized_data(quantized_data.shape(0) - accumulated_coeff_size));
 
       DeviceLauncher<DeviceType>::Execute(
-          QuantizeLocalLevelROIKernel<T, Q, MGARDX_QUANTIZE, DeviceType>(
+          QuantizeLocalLevelROIKernel<D, T, Q, MGARDX_QUANTIZE, DeviceType>(
               SubArray<1, T, DeviceType>(device_quantizers), v_in, qv,
               prep_huffman, huff_dict_size),
           queue_idx);
@@ -677,7 +684,7 @@ public:
           quantized_data(quantized_data.shape(0) - accumulated_coeff_size));
 
       DeviceLauncher<DeviceType>::Execute(
-          QuantizeLocalLevelROIKernel<T, Q, MGARDX_DEQUANTIZE, DeviceType>(
+          QuantizeLocalLevelROIKernel<D, T, Q, MGARDX_DEQUANTIZE, DeviceType>(
               SubArray<1, T, DeviceType>(device_quantizers), v_in, qv,
               prep_huffman, huff_dict_size),
           queue_idx);

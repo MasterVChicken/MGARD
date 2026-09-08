@@ -11,7 +11,11 @@
 #include "../../RuntimeX/RuntimeX.h"
 #include "Autocorrelation8x8x8.hpp"
 #include "DataRefactoring.h"
+#include "Decompose8.hpp"
+#include "Decompose8x8.hpp"
 #include "Decompose8x8x8.hpp"
+#include "Recompose8.hpp"
+#include "Recompose8x8.hpp"
 #include "Recompose8x8x8.hpp"
 
 #include <iostream>
@@ -28,28 +32,18 @@ namespace in_cache_block {
 template <DIM D, typename T, typename DeviceType>
 void decompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
                SubArray<1, T, DeviceType> coeff, int queue_idx) {
-  if constexpr (D <= 3) {
+  // One kernel per dimensionality: the block geometry (8 fine nodes to 5
+  // coarse ones per dimension) is shared, but the coefficient layout and the
+  // number of transform passes are not.
+  if constexpr (D == 1) {
+    DeviceLauncher<DeviceType>::Execute(
+        Decompose8Kernel<D, T, DeviceType>(v, coarse, coeff), queue_idx);
+  } else if constexpr (D == 2) {
+    DeviceLauncher<DeviceType>::Execute(
+        Decompose8x8Kernel<D, T, DeviceType>(v, coarse, coeff), queue_idx);
+  } else if constexpr (D == 3) {
     DeviceLauncher<DeviceType>::Execute(
         Decompose8x8x8Kernel<D, T, DeviceType>(v, coarse, coeff), queue_idx);
-
-    // Array<D, T, DeviceType> ac_x({(v.shape(0)-1)/8+1, (v.shape(1)-1)/8+1,
-    // (v.shape(2)-1)/8+1}, false, false); Array<D, T, DeviceType>
-    // ac_y({(v.shape(0)-1)/8+1, (v.shape(1)-1)/8+1, (v.shape(2)-1)/8+1}, false,
-    // false); Array<D, T, DeviceType> ac_z({(v.shape(0)-1)/8+1,
-    // (v.shape(1)-1)/8+1, (v.shape(2)-1)/8+1}, false, false);
-
-    // DeviceLauncher<DeviceType>::Execute(
-    //     Autocorrelation8x8x8Kernel<D, T, DECOMPOSE, DeviceType>(v,
-    //     SubArray(ac_x), SubArray(ac_y),
-    //                                                                SubArray(ac_z),
-    //                                                                   1),
-    //                                                                   queue_idx);
-
-    // PrintSubarray("ac_x", SubArray<2, T, DeviceType>({ac_x.shape(0),
-    // ac_x.shape(1)}, ac_x.data())); PrintSubarray("ac_y", SubArray<2, T,
-    // DeviceType>({ac_x.shape(0), ac_y.shape(1)}, ac_y.data()));
-    // PrintSubarray("ac_z", SubArray<2, T, DeviceType>({ac_z.shape(0),
-    // ac_z.shape(1)}, ac_z.data()));
   }
 }
 
@@ -60,9 +54,19 @@ void decompose_quantize(SubArray<D, T, DeviceType> v,
                         SubArray<1, T, DeviceType> block_quantizers,
                         bool use_block_quantizers, bool prep_huffman,
                         SIZE dict_size, int queue_idx) {
-  // The 8x8x8 in-cache kernel (and its 387-coefficients-per-block layout) is
-  // 3D-only; the hybrid local path is not defined for other dimensions.
-  if constexpr (D == 3) {
+  if constexpr (D == 1) {
+    DeviceLauncher<DeviceType>::Execute(
+        DecomposeQuantize8Kernel<D, T, Q, DeviceType>(
+            v, coarse, quantized_coeff, quantizer, block_quantizers,
+            use_block_quantizers, prep_huffman, dict_size),
+        queue_idx);
+  } else if constexpr (D == 2) {
+    DeviceLauncher<DeviceType>::Execute(
+        DecomposeQuantize8x8Kernel<D, T, Q, DeviceType>(
+            v, coarse, quantized_coeff, quantizer, block_quantizers,
+            use_block_quantizers, prep_huffman, dict_size),
+        queue_idx);
+  } else if constexpr (D == 3) {
     DeviceLauncher<DeviceType>::Execute(
         DecomposeQuantize8x8x8Kernel<D, T, Q, DeviceType>(
             v, coarse, quantized_coeff, quantizer, block_quantizers,
@@ -74,7 +78,13 @@ void decompose_quantize(SubArray<D, T, DeviceType> v,
 template <DIM D, typename T, typename DeviceType>
 void recompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
                SubArray<1, T, DeviceType> coeff, int queue_idx) {
-  if constexpr (D <= 3) {
+  if constexpr (D == 1) {
+    DeviceLauncher<DeviceType>::Execute(
+        Recompose8Kernel<D, T, DeviceType>(v, coarse, coeff), queue_idx);
+  } else if constexpr (D == 2) {
+    DeviceLauncher<DeviceType>::Execute(
+        Recompose8x8Kernel<D, T, DeviceType>(v, coarse, coeff), queue_idx);
+  } else if constexpr (D == 3) {
     DeviceLauncher<DeviceType>::Execute(
         Recompose8x8x8Kernel<D, T, DeviceType>(v, coarse, coeff), queue_idx);
   }
@@ -88,9 +98,19 @@ void recompose_dequantize(SubArray<D, T, DeviceType> v,
                           SubArray<1, T, DeviceType> block_quantizers,
                           bool use_block_quantizers, bool prep_huffman,
                           SIZE dict_size, int queue_idx) {
-  // The 8x8x8 in-cache kernel (and its 387-coefficients-per-block layout) is
-  // 3D-only; the hybrid local path is not defined for other dimensions.
-  if constexpr (D == 3) {
+  if constexpr (D == 1) {
+    DeviceLauncher<DeviceType>::Execute(
+        RecomposeDequantize8Kernel<D, T, Q, DeviceType>(
+            v, coarse, quantized_coeff, quantizer, block_quantizers,
+            use_block_quantizers, prep_huffman, dict_size),
+        queue_idx);
+  } else if constexpr (D == 2) {
+    DeviceLauncher<DeviceType>::Execute(
+        RecomposeDequantize8x8Kernel<D, T, Q, DeviceType>(
+            v, coarse, quantized_coeff, quantizer, block_quantizers,
+            use_block_quantizers, prep_huffman, dict_size),
+        queue_idx);
+  } else if constexpr (D == 3) {
     DeviceLauncher<DeviceType>::Execute(
         RecomposeDequantize8x8x8Kernel<D, T, Q, DeviceType>(
             v, coarse, quantized_coeff, quantizer, block_quantizers,

@@ -48,13 +48,13 @@ void fill_smooth_data(std::vector<T> &data, std::vector<SIZE> shape) {
   }
 }
 
-// Decompose -> Recompose with the block-local (in-cache 8x8x8) refactor must
-// be a numerical identity: no quantization is involved, only the forward and
+// Decompose -> Recompose with the block-local (in-cache) refactor must be a
+// numerical identity: no quantization is involved, only the forward and
 // inverse block transforms. Shapes must be multiples of 8 per level (the
-// hybrid compressor pads to this internally).
-template <typename T, typename DevType>
+// hybrid compressor pads to this internally). Templated on D so the 1D (8),
+// 2D (8x8) and 3D (8x8x8) block kernels are all covered.
+template <DIM D, typename T, typename DevType>
 void run_block_local_roundtrip(std::vector<SIZE> shape, int num_local_levels) {
-  constexpr DIM D = 3;
   SIZE n = 1;
   for (auto s : shape)
     n *= s;
@@ -94,11 +94,10 @@ void run_block_local_roundtrip(std::vector<SIZE> shape, int num_local_levels) {
 
 // Decompose -> Recompose with the hybrid refactor (block-local levels chained
 // into the standard global decomposition) must also be a numerical identity.
-template <typename T, typename DevType>
+template <DIM D, typename T, typename DevType>
 void run_hybrid_refactor_roundtrip(std::vector<SIZE> shape,
                                    int num_local_levels,
                                    int num_global_levels) {
-  constexpr DIM D = 3;
   SIZE n = 1;
   for (auto s : shape)
     n *= s;
@@ -138,11 +137,11 @@ void run_hybrid_refactor_roundtrip(std::vector<SIZE> shape,
 // Full hybrid compress -> decompress round trip through serialized bytes.
 // The hybrid quantizer only supports the L-infinity norm (s == inf), so the
 // error check is L_inf against the requested tolerance.
-template <typename T, typename DevType>
+template <DIM D, typename T, typename DevType>
 void run_hybrid_compressor_test(std::vector<SIZE> shape, int num_local_levels,
                                 int num_global_levels,
-                                enum error_bound_type ebtype, T tol) {
-  constexpr DIM D = 3;
+                                enum error_bound_type ebtype, T tol,
+                                bool fused = true) {
   SIZE n = 1;
   for (auto sz : shape)
     n *= sz;
@@ -154,6 +153,10 @@ void run_hybrid_compressor_test(std::vector<SIZE> shape, int num_local_levels,
   config.decomposition = decomposition_type::Hybrid;
   config.num_local_refactoring_level = num_local_levels;
   config.num_global_refactoring_level = num_global_levels;
+  // The fused and unfused local kernels are separate implementations of the
+  // same transform, so both have to be driven.
+  config.fuse_decompose_quantize = fused;
+  config.fuse_dequantize_recompose = fused;
 
   const T s = std::numeric_limits<T>::infinity();
 
@@ -192,22 +195,22 @@ TEMPLATE_TEST_CASE("Block-Local (In-Cache 8x8x8) Decomposition 3D",
                    "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
   DeviceRuntime<TestDevice>::Initialize();
   SECTION("one level, cubic") {
-    run_block_local_roundtrip<TestType, TestDevice>({64, 64, 64}, 1);
+    run_block_local_roundtrip<3, TestType, TestDevice>({64, 64, 64}, 1);
   }
   SECTION("one level, non-cubic") {
-    run_block_local_roundtrip<TestType, TestDevice>({40, 64, 56}, 1);
+    run_block_local_roundtrip<3, TestType, TestDevice>({40, 64, 56}, 1);
   }
   SECTION("one level, padded (non-multiple-of-8)") {
-    run_block_local_roundtrip<TestType, TestDevice>({60, 60, 60}, 1);
+    run_block_local_roundtrip<3, TestType, TestDevice>({60, 60, 60}, 1);
   }
   SECTION("one level, padded non-cubic") {
-    run_block_local_roundtrip<TestType, TestDevice>({65, 48, 39}, 1);
+    run_block_local_roundtrip<3, TestType, TestDevice>({65, 48, 39}, 1);
   }
   SECTION("two levels") {
-    run_block_local_roundtrip<TestType, TestDevice>({64, 64, 64}, 2);
+    run_block_local_roundtrip<3, TestType, TestDevice>({64, 64, 64}, 2);
   }
   SECTION("two levels, padded") {
-    run_block_local_roundtrip<TestType, TestDevice>({60, 60, 60}, 2);
+    run_block_local_roundtrip<3, TestType, TestDevice>({60, 60, 60}, 2);
   }
 }
 
@@ -215,19 +218,19 @@ TEMPLATE_TEST_CASE("Hybrid Hierarchy Decomposition 3D",
                    "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
   DeviceRuntime<TestDevice>::Initialize();
   SECTION("pure local (L=1, M=0)") {
-    run_hybrid_refactor_roundtrip<TestType, TestDevice>({64, 64, 64}, 1, 0);
+    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>({64, 64, 64}, 1, 0);
   }
   SECTION("pure local (L=2, M=0)") {
-    run_hybrid_refactor_roundtrip<TestType, TestDevice>({64, 64, 64}, 2, 0);
+    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>({64, 64, 64}, 2, 0);
   }
   SECTION("pure global (L=0, M=2)") {
-    run_hybrid_refactor_roundtrip<TestType, TestDevice>({64, 64, 64}, 0, 2);
+    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>({64, 64, 64}, 0, 2);
   }
   SECTION("hybrid (L=1, M=2)") {
-    run_hybrid_refactor_roundtrip<TestType, TestDevice>({64, 64, 64}, 1, 2);
+    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>({64, 64, 64}, 1, 2);
   }
   SECTION("hybrid, padded (L=1, M=2)") {
-    run_hybrid_refactor_roundtrip<TestType, TestDevice>({60, 60, 60}, 1, 2);
+    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>({60, 60, 60}, 1, 2);
   }
 }
 
@@ -238,21 +241,266 @@ TEMPLATE_TEST_CASE("Hybrid Hierarchy Compressor 3D",
       GENERATE(error_bound_type::REL, error_bound_type::ABS);
   TestType tol = GENERATE(static_cast<TestType>(1e-2),
                           static_cast<TestType>(1e-3));
-  CAPTURE(static_cast<int>(ebtype), tol);
+  bool fused = GENERATE(true, false);
+  CAPTURE(static_cast<int>(ebtype), tol, fused);
   SECTION("pure local (L=1, M=0)") {
-    run_hybrid_compressor_test<TestType, TestDevice>({64, 64, 64}, 1, 0,
-                                                     ebtype, tol);
+    run_hybrid_compressor_test<3, TestType, TestDevice>({64, 64, 64}, 1, 0,
+                                                     ebtype, tol, fused);
   }
   SECTION("hybrid (L=1, M=2)") {
-    run_hybrid_compressor_test<TestType, TestDevice>({64, 64, 64}, 1, 2,
-                                                     ebtype, tol);
+    run_hybrid_compressor_test<3, TestType, TestDevice>({64, 64, 64}, 1, 2,
+                                                     ebtype, tol, fused);
   }
   SECTION("padded (L=1, M=0)") {
-    run_hybrid_compressor_test<TestType, TestDevice>({60, 60, 60}, 1, 0,
-                                                     ebtype, tol);
+    run_hybrid_compressor_test<3, TestType, TestDevice>({60, 60, 60}, 1, 0,
+                                                     ebtype, tol, fused);
   }
 }
 
+
+// The block transform is an MGARD level transform, not just some invertible
+// shuffle: its interpolation is exact for multilinear data. So for
+// f = prod_d (1 + a_d * coord_d) every coefficient must be exactly zero
+// (each is a value minus the average of its coarse neighbours, which for a
+// multilinear f reproduces it), and with a zero coefficient field the
+// correction vanishes too, leaving every coarse output equal to f at that
+// coarse node.
+//
+// A round trip cannot see this: an index or sign slip made symmetrically in
+// decompose and recompose still round trips. This pins the forward transform
+// on its own.
+template <DIM D, typename T, typename DevType>
+void run_block_local_multilinear_test(std::vector<SIZE> shape) {
+  SIZE n = 1;
+  for (auto sz : shape)
+    n *= sz;
+  for (auto sz : shape)
+    REQUIRE(sz % 8 == 0); // no padding: f is undefined outside the extent
+
+  // f(coords) = prod_d (1 + a_d * coord_d), multilinear by construction.
+  const double a[3] = {0.25, -0.5, 0.125};
+  std::vector<T> original(n);
+  auto value_at = [&](const std::vector<SIZE> &coord) {
+    double v = 1.0;
+    for (DIM d = 0; d < D; d++)
+      v *= 1.0 + a[d] * (double)coord[d];
+    return (T)v;
+  };
+  for (SIZE idx = 0; idx < n; idx++) {
+    SIZE r = idx;
+    std::vector<SIZE> coord(D);
+    for (int d = (int)D - 1; d >= 0; d--) {
+      coord[d] = r % shape[d];
+      r /= shape[d];
+    }
+    original[idx] = value_at(coord);
+  }
+
+  Config config;
+  config.num_local_refactoring_level = 1;
+  Hierarchy<D, T, DevType> hierarchy(shape, config);
+
+  data_refactoring::BlockLocalHierarchyDataRefactor<D, T, DevType> refactor;
+  refactor.Adapt(hierarchy, config, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  Array<D, T, DevType> data(shape);
+  data.load(original.data());
+  Array<1, T, DevType> decomposed({(SIZE)refactor.DecomposedDataSize()});
+  refactor.Decompose(SubArray(data), SubArray(decomposed), 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  T *out = decomposed.hostCopy(false, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  // Scale the tolerance by the data range: these are absolute comparisons.
+  double magnitude = 0;
+  for (SIZE i = 0; i < n; i++)
+    magnitude = std::max(magnitude, (double)std::abs(original[i]));
+  const double tolerance =
+      magnitude * (std::is_same<T, double>::value ? 1e-12 : 1e-5);
+
+  // Every coefficient is zero.
+  SIZE num_coarse = 1;
+  for (DIM d = 0; d < D; d++)
+    num_coarse *= refactor.coarse_shapes[0][d];
+  double worst_coeff = 0;
+  for (SIZE i = num_coarse; i < (SIZE)refactor.DecomposedDataSize(); i++)
+    worst_coeff = std::max(worst_coeff, (double)std::abs(out[i]));
+  CAPTURE(worst_coeff, tolerance);
+  REQUIRE(worst_coeff < tolerance);
+
+  // Every coarse value is f at that coarse node: coarse index (b, c) along a
+  // dimension sits at fine node b * 8 + {0, 2, 4, 6, 7}[c].
+  const SIZE coarse_node[5] = {0, 2, 4, 6, 7};
+  double worst_coarse = 0;
+  for (SIZE i = 0; i < num_coarse; i++) {
+    SIZE r = i;
+    std::vector<SIZE> coord(D);
+    for (int d = (int)D - 1; d >= 0; d--) {
+      SIZE c = r % refactor.coarse_shapes[0][d];
+      r /= refactor.coarse_shapes[0][d];
+      coord[d] = (c / 5) * 8 + coarse_node[c % 5];
+    }
+    worst_coarse =
+        std::max(worst_coarse, (double)std::abs(out[i] - value_at(coord)));
+  }
+  CAPTURE(worst_coarse);
+  REQUIRE(worst_coarse < tolerance);
+}
+
+TEMPLATE_TEST_CASE("Block-local transform is exact for multilinear data",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("1D") {
+    run_block_local_multilinear_test<1, TestType, TestDevice>({1024});
+  }
+  SECTION("2D") {
+    run_block_local_multilinear_test<2, TestType, TestDevice>({64, 48});
+  }
+  SECTION("3D") {
+    run_block_local_multilinear_test<3, TestType, TestDevice>({32, 24, 40});
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1D and 2D block-local transforms
+//
+// The block geometry is per-dimension identical to the 3D block -- 8 fine
+// nodes coarsen to the 5 nodes {0, 2, 4, 6, 7}, with the trailing cell split
+// around a phantom node -- so the same cases apply: exact shapes, shapes that
+// need padding up to a multiple of 8, and more than one level.
+//
+// The 1D kernel additionally packs several 8-element tiles into one thread
+// block, so its shapes deliberately mix a whole number of thread blocks with
+// one that leaves the last block partly idle.
+// ---------------------------------------------------------------------------
+
+TEMPLATE_TEST_CASE("Block-Local (In-Cache 8x8) Decomposition 2D",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("one level, square") {
+    run_block_local_roundtrip<2, TestType, TestDevice>({64, 64}, 1);
+  }
+  SECTION("one level, non-square") {
+    run_block_local_roundtrip<2, TestType, TestDevice>({40, 56}, 1);
+  }
+  SECTION("one level, padded (non-multiple-of-8)") {
+    run_block_local_roundtrip<2, TestType, TestDevice>({60, 60}, 1);
+  }
+  SECTION("one level, padded non-square") {
+    run_block_local_roundtrip<2, TestType, TestDevice>({65, 39}, 1);
+  }
+  SECTION("two levels") {
+    run_block_local_roundtrip<2, TestType, TestDevice>({64, 64}, 2);
+  }
+  SECTION("two levels, padded") {
+    run_block_local_roundtrip<2, TestType, TestDevice>({60, 60}, 2);
+  }
+}
+
+TEMPLATE_TEST_CASE("Block-Local (In-Cache 8) Decomposition 1D",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("one level, whole thread blocks") {
+    run_block_local_roundtrip<1, TestType, TestDevice>({1024}, 1);
+  }
+  SECTION("one level, partial last thread block") {
+    run_block_local_roundtrip<1, TestType, TestDevice>({1000}, 1);
+  }
+  SECTION("one level, padded (non-multiple-of-8)") {
+    run_block_local_roundtrip<1, TestType, TestDevice>({1003}, 1);
+  }
+  SECTION("one level, smaller than one thread block") {
+    run_block_local_roundtrip<1, TestType, TestDevice>({64}, 1);
+  }
+  SECTION("two levels") {
+    run_block_local_roundtrip<1, TestType, TestDevice>({1024}, 2);
+  }
+  SECTION("two levels, padded") {
+    run_block_local_roundtrip<1, TestType, TestDevice>({1003}, 2);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid Hierarchy Decomposition 2D",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("pure local (L=1, M=0)") {
+    run_hybrid_refactor_roundtrip<2, TestType, TestDevice>({64, 64}, 1, 0);
+  }
+  SECTION("pure local (L=2, M=0)") {
+    run_hybrid_refactor_roundtrip<2, TestType, TestDevice>({64, 64}, 2, 0);
+  }
+  SECTION("hybrid (L=1, M=2)") {
+    run_hybrid_refactor_roundtrip<2, TestType, TestDevice>({64, 64}, 1, 2);
+  }
+  SECTION("hybrid, padded (L=1, M=2)") {
+    run_hybrid_refactor_roundtrip<2, TestType, TestDevice>({60, 60}, 1, 2);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid Hierarchy Decomposition 1D",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  SECTION("pure local (L=1, M=0)") {
+    run_hybrid_refactor_roundtrip<1, TestType, TestDevice>({1024}, 1, 0);
+  }
+  SECTION("pure local (L=2, M=0)") {
+    run_hybrid_refactor_roundtrip<1, TestType, TestDevice>({1024}, 2, 0);
+  }
+  SECTION("hybrid (L=1, M=2)") {
+    run_hybrid_refactor_roundtrip<1, TestType, TestDevice>({1024}, 1, 2);
+  }
+  SECTION("hybrid, padded (L=1, M=2)") {
+    run_hybrid_refactor_roundtrip<1, TestType, TestDevice>({1000}, 1, 2);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid Hierarchy Compressor 2D",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  enum error_bound_type ebtype =
+      GENERATE(error_bound_type::REL, error_bound_type::ABS);
+  TestType tol = GENERATE(static_cast<TestType>(1e-2),
+                          static_cast<TestType>(1e-3));
+  bool fused = GENERATE(true, false);
+  CAPTURE(static_cast<int>(ebtype), tol, fused);
+  SECTION("pure local (L=1, M=0)") {
+    run_hybrid_compressor_test<2, TestType, TestDevice>({256, 256}, 1, 0,
+                                                        ebtype, tol, fused);
+  }
+  SECTION("hybrid (L=1, M=2)") {
+    run_hybrid_compressor_test<2, TestType, TestDevice>({256, 256}, 1, 2,
+                                                        ebtype, tol, fused);
+  }
+  SECTION("padded (L=1, M=0)") {
+    run_hybrid_compressor_test<2, TestType, TestDevice>({250, 250}, 1, 0,
+                                                        ebtype, tol, fused);
+  }
+}
+
+TEMPLATE_TEST_CASE("Hybrid Hierarchy Compressor 1D",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  enum error_bound_type ebtype =
+      GENERATE(error_bound_type::REL, error_bound_type::ABS);
+  TestType tol = GENERATE(static_cast<TestType>(1e-2),
+                          static_cast<TestType>(1e-3));
+  bool fused = GENERATE(true, false);
+  CAPTURE(static_cast<int>(ebtype), tol, fused);
+  SECTION("pure local (L=1, M=0)") {
+    run_hybrid_compressor_test<1, TestType, TestDevice>({65536}, 1, 0, ebtype,
+                                                        tol, fused);
+  }
+  SECTION("hybrid (L=1, M=2)") {
+    run_hybrid_compressor_test<1, TestType, TestDevice>({65536}, 1, 2, ebtype,
+                                                        tol, fused);
+  }
+  SECTION("padded (L=1, M=0)") {
+    run_hybrid_compressor_test<1, TestType, TestDevice>({65000}, 1, 0, ebtype,
+                                                        tol, fused);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Hybrid refactor internals
@@ -579,11 +827,10 @@ static Config hybrid_config(int num_local_levels, int num_global_levels) {
 // *default* Config. The hybrid level counts have to survive the round trip
 // through the metadata header (MetadataBase::InitializeConfig restores them),
 // because a real decompressor has only the file.
-template <typename T, typename DevType>
+template <DIM D, typename T, typename DevType>
 void run_pipeline_test(std::vector<SIZE> shape, int num_local_levels,
                        int num_global_levels, enum error_bound_type ebtype,
                        double tol) {
-  constexpr DIM D = 3;
   // Start from a clean CompressorCache so this case measures one shape in
   // isolation rather than inheriting buffers sized by whatever ran before.
   // The shape-switch case below deliberately does not do this.
@@ -806,19 +1053,31 @@ TEMPLATE_TEST_CASE("Hybrid end-to-end pipeline round trip",
   double tol = GENERATE(1e-2, 1e-3);
   CAPTURE(static_cast<int>(ebtype), tol);
   SECTION("pure local (L=1, M=0)") {
-    run_pipeline_test<TestType, TestDevice>({64, 64, 64}, 1, 0, ebtype, tol);
+    run_pipeline_test<3, TestType, TestDevice>({64, 64, 64}, 1, 0, ebtype, tol);
   }
   SECTION("hybrid (L=1, M=2)") {
-    run_pipeline_test<TestType, TestDevice>({64, 64, 64}, 1, 2, ebtype, tol);
+    run_pipeline_test<3, TestType, TestDevice>({64, 64, 64}, 1, 2, ebtype, tol);
   }
   SECTION("two local levels (L=2, M=1)") {
-    run_pipeline_test<TestType, TestDevice>({64, 64, 64}, 2, 1, ebtype, tol);
+    run_pipeline_test<3, TestType, TestDevice>({64, 64, 64}, 2, 1, ebtype, tol);
   }
   SECTION("padded (L=1, M=0)") {
-    run_pipeline_test<TestType, TestDevice>({60, 60, 60}, 1, 0, ebtype, tol);
+    run_pipeline_test<3, TestType, TestDevice>({60, 60, 60}, 1, 0, ebtype, tol);
   }
   SECTION("non-cubic (L=1, M=2)") {
-    run_pipeline_test<TestType, TestDevice>({40, 64, 56}, 1, 2, ebtype, tol);
+    run_pipeline_test<3, TestType, TestDevice>({40, 64, 56}, 1, 2, ebtype, tol);
+  }
+  SECTION("2D, pure local (L=1, M=0)") {
+    run_pipeline_test<2, TestType, TestDevice>({256, 256}, 1, 0, ebtype, tol);
+  }
+  SECTION("2D, hybrid, padded (L=1, M=2)") {
+    run_pipeline_test<2, TestType, TestDevice>({250, 250}, 1, 2, ebtype, tol);
+  }
+  SECTION("1D, pure local (L=1, M=0)") {
+    run_pipeline_test<1, TestType, TestDevice>({65536}, 1, 0, ebtype, tol);
+  }
+  SECTION("1D, hybrid, padded (L=1, M=2)") {
+    run_pipeline_test<1, TestType, TestDevice>({65000}, 1, 2, ebtype, tol);
   }
 }
 

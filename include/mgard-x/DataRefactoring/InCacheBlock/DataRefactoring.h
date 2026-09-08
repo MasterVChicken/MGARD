@@ -18,6 +18,11 @@ namespace data_refactoring {
 
 namespace in_cache_block {
 
+// Block-local (in-cache) refactoring for D = 1, 2 and 3. Every dimension of a
+// block holds 8 fine nodes that coarsen to 5, so one block emits 5^D coarse
+// values and 8^D - 5^D coefficients. Higher D is a no-op: the hybrid
+// hierarchy has no block-local stage there.
+
 template <DIM D, typename T, typename DeviceType>
 void decompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
                SubArray<1, T, DeviceType> coeff, int queue_idx);
@@ -25,7 +30,7 @@ void decompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
 // Fused decompose+quantize: same block decomposition as decompose(), but the
 // coefficients are quantized in-kernel and written as Q symbols. Reads v with
 // bounds checks, so v does not need to be padded to a multiple of 8. Uses the
-// per-block quantizers (indexed by linearized thread-block id) when
+// per-block quantizers (indexed by the block's row-major index) when
 // use_block_quantizers is set (ROI mode), the scalar quantizer otherwise.
 template <DIM D, typename T, typename Q, typename DeviceType>
 void decompose_quantize(SubArray<D, T, DeviceType> v,
@@ -42,7 +47,7 @@ void recompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
 // Fused dequantize+recompose: same block recomposition as recompose(), but the
 // coefficients are read as Q symbols and dequantized in-kernel. Writes v with
 // bounds checks, so v does not need to be padded to a multiple of 8. Uses the
-// per-block quantizers (indexed by linearized thread-block id) when
+// per-block quantizers (indexed by the block's row-major index) when
 // use_block_quantizers is set (ROI mode), the scalar quantizer otherwise.
 template <DIM D, typename T, typename Q, typename DeviceType>
 void recompose_dequantize(SubArray<D, T, DeviceType> v,

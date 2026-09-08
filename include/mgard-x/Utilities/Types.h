@@ -24,6 +24,23 @@ enum class decomposition_type : uint8_t { MultiDim, SingleDim, Hybrid };
 // in the file header so a future change stays readable.
 constexpr uint64_t MGARDX_HYBRID_LOCAL_BLOCK_SIZE = 8;
 
+// Coarse edge length one block-local level produces: 8 fine nodes coarsen to
+// the 5 nodes {0, 2, 4, 6, 7} per dimension.
+constexpr uint64_t MGARDX_HYBRID_LOCAL_COARSE_SIZE = 5;
+
+// Number of coefficients one block-local block contributes per level:
+// 8^D - 5^D (387 in 3D, 39 in 2D, 3 in 1D). The coefficient array is a
+// row-major sequence of blocks, so `index / this` is the block index -- which
+// is how the ROI per-block quantizers are addressed.
+constexpr uint64_t hybrid_local_coeff_per_block(uint64_t num_dims) {
+  uint64_t fine = 1, coarse = 1;
+  for (uint64_t d = 0; d < num_dims; d++) {
+    fine *= MGARDX_HYBRID_LOCAL_BLOCK_SIZE;
+    coarse *= MGARDX_HYBRID_LOCAL_COARSE_SIZE;
+  }
+  return fine - coarse;
+}
+
 enum class decomposition_basis_type : uint8_t { Orthoganal, Hierarchical };
 
 enum class processor_type : uint8_t {

@@ -213,7 +213,8 @@ public:
   // local stage only (L > 0), relies on the 3D in-cache block kernel, and has
   // the same L-inf-only constraint as the local quantizer.
   bool CanFuseQuantize(T s) {
-    return this->L > 0 && D == 3 && s == std::numeric_limits<T>::infinity();
+    return this->L > 0 && D >= 1 && D <= 3 &&
+           s == std::numeric_limits<T>::infinity();
   }
 
   // Which of the conditions above ruled the fused path out, for logging. Kept
@@ -223,8 +224,8 @@ public:
     if (this->L == 0) {
       return "no block-local levels";
     }
-    if (D != 3) {
-      return "fused kernel is 3D only";
+    if (D > 3) {
+      return "fused kernel supports 1D, 2D and 3D only";
     }
     if (s != std::numeric_limits<T>::infinity()) {
       return "fused kernel requires s = inf";
@@ -248,7 +249,7 @@ public:
                          LosslessCompressorType &lossless, int queue_idx) {
     if (!CanFuseQuantize(s)) {
       throw ProcessingException(
-          "DecomposeQuantize requires L > 0, D == 3, and s == inf");
+          "DecomposeQuantize requires L > 0, D <= 3, and s == inf");
     }
     Timer timer;
     if (log::level & log::TIME) {
@@ -264,8 +265,9 @@ public:
     if (config.enable_roi) {
       // Per-level per-block reciprocal quantizers from the device-resident
       // tolerance map, same math and block ordering as the ROI Quantize path
-      // (the fused kernel indexes them by thread-block id, which matches the
-      // idx / 387 mapping of the unfused ROI kernel).
+      // (the fused kernel indexes them by block id, which matches the
+      // idx / hybrid_local_coeff_per_block(D) mapping of the unfused ROI
+      // kernel).
       double C = (1 + std::pow(3, D));
       double norm_factor =
           (ebtype == error_bound_type::REL) ? (double)norm : 1.0;
@@ -339,7 +341,7 @@ public:
                            LosslessCompressorType &lossless, int queue_idx) {
     if (!CanFuseQuantize(s)) {
       throw ProcessingException(
-          "DequantizeRecompose requires L > 0, D == 3, and s == inf");
+          "DequantizeRecompose requires L > 0, D <= 3, and s == inf");
     }
     Timer timer;
     if (log::level & log::TIME) {
@@ -370,8 +372,9 @@ public:
     if (config.enable_roi) {
       // Per-level per-block dequantizers from the device-resident tolerance
       // map, same math and block ordering as the ROI Dequantize path (the
-      // fused kernel indexes them by thread-block id, which matches the
-      // idx / 387 mapping of the unfused ROI kernel).
+      // fused kernel indexes them by block id, which matches the
+      // idx / hybrid_local_coeff_per_block(D) mapping of the unfused ROI
+      // kernel).
       double C = (1 + std::pow(3, D));
       double norm_factor =
           (ebtype == error_bound_type::REL) ? (double)norm : 1.0;
