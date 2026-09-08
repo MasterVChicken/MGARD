@@ -83,6 +83,16 @@ public:
     device_roi_tolerance_map.load(roi_tolerance_map.data(), 0, queue_idx);
   }
 
+  // Tolerance for the coarsest layer when it has to be quantized on its own
+  // (M == 0, so there is no global stage to cover it). In ROI mode the
+  // coarsest layer has no tolerance of its own -- the map only describes the
+  // coefficient layers' block grids -- so use the tightest tolerance among
+  // the coarsest blocks, which is exactly what the global stage is given when
+  // M > 0 (see ErrorBudgetAllocation).
+  T CoarsestTolerance(T tol) {
+    return config.enable_roi ? (T)GetMinToleranceForGlobal() : tol;
+  }
+
   // Called only when this->M > 0
   T ErrorBudgetAllocation(T tol) {
     T global_tol = tol;
@@ -200,6 +210,24 @@ public:
       }
     }
 
+    // Coarsest layer, at the front of the decomposed array. When M > 0 the
+    // global stage above quantized it; when M == 0 the non-ROI local
+    // quantizer covers it as its layer 0, but the ROI local quantizer's
+    // per-block quantizers only span the L coefficient layers. Without this
+    // the coarsest layer -- (5/8)^D of the array -- would never be written,
+    // and only a same-process decompress would appear to work, by reading the
+    // values left in the cached decomposed buffer.
+    if (this->L > 0 && this->M == 0 && config.enable_roi) {
+      SIZE coarsest_size = local_quantizer.layer_len[0];
+      SubArray<1, T, DeviceType> coarsest_v({coarsest_size},
+                                            original_data.data());
+      SubArray<1, Q, DeviceType> coarsest_q({coarsest_size},
+                                            quantized_data.data());
+      local_quantizer.QuantizeCoarsest(coarsest_v, coarsest_q, ebtype,
+                                       CoarsestTolerance(tol), s, norm,
+                                       queue_idx);
+    }
+
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer.end();
@@ -238,8 +266,8 @@ public:
   // global memory as T), writing symbols directly to their final location in
   // quantized_data. The coarsest region is then handled as in the unfused
   // path: global decompose + global quantize when M > 0, otherwise a single
-  // coarsest-layer quantization (skipped in ROI mode, which — like the
-  // unfused path — only covers the coarsest layer via the global stage).
+  // coarsest-layer quantization -- in ROI mode too, since the per-block
+  // quantizers only span the coefficient layers.
   template <typename RefactorType, typename LosslessCompressorType>
   void DecomposeQuantize(RefactorType &refactor,
                          SubArray<D, T, DeviceType> data,
@@ -305,14 +333,17 @@ public:
       refactor.DecomposeGlobal(decomposed_data, queue_idx);
       QuantizeGlobalPart(decomposed_data, ebtype, tol, s, norm, quantized_data,
                          lossless, queue_idx);
-    } else if (!config.enable_roi) {
+    } else {
+      // Also in ROI mode: the per-block quantizers only span the coefficient
+      // layers, so the coarsest layer needs one of its own here.
       SIZE coarsest_size = local_quantizer.layer_len[0];
       SubArray<1, T, DeviceType> coarsest_v({coarsest_size},
                                             decomposed_data.data());
       SubArray<1, Q, DeviceType> coarsest_q({coarsest_size},
                                             quantized_data.data());
-      local_quantizer.QuantizeCoarsest(coarsest_v, coarsest_q, ebtype, tol, s,
-                                       norm, queue_idx);
+      local_quantizer.QuantizeCoarsest(coarsest_v, coarsest_q, ebtype,
+                                       CoarsestTolerance(tol), s, norm,
+                                       queue_idx);
     }
 
     if (log::level & log::TIME) {
@@ -327,8 +358,7 @@ public:
   // Fused dequantize+recomposition driver (inverse of DecomposeQuantize):
   // the coarsest region is first reconstructed as in the unfused path
   // (global dequantize + global recompose when M > 0, otherwise a single
-  // coarsest-layer dequantization; skipped in ROI mode, which — like the
-  // unfused path — only covers the coarsest layer via the global stage),
+  // coarsest-layer dequantization, in ROI mode too),
   // then the local levels are dequantized and recomposed in one kernel per
   // level (coefficients never round-trip through global memory as T),
   // writing the final level directly into the unpadded output.
@@ -359,14 +389,16 @@ public:
       DequantizeGlobalPart(decomposed_data, ebtype, tol, s, norm,
                            quantized_data, lossless, queue_idx);
       refactor.RecomposeGlobal(decomposed_data, queue_idx);
-    } else if (!config.enable_roi) {
+    } else {
+      // Also in ROI mode -- see the matching branch in DecomposeQuantize.
       SIZE coarsest_size = local_quantizer.layer_len[0];
       SubArray<1, T, DeviceType> coarsest_v({coarsest_size},
                                             decomposed_data.data());
       SubArray<1, Q, DeviceType> coarsest_q({coarsest_size},
                                             quantized_data.data());
-      local_quantizer.DequantizeCoarsest(coarsest_v, coarsest_q, ebtype, tol, s,
-                                         norm, queue_idx);
+      local_quantizer.DequantizeCoarsest(coarsest_v, coarsest_q, ebtype,
+                                         CoarsestTolerance(tol), s, norm,
+                                         queue_idx);
     }
 
     if (config.enable_roi) {
@@ -474,6 +506,18 @@ public:
         local_quantizer.Dequantize(local_data_v, ebtype, tol, s, norm,
                                    local_data_q, lossless, queue_idx);
       }
+    }
+
+    // Coarsest layer -- inverse of the corresponding block in Quantize().
+    if (this->L > 0 && this->M == 0 && config.enable_roi) {
+      SIZE coarsest_size = local_quantizer.layer_len[0];
+      SubArray<1, T, DeviceType> coarsest_v({coarsest_size},
+                                            original_data.data());
+      SubArray<1, Q, DeviceType> coarsest_q({coarsest_size},
+                                            quantized_data.data());
+      local_quantizer.DequantizeCoarsest(coarsest_v, coarsest_q, ebtype,
+                                         CoarsestTolerance(tol), s, norm,
+                                         queue_idx);
     }
 
     if (log::level & log::TIME) {

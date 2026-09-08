@@ -1081,6 +1081,149 @@ TEMPLATE_TEST_CASE("Hybrid end-to-end pipeline round trip",
   }
 }
 
+// ROI mode, driven so that compress and decompress communicate only through
+// the serialized bytes.
+//
+// The hybrid compressor is cached across calls, so a compress immediately
+// followed by a decompress in the same process can read the coarsest layer
+// straight out of the still-live decomposed buffer. That is exactly how a
+// missing coarsest-layer quantization stayed invisible: the in-process check
+// passed while a separate decompressor got zeros. Releasing the cache between
+// the two calls is what makes this test see what a fresh process would.
+//
+// The assertion is the actual ROI contract: every level-0 block must meet its
+// own tolerance. That also pins the per-block quantizer indexing
+// (idx / hybrid_local_coeff_per_block(D)) to the right blocks in space -- a
+// spatial mix-up would let a loose block bleed into a tight one.
+template <DIM D, typename T, typename DevType>
+void run_roi_pipeline_test(std::vector<SIZE> shape, int num_local_levels,
+                           int num_global_levels, bool fused) {
+  SIZE n = 1;
+  for (auto sz : shape)
+    n *= sz;
+
+  std::vector<T> original(n);
+  fill_smooth_data<D, T>(original, shape);
+
+  // One tolerance per level-0 block; tight over the first half of the slowest
+  // dimension, loose elsewhere, so the two regions are easy to tell apart.
+  const double tight = 1e-5, loose = 1e-2;
+  std::vector<SIZE> block_dims(D);
+  SIZE num_blocks = 1;
+  for (DIM d = 0; d < D; d++) {
+    block_dims[d] = (shape[d] + 7) / 8;
+    num_blocks *= block_dims[d];
+  }
+  std::vector<double> tol_map(num_blocks);
+  for (SIZE b = 0; b < num_blocks; b++) {
+    SIZE slowest = b;
+    for (DIM d = 1; d < D; d++)
+      slowest /= block_dims[d];
+    tol_map[b] = (slowest < block_dims[0] / 2) ? tight : loose;
+  }
+
+  Config config;
+  config.decomposition = decomposition_type::Hybrid;
+  config.num_local_refactoring_level = num_local_levels;
+  config.num_global_refactoring_level = num_global_levels;
+  config.enable_roi = true;
+  config.roi_tolerance_map = tol_map;
+  config.fuse_decompose_quantize = fused;
+  config.fuse_dequantize_recompose = fused;
+
+  const T s = std::numeric_limits<T>::infinity();
+
+  // Two compressor objects, both alive at the same time. That is the
+  // isolation this test needs: their buffers are distinct live allocations,
+  // so the decompressor cannot read a value the compressor left behind.
+  //
+  // Releasing a cached compressor and building a new one is NOT enough. The
+  // allocator can hand the replacement the very same buffers, still holding
+  // the previous run's coarsest values, so a stream missing its coarsest
+  // layer still reconstructs correctly. That is how this bug hid: it showed
+  // up only in a separate decompressor process, and an in-process check
+  // caught it or not depending on which allocation it happened to get --
+  // it caught it for double and missed it for float.
+  Hierarchy<D, T, DevType> hierarchy(shape, config);
+  HybridHierarchyCompressor<D, T, DevType> compressor;
+  compressor.Adapt(hierarchy, config, 0);
+  HybridHierarchyCompressor<D, T, DevType> decompressor;
+  decompressor.Adapt(hierarchy, config, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  Array<D, T, DevType> original_array(shape);
+  original_array.load(original.data());
+
+  T norm = 0;
+  Array<1, Byte, DevType> compressed_array;
+  compressor.Compress(original_array, error_bound_type::ABS, (T)loose, s, norm,
+                      compressed_array, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  Array<D, T, DevType> decompressed_array;
+  decompressor.Decompress(compressed_array, error_bound_type::ABS, (T)loose, s,
+                          norm, decompressed_array, 0);
+  const T *result = decompressed_array.hostCopy(false, 0);
+  DeviceRuntime<DevType>::SyncQueue(0);
+
+  // Every block within its own tolerance, and the tight region genuinely
+  // tighter than the loose one (which a zeroed coarsest layer would fail).
+  std::vector<double> block_err(num_blocks, 0.0);
+  for (SIZE idx = 0; idx < n; idx++) {
+    SIZE r = idx, block = 0;
+    for (int d = (int)D - 1; d >= 0; d--) {
+      SIZE coord = r % shape[d];
+      r /= shape[d];
+      SIZE stride = 1;
+      for (DIM dd = (DIM)d + 1; dd < D; dd++)
+        stride *= block_dims[dd];
+      block += (coord / 8) * stride;
+    }
+    double e = std::abs((double)original[idx] - (double)result[idx]);
+    block_err[block] = std::max(block_err[block], e);
+  }
+
+  double worst_tight = 0, worst_loose = 0, worst_ratio = 0;
+  for (SIZE b = 0; b < num_blocks; b++) {
+    worst_ratio = std::max(worst_ratio, block_err[b] / tol_map[b]);
+    if (tol_map[b] == tight)
+      worst_tight = std::max(worst_tight, block_err[b]);
+    else
+      worst_loose = std::max(worst_loose, block_err[b]);
+  }
+  CAPTURE(worst_tight, worst_loose, worst_ratio, tight, loose);
+  REQUIRE(worst_ratio <= 1.0);
+  REQUIRE(worst_tight <= tight);
+}
+
+TEMPLATE_TEST_CASE("Hybrid ROI round trip through the bytes alone",
+                   "[mgard-x][hybrid][pipeline][@DEVICE_TYPE@]", float,
+                   double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  bool fused = GENERATE(true, false);
+  CAPTURE(fused);
+  // M == 0 is the case with no global stage to cover the coarsest layer.
+  SECTION("1D, no global stage") {
+    run_roi_pipeline_test<1, TestType, TestDevice>({4096}, 1, 0, fused);
+  }
+  SECTION("2D, no global stage") {
+    run_roi_pipeline_test<2, TestType, TestDevice>({128, 96}, 1, 0, fused);
+  }
+  SECTION("3D, no global stage") {
+    run_roi_pipeline_test<3, TestType, TestDevice>({32, 32, 32}, 1, 0, fused);
+  }
+  SECTION("2D, no global stage, two local levels") {
+    run_roi_pipeline_test<2, TestType, TestDevice>({128, 96}, 2, 0, fused);
+  }
+  // M > 0 already worked; keep it so the fix cannot regress it.
+  SECTION("2D, with a global stage") {
+    run_roi_pipeline_test<2, TestType, TestDevice>({128, 96}, 1, 2, fused);
+  }
+  SECTION("3D, with a global stage") {
+    run_roi_pipeline_test<3, TestType, TestDevice>({32, 32, 32}, 1, 2, fused);
+  }
+}
+
 TEMPLATE_TEST_CASE("Hybrid decompression reads its levels from the file",
                    "[mgard-x][hybrid][pipeline][@DEVICE_TYPE@]", float,
                    double) {
