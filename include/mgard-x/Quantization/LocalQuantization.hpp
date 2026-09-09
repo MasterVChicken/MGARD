@@ -2,7 +2,10 @@
 #define MGARD_X_LOCAL_QUANTIZATION_TEMPLATE
 
 #include "../RuntimeX/RuntimeX.h"
+
 #include "QuantizationInterface.hpp"
+#include <algorithm>
+#include <cmath>
 
 namespace mgard_x {
 
@@ -320,11 +323,15 @@ public:
     fine_num_elems.clear();
     coarse_num_elems.clear();
     local_coeff_size.clear();
+    fine_shapes.clear();
+    coarse_shapes.clear();
 
     for (int l = 0; l < this->L; ++l) {
       SIZE last_level_size = 1, curr_level_size = 1;
+      std::vector<SIZE> fine_shape(D);
       for (DIM d = 0; d < D; ++d) {
         coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 8;
+        fine_shape[d] = coarse_shape[d];
         last_level_size *= coarse_shape[d];
         coarse_shape[d] = ((coarse_shape[d] - 1) / 8 + 1) * 5;
         curr_level_size *= coarse_shape[d];
@@ -332,6 +339,8 @@ public:
       fine_num_elems.push_back(last_level_size);
       coarse_num_elems.push_back(curr_level_size);
       local_coeff_size.push_back(last_level_size - curr_level_size);
+      fine_shapes.push_back(fine_shape);
+      coarse_shapes.push_back(coarse_shape);
     }
   }
 
@@ -380,8 +389,53 @@ public:
         }
       }
     } else {
-      throw ProcessingException("Only L-inf supported");
+      // s-norm (L2 family), non-ROI only.
+      //
+      // Same per-level law as LinearQuantizer's s != inf branch,
+      //   step_l = abs_tol / (2^(s*l) * sqrt(dof)),
+      // with l counted from the coarsest layer, matching layer_len/layer_off.
+      //
+      // LinearQuantizer additionally scales each value by its node volume,
+      // reading a per-node level_volumes array. We cannot: the block-local
+      // quantize kernels take one scalar per layer and have no volume input.
+      // We do not need to. Hierarchy::calc_volume fills that array with
+      // total_dist / (dof - 1) -- the *average* spacing, identical for every
+      // node of a level -- so the per-node volume is a per-level constant and
+      // folds into the scalar exactly.
+      //
+      // Sign convention follows the kernels: quantize multiplies by the
+      // reciprocal step and by the volume, dequantize multiplies by the step
+      // and by the reciprocal volume, so the pair round-trips.
+      for (int l = 0; l <= l_target; l++) {
+        double step =
+            abs_tol / (std::exp2((double)s * l) * std::sqrt((double)dof));
+        double volume = LayerVolume(l);
+        quantizers[l] = reciprocal ? (volume / step) : (step / volume);
+      }
     }
+  }
+
+  // sqrt of the cell volume of the grid that layer `l` lives on, matching
+  // LevelwiseLinearQuantizerFunctor's `volume = sqrt(prod_d spacing_d)`.
+  //
+  // Layer 0 is the coarsest data (grid coarse_shapes[L-1]); layer l >= 1 holds
+  // the coefficients dropped by block-local level L - l, which live on that
+  // level's fine grid. Coordinates are treated as normalized to a unit extent
+  // per dimension, which is what the block-local transform already assumes --
+  // its mass/tridiagonal weights are built from a fixed uniform spacing.
+  double LayerVolume(int l) {
+    if (this->L == 0 || fine_shapes.empty()) {
+      return 1.0;
+    }
+    const std::vector<SIZE> &shape =
+        (l == 0) ? coarse_shapes[this->L - 1]
+                 : fine_shapes[this->L - std::min<int>(l, this->L)];
+    double volume = 1.0;
+    for (DIM d = 0; d < D; d++) {
+      SIZE n = shape[d];
+      volume *= (n > 1) ? (1.0 / (double)(n - 1)) : 1.0;
+    }
+    return std::sqrt(volume);
   }
 
   // Reciprocal quantizers indexed by decompose level (level 0 = finest
@@ -716,6 +770,10 @@ public:
   std::vector<SIZE> coarse_num_elems;
   std::vector<SIZE> local_coeff_size;
   std::vector<SIZE> coarse_shape;
+  // Grid each block-local level lives on, needed by the s != inf quantizer to
+  // weight a layer by its node spacing.
+  std::vector<std::vector<SIZE>> fine_shapes;
+  std::vector<std::vector<SIZE>> coarse_shapes;
 };
 
 } // namespace mgard_x

@@ -141,7 +141,8 @@ template <DIM D, typename T, typename DevType>
 void run_hybrid_compressor_test(std::vector<SIZE> shape, int num_local_levels,
                                 int num_global_levels,
                                 enum error_bound_type ebtype, T tol,
-                                bool fused = true) {
+                                bool fused = true,
+                                T s = std::numeric_limits<T>::infinity()) {
   SIZE n = 1;
   for (auto sz : shape)
     n *= sz;
@@ -158,7 +159,6 @@ void run_hybrid_compressor_test(std::vector<SIZE> shape, int num_local_levels,
   config.fuse_decompose_quantize = fused;
   config.fuse_dequantize_recompose = fused;
 
-  const T s = std::numeric_limits<T>::infinity();
 
   // Separate compressor and decompressor objects so the round trip only
   // communicates through the serialized bytes (and the norm, as it would be
@@ -185,9 +185,17 @@ void run_hybrid_compressor_test(std::vector<SIZE> shape, int num_local_levels,
   T *result = decompressed_array.hostCopy(false, 0);
   DeviceRuntime<DevType>::SyncQueue(0);
 
-  double actual_error =
-      L_inf_error(n, original.data(), result, ebtype);
-  CAPTURE(actual_error);
+  // Match the metric to the requested norm, as print_statistics and
+  // test_Compressor do: L_inf when s == inf, L_2 otherwise. Both metrics
+  // already return a relative error in REL mode, so tol compares directly.
+  double actual_error;
+  if (s == std::numeric_limits<T>::infinity()) {
+    actual_error = L_inf_error(n, original.data(), result, ebtype);
+  } else {
+    actual_error = L_2_error(shape, original.data(), result, ebtype,
+                             config.normalize_coordinates);
+  }
+  CAPTURE(actual_error, s);
   REQUIRE(actual_error < static_cast<double>(tol));
 }
 
@@ -1194,6 +1202,54 @@ void run_roi_pipeline_test(std::vector<SIZE> shape, int num_local_levels,
   CAPTURE(worst_tight, worst_loose, worst_ratio, tight, loose);
   REQUIRE(worst_ratio <= 1.0);
   REQUIRE(worst_tight <= tight);
+}
+
+// s != inf (L2 family) through the hybrid compressor, non-ROI only.
+//
+// The block-local quantizer weights each layer by 2^(-s*l) and by the layer's
+// node volume, both folded into the per-layer scalar. The assertion is the
+// contract itself: the achieved L_2 error must stay under the requested
+// tolerance, checked with the same metric test_Compressor uses for s != inf.
+// Both level splits matter -- M == 0 leaves every layer to the block-local
+// quantizer, while M > 0 hands the coarsest region to the global stage.
+TEMPLATE_TEST_CASE("Hybrid Hierarchy Compressor with an L2 error bound",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  enum error_bound_type ebtype =
+      GENERATE(error_bound_type::REL, error_bound_type::ABS);
+  TestType tol = GENERATE(static_cast<TestType>(1e-2),
+                          static_cast<TestType>(1e-3));
+  bool fused = GENERATE(true, false);
+  TestType s = static_cast<TestType>(0);
+  CAPTURE(static_cast<int>(ebtype), tol, fused, s);
+  SECTION("3D, no global stage") {
+    run_hybrid_compressor_test<3, TestType, TestDevice>({64, 64, 64}, 1, 0,
+                                                        ebtype, tol, fused, s);
+  }
+  SECTION("3D, with a global stage") {
+    run_hybrid_compressor_test<3, TestType, TestDevice>({64, 64, 64}, 1, 2,
+                                                        ebtype, tol, fused, s);
+  }
+  SECTION("2D, no global stage") {
+    run_hybrid_compressor_test<2, TestType, TestDevice>({256, 256}, 1, 0,
+                                                        ebtype, tol, fused, s);
+  }
+  SECTION("2D, with a global stage") {
+    run_hybrid_compressor_test<2, TestType, TestDevice>({256, 256}, 1, 2,
+                                                        ebtype, tol, fused, s);
+  }
+  SECTION("1D, no global stage") {
+    run_hybrid_compressor_test<1, TestType, TestDevice>({65536}, 1, 0, ebtype,
+                                                        tol, fused, s);
+  }
+  SECTION("two local levels") {
+    run_hybrid_compressor_test<3, TestType, TestDevice>({64, 64, 64}, 2, 1,
+                                                        ebtype, tol, fused, s);
+  }
+  SECTION("padded shape") {
+    run_hybrid_compressor_test<3, TestType, TestDevice>({60, 60, 60}, 1, 0,
+                                                        ebtype, tol, fused, s);
+  }
 }
 
 TEMPLATE_TEST_CASE("Hybrid ROI round trip through the bytes alone",

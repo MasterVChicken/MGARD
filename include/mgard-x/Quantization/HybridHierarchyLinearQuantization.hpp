@@ -241,8 +241,14 @@ public:
   // local stage only (L > 0), relies on the 3D in-cache block kernel, and has
   // the same L-inf-only constraint as the local quantizer.
   bool CanFuseQuantize(T s) {
-    return this->L > 0 && D >= 1 && D <= 3 &&
-           s == std::numeric_limits<T>::infinity();
+    // s != inf is fine here: its weighting is a per-level scalar (the node
+    // volume is constant within a level), which is exactly what the fused
+    // kernels already take. ROI is not -- its per-block quantizers have no
+    // s-norm formulation, so it stays L-inf only.
+    if (config.enable_roi && s != std::numeric_limits<T>::infinity()) {
+      return false;
+    }
+    return this->L > 0 && D >= 1 && D <= 3;
   }
 
   // Which of the conditions above ruled the fused path out, for logging. Kept
@@ -255,8 +261,8 @@ public:
     if (D > 3) {
       return "fused kernel supports 1D, 2D and 3D only";
     }
-    if (s != std::numeric_limits<T>::infinity()) {
-      return "fused kernel requires s = inf";
+    if (config.enable_roi && s != std::numeric_limits<T>::infinity()) {
+      return "ROI mode is L-inf only";
     }
     return "";
   }
@@ -276,8 +282,8 @@ public:
                          enum error_bound_type ebtype, T tol, T s, T norm,
                          LosslessCompressorType &lossless, int queue_idx) {
     if (!CanFuseQuantize(s)) {
-      throw ProcessingException(
-          "DecomposeQuantize requires L > 0, D <= 3, and s == inf");
+      throw ProcessingException("DecomposeQuantize requires L > 0, D <= 3, and "
+                                "(non-ROI or s == inf)");
     }
     Timer timer;
     if (log::level & log::TIME) {
@@ -370,8 +376,8 @@ public:
                            enum error_bound_type ebtype, T tol, T s, T norm,
                            LosslessCompressorType &lossless, int queue_idx) {
     if (!CanFuseQuantize(s)) {
-      throw ProcessingException(
-          "DequantizeRecompose requires L > 0, D <= 3, and s == inf");
+      throw ProcessingException("DequantizeRecompose requires L > 0, D <= 3, "
+                                "and (non-ROI or s == inf)");
     }
     Timer timer;
     if (log::level & log::TIME) {
