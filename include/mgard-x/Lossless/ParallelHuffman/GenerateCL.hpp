@@ -10,6 +10,8 @@
 
 #include "../../RuntimeX/RuntimeX.h"
 
+#include <algorithm>
+
 namespace mgard_x {
 
 #define MAX(X, Y) (((X) > (Y)) ? (X) : (Y))
@@ -825,10 +827,16 @@ public:
         diagonal_path_intersections(diagonal_path_intersections),
         status(status) {}
 
-  MGARDX_CONT
-  Task<GenerateCLFunctor<T, DeviceType>> GenTask(int queue_idx) {
-    using FunctorType = GenerateCLFunctor<T, DeviceType>;
-    SIZE warp_size;
+  // Block width of GenerateCL's merge-path search, and the number of uint32
+  // entries diagonal_path_intersections must hold for it.
+  //
+  // These have to agree with GenTask below and with whoever allocates the
+  // array (HuffmanWorkspace), so they live here as the single definition.
+  // The kernel writes indices up to 2 * gridDim.x + 1 (see Operation7/8), and
+  // GenTask launches ceil(dict_size / block width) blocks -- sizing the array
+  // from an occupancy estimate instead overflows it whenever the dictionary
+  // needs more blocks than the device is estimated to run at once.
+  MGARDX_CONT static SIZE BlockWidth() {
     if constexpr (std::is_same<DeviceType, HIP>::value) {
       // Empirically tuned on MI300: the merge-path search here uses shared
       // memory + explicit inter-Operation sync barriers rather than raw
@@ -842,10 +850,26 @@ public:
       // matching 512 within noise, so 512 is used as the smallest width that
       // captures the full gain. Revisit with a fresh sweep if this kernel's
       // algorithm changes.
-      warp_size = 512;
+      return 512;
     } else {
-      warp_size = DeviceRuntime<DeviceType>::GetWarpSize();
+      return DeviceRuntime<DeviceType>::GetWarpSize();
     }
+  }
+
+  MGARDX_CONT static SIZE DiagonalPathIntersectionsSize(SIZE dict_size) {
+    SIZE gridx = (dict_size - 1) / BlockWidth() + 1;
+    // Keep the old occupancy-derived size as a floor so no device shrinks.
+    SIZE occupancy_blocks =
+        (DeviceRuntime<DeviceType>::GetMaxNumThreadsPerTB() /
+         DeviceRuntime<DeviceType>::GetWarpSize()) *
+        DeviceRuntime<DeviceType>::GetNumSMs();
+    return 2 * (std::max(gridx, occupancy_blocks) + 1);
+  }
+
+  MGARDX_CONT
+  Task<GenerateCLFunctor<T, DeviceType>> GenTask(int queue_idx) {
+    using FunctorType = GenerateCLFunctor<T, DeviceType>;
+    SIZE warp_size = BlockWidth();
     FunctorType Functor(histogram, CL, dict_size, lNodesFreq, lNodesLeader,
                         iNodesFreq, iNodesLeader, tempFreq, tempIsLeaf,
                         tempIndex, copyFreq, copyIsLeaf, copyIndex,

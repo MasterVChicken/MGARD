@@ -10,6 +10,7 @@
 
 #include "../../Hierarchy/Hierarchy.h"
 #include "../../RuntimeX/RuntimeXPublic.h"
+#include "GenerateCL.hpp"
 #include "ParallelDeflate.hpp"
 
 namespace mgard_x {
@@ -112,10 +113,10 @@ public:
     size += sizeof(int) * dict_size * 6;
     size += sizeof(H) * dict_size;
     size += sizeof(int) * 16;
-    SIZE mblocks = (DeviceRuntime<DeviceType>::GetMaxNumThreadsPerTB() /
-                    DeviceRuntime<DeviceType>::GetWarpSize()) *
-                   DeviceRuntime<DeviceType>::GetNumSMs();
-    size += 2 * (mblocks + 1) * sizeof(uint32_t);
+    size +=
+        GenerateCLKernel<unsigned int,
+                         DeviceType>::DiagonalPathIntersectionsSize(dict_size) *
+        sizeof(uint32_t);
     size += 7 * sizeof(Byte); // signature_verify_array
     return size;
   }
@@ -182,11 +183,9 @@ public:
     _d_codebook_array_org = Array<1, H, DeviceType>({dict_size});
     status_array = Array<1, int, DeviceType, false, false>(
         {(SIZE)16}); // non-managed: atomicMin on managed mem unreliable on ROCm
-    SIZE mblocks = (DeviceRuntime<DeviceType>::GetMaxNumThreadsPerTB() /
-                    DeviceRuntime<DeviceType>::GetWarpSize()) *
-                   DeviceRuntime<DeviceType>::GetNumSMs();
-    diagonal_path_intersections_array =
-        Array<1, uint32_t, DeviceType>({2 * (mblocks + 1)});
+    diagonal_path_intersections_array = Array<1, uint32_t, DeviceType>(
+        {GenerateCLKernel<unsigned int, DeviceType>::
+             DiagonalPathIntersectionsSize(dict_size)});
 
     signature_verify_array = Array<1, Byte, DeviceType>({(SIZE)7});
     signature_verify_array.hostAllocate(false);
@@ -260,10 +259,10 @@ public:
     copyIndex_array.resize({dict_size}, queue_idx);
     _d_codebook_array_org.resize({dict_size}, queue_idx);
     status_array.resize({(SIZE)16}, queue_idx);
-    SIZE mblocks = (DeviceRuntime<DeviceType>::GetMaxNumThreadsPerTB() /
-                    DeviceRuntime<DeviceType>::GetWarpSize()) *
-                   DeviceRuntime<DeviceType>::GetNumSMs();
-    diagonal_path_intersections_array.resize({2 * (mblocks + 1)}, queue_idx);
+    diagonal_path_intersections_array.resize(
+        {GenerateCLKernel<unsigned int, DeviceType>::
+             DiagonalPathIntersectionsSize(dict_size)},
+        queue_idx);
 
     signature_verify_array.resize({(SIZE)7}, queue_idx);
     signature_verify_array.hostAllocate(false, queue_idx);
