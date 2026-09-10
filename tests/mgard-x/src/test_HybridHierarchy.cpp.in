@@ -1222,34 +1222,105 @@ TEMPLATE_TEST_CASE("Hybrid Hierarchy Compressor with an L2 error bound",
   bool fused = GENERATE(true, false);
   TestType s = static_cast<TestType>(0);
   CAPTURE(static_cast<int>(ebtype), tol, fused, s);
-  SECTION("3D, no global stage") {
+  // One block-local level, no global stage: the only configuration where the
+  // blocks are independent, so the budget divides evenly in quadrature and the
+  // s-norm bound holds. Anything else is refused / falls back (below).
+  SECTION("3D") {
     run_hybrid_compressor_test<3, TestType, TestDevice>({64, 64, 64}, 1, 0,
                                                         ebtype, tol, fused, s);
   }
-  SECTION("3D, with a global stage") {
-    run_hybrid_compressor_test<3, TestType, TestDevice>({64, 64, 64}, 1, 2,
-                                                        ebtype, tol, fused, s);
-  }
-  SECTION("2D, no global stage") {
+  SECTION("2D") {
     run_hybrid_compressor_test<2, TestType, TestDevice>({256, 256}, 1, 0,
                                                         ebtype, tol, fused, s);
   }
-  SECTION("2D, with a global stage") {
-    run_hybrid_compressor_test<2, TestType, TestDevice>({256, 256}, 1, 2,
-                                                        ebtype, tol, fused, s);
-  }
-  SECTION("1D, no global stage") {
+  SECTION("1D") {
     run_hybrid_compressor_test<1, TestType, TestDevice>({65536}, 1, 0, ebtype,
                                                         tol, fused, s);
-  }
-  SECTION("two local levels") {
-    run_hybrid_compressor_test<3, TestType, TestDevice>({64, 64, 64}, 2, 1,
-                                                        ebtype, tol, fused, s);
   }
   SECTION("padded shape") {
     run_hybrid_compressor_test<3, TestType, TestDevice>({60, 60, 60}, 1, 0,
                                                         ebtype, tol, fused, s);
   }
+  SECTION("non-cubic") {
+    run_hybrid_compressor_test<3, TestType, TestDevice>({40, 64, 56}, 1, 0,
+                                                        ebtype, tol, fused, s);
+  }
+}
+
+// The low-level quantizer cannot re-configure itself -- L and M fixed the
+// buffer layout at Adapt() -- so it must refuse an s-norm bound it cannot
+// honour rather than silently returning an unbounded result.
+TEMPLATE_TEST_CASE("Hybrid refuses an s-norm bound it cannot bound",
+                   "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  const TestType s = static_cast<TestType>(0);
+  auto attempt = [&](int L, int M) {
+    std::vector<SIZE> shape{64, 64, 64};
+    Config config;
+    config.decomposition = decomposition_type::Hybrid;
+    config.num_local_refactoring_level = L;
+    config.num_global_refactoring_level = M;
+    Hierarchy<3, TestType, TestDevice> hierarchy(shape, config);
+    HybridHierarchyCompressor<3, TestType, TestDevice> compressor;
+    compressor.Adapt(hierarchy, config, 0);
+    DeviceRuntime<TestDevice>::SyncQueue(0);
+    std::vector<TestType> original(64 * 64 * 64);
+    fill_smooth_data<3, TestType>(original, shape);
+    Array<3, TestType, TestDevice> data(shape);
+    data.load(original.data());
+    TestType norm = 0;
+    Array<1, Byte, TestDevice> compressed;
+    compressor.Compress(data, error_bound_type::ABS, (TestType)1e-2, s, norm,
+                        compressed, 0);
+  };
+  SECTION("two local levels") { REQUIRE_THROWS(attempt(2, 0)); }
+  SECTION("a global stage") { REQUIRE_THROWS(attempt(1, 2)); }
+  SECTION("both") { REQUIRE_THROWS(attempt(2, 1)); }
+  // The supported configuration still works.
+  SECTION("one local level, no global stage") {
+    REQUIRE_NOTHROW(attempt(1, 0));
+  }
+}
+
+// The public compress path does not refuse: it falls back to the one
+// configuration that can be bounded, warns, and records the adjusted level
+// counts in the header so the decompressor agrees.
+TEMPLATE_TEST_CASE("Hybrid falls back to one local level for an s-norm bound",
+                   "[mgard-x][hybrid][pipeline][@DEVICE_TYPE@]", float,
+                   double) {
+  DeviceRuntime<TestDevice>::Initialize();
+  release_cache<TestDevice>();
+  std::vector<SIZE> shape{64, 64, 64};
+  SIZE n = 64 * 64 * 64;
+  std::vector<TestType> original(n);
+  fill_smooth_data<3, TestType>(original, shape);
+  const double s = 0.0;
+  const double tol = 1e-2;
+
+  // Ask for a configuration that cannot be bounded; it must still succeed.
+  MallocedBuffer compressed;
+  REQUIRE(compress<TestDevice>(3, data_type_of<TestType>(), shape, tol, s,
+                               error_bound_type::ABS, original.data(),
+                               compressed.ptr, compressed.size,
+                               hybrid_config(2, 2),
+                               false) == compress_status_type::Success);
+
+  MallocedBuffer decompressed;
+  data_type recovered_dtype;
+  std::vector<SIZE> recovered_shape;
+  REQUIRE(decompress<TestDevice>(compressed.ptr, compressed.size,
+                                 decompressed.ptr, recovered_dtype,
+                                 recovered_shape, false) ==
+          compress_status_type::Success);
+  REQUIRE(recovered_shape == shape);
+
+  // And the bound the fallback exists to provide must actually hold.
+  const TestType *result = (const TestType *)decompressed.ptr;
+  Config probe;
+  double error = L_2_error(shape, original.data(), result,
+                           error_bound_type::ABS, probe.normalize_coordinates);
+  CAPTURE(error, tol);
+  REQUIRE(error < tol);
 }
 
 TEMPLATE_TEST_CASE("Hybrid ROI round trip through the bytes alone",

@@ -44,6 +44,43 @@
 
 namespace mgard_x {
 
+// The hybrid hierarchy can only be given a theoretical s-norm bound when the
+// block-local stage is a single level and there is no global stage.
+//
+// With one local level every block is transformed independently, so the total
+// squared error is a plain sum over blocks and the budget divides evenly in
+// quadrature -- tol / sqrt(num_blocks) per block -- exactly as
+// calc_local_abs_tol does across subdomains for domain decomposition. A second
+// local level mixes the coarse outputs of neighbouring blocks, and a global
+// stage decomposes across blocks entirely; in both cases the blocks stop being
+// independent and the sum no longer bounds the error.
+//
+// So for s != inf we fall back to that one configuration and say so. L-inf is
+// untouched: its bound composes over levels and does not need independence.
+template <typename T>
+void restrict_hybrid_config_for_s_norm(Config &config, T s) {
+  if (config.decomposition != decomposition_type::Hybrid ||
+      s == std::numeric_limits<T>::infinity()) {
+    return;
+  }
+  if (config.num_local_refactoring_level != 1) {
+    log::warn("hybrid with an s-norm bound supports one block-local level "
+              "only; falling back from " +
+                  std::to_string(config.num_local_refactoring_level) + " to 1",
+              true);
+    config.num_local_refactoring_level = 1;
+  }
+  if (config.num_global_refactoring_level != 0) {
+    log::warn("hybrid with an s-norm bound cannot use a global stage (it "
+              "decomposes across blocks, so the per-block error budget no "
+              "longer composes); falling back from " +
+                  std::to_string(config.num_global_refactoring_level) +
+                  " global levels to 0",
+              true);
+    config.num_global_refactoring_level = 0;
+  }
+}
+
 template <DIM D, typename T, typename DeviceType, typename CompressorType>
 enum compress_status_type
 general_compress_pipeline(std::vector<SIZE> shape, T tol, T s,
@@ -58,6 +95,11 @@ general_compress_pipeline(std::vector<SIZE> shape, T tol, T s,
     total_num_elem *= shape[i];
 
   config.apply();
+
+  // Before anything reads the level counts: the DomainDecomposer sizes
+  // subdomains from them, and they are recorded in the file header for the
+  // decompressor, so the adjustment has to happen here to stay consistent.
+  restrict_hybrid_config_for_s_norm(config, s);
 
   log::info("adjust_shape: " + std::to_string(config.adjust_shape));
   if (config.adjust_shape) {

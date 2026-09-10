@@ -83,6 +83,30 @@ public:
     device_roi_tolerance_map.load(roi_tolerance_map.data(), 0, queue_idx);
   }
 
+  // An s-norm bound is only defensible when the block-local stage is a single
+  // level with no global stage: only then is every block transformed
+  // independently, so the total squared error is a sum over blocks and the
+  // budget divides evenly in quadrature (see restrict_hybrid_config_for_s_norm,
+  // which makes the public compress path fall back to exactly this).
+  //
+  // Here we can only refuse: L and M fixed the buffer layout back at Adapt(),
+  // so a low-level caller cannot be silently re-configured mid-flight.
+  void CheckSNormConfiguration(T s) {
+    if (s == std::numeric_limits<T>::infinity()) {
+      return;
+    }
+    if (this->L != 1 || this->M != 0) {
+      throw ProcessingException(
+          "hybrid with an s-norm bound requires exactly one block-local level "
+          "and no global stage (got L=" +
+          std::to_string(this->L) + ", M=" + std::to_string(this->M) +
+          "); the public compress path falls back to this automatically");
+    }
+    if (config.enable_roi) {
+      throw ProcessingException("ROI mode is L-inf only");
+    }
+  }
+
   // Tolerance for the coarsest layer when it has to be quantized on its own
   // (M == 0, so there is no global stage to cover it). In ROI mode the
   // coarsest layer has no tolerance of its own -- the map only describes the
@@ -174,6 +198,7 @@ public:
     if (this->L == 0 && this->M == 0) {
       throw ProcessingException("Both L and M cannot be zero");
     }
+    CheckSNormConfiguration(s);
     Timer timer;
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
@@ -285,6 +310,7 @@ public:
       throw ProcessingException("DecomposeQuantize requires L > 0, D <= 3, and "
                                 "(non-ROI or s == inf)");
     }
+    CheckSNormConfiguration(s);
     Timer timer;
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
@@ -379,6 +405,7 @@ public:
       throw ProcessingException("DequantizeRecompose requires L > 0, D <= 3, "
                                 "and (non-ROI or s == inf)");
     }
+    CheckSNormConfiguration(s);
     Timer timer;
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
@@ -463,6 +490,7 @@ public:
     if (this->L == 0 && this->M == 0) {
       throw ProcessingException("Both L and M cannot be zero");
     }
+    CheckSNormConfiguration(s);
     Timer timer;
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
