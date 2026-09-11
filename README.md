@@ -18,35 +18,35 @@ We encourage you to [make a GitHub issue][issue form] if you run into any proble
 MGARD framework consists of the following modules. Please see the detailed instructions for each module to build and install MGARD.
 
 ## ***MGARD-CPU***: Legacy compression implementation for CPUs
-MGARD-CPU is design for running compression on CPUs. See detailed user guide in [here][mgard-cpu]. In addition, MGARD-CPU can be configured to preserving region-of-interest ([RoI user guide][mgard-roi]) and linear quantity-of-interest ([QoI user guide][mgard-qoi]) during data compression.
+*MGARD-CPU* is designed for running compression on CPUs. See the detailed user guide [here][mgard-cpu]. In addition, *MGARD-CPU* can be configured to preserve region-of-interest ([RoI user guide][mgard-roi]) and linear quantity-of-interest ([QoI user guide][mgard-qoi]) during data compression.
 
 [mgard-cpu]: doc/MGARD-CPU.md
 [mgard-roi]: doc/MGARD-RoI.md
 [mgard-qoi]: doc/MGARD-QoI.md
 
 ## ***MGARD-X***: Accelerated and portable compression
-MGARD-X is designed for portable compression on NVIDIA GPUs, AMD GPUs, and CPUs. See detailed user guide in [here][mgard_x instructions].
-In addition, MGARD-X can be configured to preserving region-of-interest ([RoI user guide][mgard-roi2]) and linear quantity-of-interest ([QoI user guide][mgard-qoi]) during data compression.
+*MGARD-X* is designed for portable compression on NVIDIA GPUs, AMD GPUs, and CPUs. See the detailed user guide [here][mgard_x instructions].
+In addition, *MGARD-X* can be configured to preserve region-of-interest ([RoI user guide][mgard-roi2]) and linear quantity-of-interest ([QoI user guide][mgard-qoi]) during data compression.
 
 [mgard_x instructions]: doc/MGARD-X.md
 [mgard-roi2]: doc/MGARD-RoI2.md
 [mgard-qoi]: doc/MGARD-QoI.md
 
-## ***MGARD-$\lambda$***: Preserving Non-Linear Quantity-of-Interest
-MGARD-$\lambda$ is specifically designed for preserving non-linear quantity-of-interest during data compression. This is an experimental part of MGARD. Currently only support certain QoIs derived from XGC 5D data. See theory in [here][mgard-lambda-theory] and example in [here][mgard-lambda].
+## ***MGARD***$\text{-}\lambda$: Preserving Non-Linear Quantity-of-Interest
+*MGARD*$\text{-}\lambda$ is specifically designed for preserving non-linear quantity-of-interest during data compression. This is an experimental part of MGARD. Currently, it only supports certain QoIs derived from XGC 5D data. See theory in [here][mgard-lambda-theory] and example in [here][mgard-lambda].
 
 [mgard-lambda-theory]: doc/images/post-processing.pdf
 [mgard-lambda]: ./examples/lambda
 
-## ***MGARD-CUDA***: CUDA accelerated compression [deprecated]
-MGARD-CUDA is designed for accelerating compression specifically using NVIDIA GPUs. See detailed user guide in [here][gpu instructions].
+## ***MGARD-CUDA***: CUDA-accelerated compression [deprecated]
+*MGARD-CUDA* is designed for accelerating compression specifically using NVIDIA GPUs. See the detailed user guide [here][gpu instructions].
 
 **MGARD-CUDA is deprecated and no longer being maintained. Users seeking GPU acceleration should use MGARD-X instead.**
 
 [gpu instructions]: doc/MGARD-GPU.md
 
 ## ***MDR/MDR-X***: Fine-grain progressive data reconstruction
-MDR and MDR-X are designed for enabling fine-grain data refactoring and progressive data reconstruction. See detailed user guide in [here][mdr_x instructions].
+*MDR* and *MDR-X* are designed to enable fine-grain data refactoring and progressive data reconstruction. See the detailed user guide [here][mdr_x instructions].
 
 [mdr_x instructions]: doc/MDR-X.md
 
@@ -65,15 +65,15 @@ Data produced by MGARD, MGARD-X, and MDR-X are designed to follow a unified self
 * Mark Ainsworth et al. [Multilevel Techniques for Compression and Reduction of Scientific Data—The Univariate Case.][univariate] *Computing and Visualization in Science* 19, 65–76, 2018.
 * Ben Whitney. [Multilevel Techniques for Compression and Reduction of Scientific Data.][thesis] PhD thesis, Brown University, 2018.
 
-### Preserving Quantites of Interest (QoIs)
+### Preserving Quantities of Interest (QoIs)
 * Xuan Wu et al. [Error-controlled Progressive Retrieval of Scientific Data under Derivable Quantities of Interest.][qoi] **the International Conference for High Performance Computing, Networking, Storage and Analysis 2024*, Nov, 2024* 
 * Tania Banerjee et al. [Scalable Hybrid Learning Techniques for Scientific Data Compression.][pp3], *Arxiv*, 2022
 * Qian Gong et al. [Region-adaptive, Error-controlled Scientific Data Compression using Multilevel Decomposition.][roi2] *the 34th International Conference on Scientific and Statistical Database Management*, Jul. 2022
-* Tania Benerjee et al. An algorithmic and software pipeline for very large scale scientific data compression with error guarantees. *International Conference on High Performance Computing, Data, and Analytics*, 2022
+* Tania Benerjee et al. An algorithmic and software pipeline for very large-scale scientific data compression with error guarantees. *International Conference on High Performance Computing, Data, and Analytics*, 2022
 * Jaemoon Lee et al. [Error-bounded learned scientific data compression with preservation of derived quantities.][pp] *Applied Sciences*, 2022
 * Qian Gong et al. [Maintaining trust in reduction: Preserving the accuracy of quantities of interest for lossy compression.][roi] *21st Smoky Mountains Computational Sciences and Engineering Conference*, Oct. 2021
 
-### Pregressive Retrieval
+### Progressive Retrieval
 * Jinzheng Wang et al. Improving Progressive Retrieval for HPC Scientific Data using Deep Neural Network. *IEEE International Conference on Data Engineering (ICDE)*, 2023 
 * Xin Liang et al. [Error-controlled, progressive, and adaptable retrieval of scientific data with multilevel decomposition.][mdr] *the International Conference for High Performance Computing, Networking, Storage and Analysis 2021*, Nov, 2021
 
@@ -83,7 +83,7 @@ Data produced by MGARD, MGARD-X, and MDR-X are designed to follow a unified self
 * Jieyang Chen et al. [Accelerating Multigrid-based Hierarchical Scientific Data Refactoring on GPUs.][gpu] *35th IEEE International Parallel & Distributed Processing Symposium*, May, 2021.
 
 ### System Optimizations
-* Lipeng Wan et al. RAPIDS: Reconciling Availability, Accuracy, and Performance in Managing Geo-Distributed Scientific Data. *the International ACM Symposium on High-Performance Parallel and Distributed Computing*, Jun. 2023
+* Lipeng Wan et al. RAPIDS: Reconciling Availability, Accuracy, and Performance in Managing Geo-Distributed Scientific Data. * The International ACM Symposium on High-Performance Parallel and Distributed Computing*, Jun. 2023
 * Xinying Wang et al. [Unbalanced Parallel I/O: An Often-Neglected Side Effect of Lossy Scientific Data Compression.][unbalanced-io] *7th International Workshop on Data Analysis and Reduction for Big Scientific Data*, Nov. 2021
 
 [thesis]: https://doi.org/10.26300/ya1v-hn97
