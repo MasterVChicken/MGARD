@@ -8,6 +8,8 @@
 #ifndef MGARD_X_HYBRID_HIERARCHY_COMPRESSOR_H
 #define MGARD_X_HYBRID_HIERARCHY_COMPRESSOR_H
 
+#include <limits>
+
 #include "../DataRefactoring/BlockLocalHierarchyDataRefactor.hpp"
 #include "../DataRefactoring/HybridHierarchyDataRefactor.hpp"
 #include "../RuntimeX/RuntimeXPublic.h"
@@ -22,6 +24,32 @@
 #include "NormCalculator.hpp"
 
 namespace mgard_x {
+
+template <typename T>
+inline hybrid_projection_mode_type resolve_hybrid_projection_mode(
+    hybrid_projection_mode_type mode, T s) {
+  if (mode == hybrid_projection_mode_type::Hierarchical) {
+    if (s != std::numeric_limits<T>::infinity()) {
+      throw ProcessingException(
+          "the BlockMGARD hierarchical basis only supports L-infinity error "
+          "control");
+    }
+    return mode;
+  }
+  if (mode == hybrid_projection_mode_type::Auto) {
+    return s == std::numeric_limits<T>::infinity()
+               ? hybrid_projection_mode_type::Hierarchical
+               : hybrid_projection_mode_type::Orthogonal;
+  }
+  return mode;
+}
+
+template <typename T>
+inline bool infer_hybrid_orthogonal_projection(
+    hybrid_projection_mode_type mode, T s) {
+  return resolve_hybrid_projection_mode(mode, s) ==
+         hybrid_projection_mode_type::Orthogonal;
+}
 
 template <DIM D, typename T, typename DeviceType>
 class HybridHierarchyCompressor
@@ -111,6 +139,7 @@ public:
   bool initialized;
   Hierarchy<D, T, DeviceType> *hierarchy;
   Config config;
+  bool orthogonal_projection = true;
   Array<1, T, DeviceType> norm_tmp_array;
   Array<1, T, DeviceType> norm_array;
   //   Array<1, T, DeviceType> local_decomposed_array;

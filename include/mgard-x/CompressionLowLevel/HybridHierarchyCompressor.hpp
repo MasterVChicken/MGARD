@@ -173,7 +173,8 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Decompose(
   // PrintSubarray("Orginal 8x8x8 before decompose", temp);
   // hybrid_refactor.Decompose(original_data, decomposed_array, queue_idx);
   hybrid_refactor.Decompose(SubArray(original_data),
-                            SubArray(hybrid_decomposed_array), queue_idx);
+                            SubArray(hybrid_decomposed_array), queue_idx,
+                            orthogonal_projection);
   // PrintSubarray("Decomposed after decompose",
   // SubArray(local_decomposed_array));
 }
@@ -182,6 +183,9 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::Quantize(
     Array<D, T, DeviceType> &original_data, enum error_bound_type ebtype, T tol,
     T s, T norm, int queue_idx) {
+  orthogonal_projection = infer_hybrid_orthogonal_projection(
+      config.hybrid_projection_mode, s);
+  hybrid_quantizer.SetOrthogonalProjection(orthogonal_projection);
   SIZE total_num_elems_1D = hybrid_refactor.DecomposedDataSize();
 
   SubArray<1, T, DeviceType> data_subarray({total_num_elems_1D},
@@ -195,6 +199,7 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::DecomposeQuantize(
     Array<D, T, DeviceType> &original_data, enum error_bound_type ebtype, T tol,
     T s, T norm, int queue_idx) {
+  hybrid_quantizer.SetOrthogonalProjection(orthogonal_projection);
   SubArray<1, T, DeviceType> decomposed_subarray(hybrid_decomposed_array);
   SubArray<1, QUANTIZED_INT, DeviceType> quantized_subarray(
       hybrid_quantized_array);
@@ -226,11 +231,12 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::Recompose(
     Array<D, T, DeviceType> &decompressed_data, bool orthogonal_projection,
     int queue_idx) {
-  (void)orthogonal_projection; // hybrid recompose handles projection itself
+  this->orthogonal_projection = orthogonal_projection;
   // PrintSubarray("Decomposed before recompose",
   // SubArray(local_decomposed_array));
   hybrid_refactor.Recompose(SubArray(decompressed_data),
-                            SubArray(hybrid_decomposed_array), queue_idx);
+                            SubArray(hybrid_decomposed_array), queue_idx,
+                            this->orthogonal_projection);
 
   // SubArray<D, T, DeviceType> temp({3,3,3}, decompressed_data.data());
   // PrintSubarray("Orginal 8x8x8 after decompose", temp);
@@ -242,6 +248,9 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::Dequantize(
     Array<D, T, DeviceType> &decompressed_data, enum error_bound_type ebtype,
     T tol, T s, T norm, int queue_idx) {
+  orthogonal_projection = infer_hybrid_orthogonal_projection(
+      config.hybrid_projection_mode, s);
+  hybrid_quantizer.SetOrthogonalProjection(orthogonal_projection);
   SIZE total_num_elems_1D = hybrid_refactor.DecomposedDataSize();
   SubArray<1, T, DeviceType> decompressed_data_subarray(
       {total_num_elems_1D}, hybrid_decomposed_array.data());
@@ -255,6 +264,9 @@ template <DIM D, typename T, typename DeviceType>
 void HybridHierarchyCompressor<D, T, DeviceType>::DequantizeRecompose(
     Array<D, T, DeviceType> &decompressed_data, enum error_bound_type ebtype,
     T tol, T s, T norm, int queue_idx) {
+  orthogonal_projection = infer_hybrid_orthogonal_projection(
+      config.hybrid_projection_mode, s);
+  hybrid_quantizer.SetOrthogonalProjection(orthogonal_projection);
   if (config.fuse_dequantize_recompose && hybrid_quantizer.CanFuseQuantize(s)) {
     log::info("Local dequantize+recompose kernels: fused");
     DequantizeRecomposeFused(decompressed_data, ebtype, tol, s, norm,
@@ -266,7 +278,7 @@ void HybridHierarchyCompressor<D, T, DeviceType>::DequantizeRecompose(
                    : std::string("kernel fusion disabled")) +
               ")");
     Dequantize(decompressed_data, ebtype, tol, s, norm, queue_idx);
-    Recompose(decompressed_data, true, queue_idx);
+    Recompose(decompressed_data, orthogonal_projection, queue_idx);
   }
 }
 
@@ -317,6 +329,10 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Compress(
     DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
     timer_total.start();
   }
+
+  orthogonal_projection = infer_hybrid_orthogonal_projection(
+      config.hybrid_projection_mode, s);
+  hybrid_quantizer.SetOrthogonalProjection(orthogonal_projection);
 
   CalculateNorm(original_data, ebtype, s, norm, queue_idx);
   // log::info(std::to_string(original_data.totalNumElems()));
@@ -387,6 +403,10 @@ void HybridHierarchyCompressor<D, T, DeviceType>::Decompress(
 
   if (log::level & log::TIME)
     timer_total.start();
+
+  orthogonal_projection = infer_hybrid_orthogonal_projection(
+      config.hybrid_projection_mode, s);
+  hybrid_quantizer.SetOrthogonalProjection(orthogonal_projection);
 
   decompressed_data.resize(hierarchy->level_shape(hierarchy->l_target()));
   Deserialize(compressed_data, queue_idx);

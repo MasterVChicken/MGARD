@@ -317,6 +317,10 @@ public:
     return size;
   }
 
+  void SetOrthogonalProjection(bool enabled) {
+    orthogonal_projection = enabled;
+  }
+
   void compute_local_ranges() {
     coarse_shape = hierarchy->level_shape(hierarchy->l_target());
 
@@ -378,7 +382,7 @@ public:
     abs_tol *= 2;
 
     if (s == std::numeric_limits<T>::infinity()) {
-      double C = (1 + std::pow(3, D));
+      double C = orthogonal_projection ? (1 + std::pow(3, D)) : 1.0;
 
       for (int l = 0; l <= l_target; l++) {
         // Modified here
@@ -623,7 +627,7 @@ public:
       throw ProcessingException("Only L-inf supported");
     }
 
-    double C = (1 + std::pow(3, D));
+    double C = orthogonal_projection ? (1 + std::pow(3, D)) : 1.0;
     double norm_factor = (ebtype == error_bound_type::REL) ? (double)norm : 1.0;
     bool prep_huffman = config.lossless != lossless_type::CPU_Lossless &&
                         config.lossless != lossless_type::BlockDelta &&
@@ -695,7 +699,7 @@ public:
       throw ProcessingException("Only L-inf supported");
     }
 
-    double C = (1 + std::pow(3, D));
+    double C = orthogonal_projection ? (1 + std::pow(3, D)) : 1.0;
     double norm_factor = (ebtype == error_bound_type::REL) ? (double)norm : 1.0;
     bool prep_huffman = config.lossless != lossless_type::CPU_Lossless &&
                         config.lossless != lossless_type::BlockDelta &&
@@ -758,6 +762,7 @@ public:
   SIZE M;
   Hierarchy<D, T, DeviceType> *hierarchy;
   Config config;
+  bool orthogonal_projection = true;
 
   // For Non-ROI
   std::vector<SIZE> layer_len;

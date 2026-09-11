@@ -54,7 +54,8 @@ void fill_smooth_data(std::vector<T> &data, std::vector<SIZE> shape) {
 // hybrid compressor pads to this internally). Templated on D so the 1D (8),
 // 2D (8x8) and 3D (8x8x8) block kernels are all covered.
 template <DIM D, typename T, typename DevType>
-void run_block_local_roundtrip(std::vector<SIZE> shape, int num_local_levels) {
+void run_block_local_roundtrip(std::vector<SIZE> shape, int num_local_levels,
+                               bool orthogonal_projection = true) {
   SIZE n = 1;
   for (auto s : shape)
     n *= s;
@@ -74,14 +75,16 @@ void run_block_local_roundtrip(std::vector<SIZE> shape, int num_local_levels) {
   data.load(original.data());
   Array<1, T, DevType> decomposed({(SIZE)refactor.DecomposedDataSize()});
 
-  refactor.Decompose(SubArray(data), SubArray(decomposed), 0);
+  refactor.Decompose(SubArray(data), SubArray(decomposed), 0,
+                     orthogonal_projection);
   DeviceRuntime<DevType>::SyncQueue(0);
 
   // Recompose into a fresh output array so reconstruction can only come from
   // the decomposed representation.
   Array<D, T, DevType> reconstructed(shape);
   reconstructed.memset(0, 0);
-  refactor.Recompose(SubArray(reconstructed), SubArray(decomposed), 0);
+  refactor.Recompose(SubArray(reconstructed), SubArray(decomposed), 0,
+                     orthogonal_projection);
 
   T *result = reconstructed.hostCopy(false, 0);
   DeviceRuntime<DevType>::SyncQueue(0);
@@ -97,7 +100,8 @@ void run_block_local_roundtrip(std::vector<SIZE> shape, int num_local_levels) {
 template <DIM D, typename T, typename DevType>
 void run_hybrid_refactor_roundtrip(std::vector<SIZE> shape,
                                    int num_local_levels,
-                                   int num_global_levels) {
+                                   int num_global_levels,
+                                   bool orthogonal_projection = true) {
   SIZE n = 1;
   for (auto s : shape)
     n *= s;
@@ -118,12 +122,14 @@ void run_hybrid_refactor_roundtrip(std::vector<SIZE> shape,
   data.load(original.data());
   Array<1, T, DevType> decomposed({(SIZE)refactor.DecomposedDataSize()});
 
-  refactor.Decompose(SubArray(data), SubArray(decomposed), 0);
+  refactor.Decompose(SubArray(data), SubArray(decomposed), 0,
+                     orthogonal_projection);
   DeviceRuntime<DevType>::SyncQueue(0);
 
   Array<D, T, DevType> reconstructed(shape);
   reconstructed.memset(0, 0);
-  refactor.Recompose(SubArray(reconstructed), SubArray(decomposed), 0);
+  refactor.Recompose(SubArray(reconstructed), SubArray(decomposed), 0,
+                     orthogonal_projection);
 
   T *result = reconstructed.hostCopy(false, 0);
   DeviceRuntime<DevType>::SyncQueue(0);
@@ -135,14 +141,14 @@ void run_hybrid_refactor_roundtrip(std::vector<SIZE> shape,
 }
 
 // Full hybrid compress -> decompress round trip through serialized bytes.
-// The hybrid quantizer only supports the L-infinity norm (s == inf), so the
-// error check is L_inf against the requested tolerance.
 template <DIM D, typename T, typename DevType>
 void run_hybrid_compressor_test(std::vector<SIZE> shape, int num_local_levels,
                                 int num_global_levels,
                                 enum error_bound_type ebtype, T tol,
                                 bool fused = true,
-                                T s = std::numeric_limits<T>::infinity()) {
+                                T s = std::numeric_limits<T>::infinity(),
+                                hybrid_projection_mode_type projection_mode =
+                                    hybrid_projection_mode_type::Auto) {
   SIZE n = 1;
   for (auto sz : shape)
     n *= sz;
@@ -154,11 +160,11 @@ void run_hybrid_compressor_test(std::vector<SIZE> shape, int num_local_levels,
   config.decomposition = decomposition_type::Hybrid;
   config.num_local_refactoring_level = num_local_levels;
   config.num_global_refactoring_level = num_global_levels;
+  config.hybrid_projection_mode = projection_mode;
   // The fused and unfused local kernels are separate implementations of the
   // same transform, so both have to be driven.
   config.fuse_decompose_quantize = fused;
   config.fuse_dequantize_recompose = fused;
-
 
   // Separate compressor and decompressor objects so the round trip only
   // communicates through the serialized bytes (and the norm, as it would be
@@ -199,46 +205,78 @@ void run_hybrid_compressor_test(std::vector<SIZE> shape, int num_local_levels,
   REQUIRE(actual_error < static_cast<double>(tol));
 }
 
+TEST_CASE("hybrid projection mode follows the norm", "[mgard-x][hybrid]") {
+  const float inf = std::numeric_limits<float>::infinity();
+
+  REQUIRE(resolve_hybrid_projection_mode(
+              hybrid_projection_mode_type::Auto, inf) ==
+          hybrid_projection_mode_type::Hierarchical);
+  REQUIRE(resolve_hybrid_projection_mode(
+              hybrid_projection_mode_type::Auto, 0.0f) ==
+          hybrid_projection_mode_type::Orthogonal);
+  REQUIRE(resolve_hybrid_projection_mode(
+              hybrid_projection_mode_type::Orthogonal, inf) ==
+          hybrid_projection_mode_type::Orthogonal);
+  REQUIRE_THROWS_AS(resolve_hybrid_projection_mode(
+                        hybrid_projection_mode_type::Hierarchical, 0.0f),
+                    ProcessingException);
+}
+
 TEMPLATE_TEST_CASE("Block-Local (In-Cache 8x8x8) Decomposition 3D",
                    "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
   DeviceRuntime<TestDevice>::Initialize();
+  bool orthogonal_projection = GENERATE(true, false);
+  CAPTURE(orthogonal_projection);
   SECTION("one level, cubic") {
-    run_block_local_roundtrip<3, TestType, TestDevice>({64, 64, 64}, 1);
+    run_block_local_roundtrip<3, TestType, TestDevice>(
+        {64, 64, 64}, 1, orthogonal_projection);
   }
   SECTION("one level, non-cubic") {
-    run_block_local_roundtrip<3, TestType, TestDevice>({40, 64, 56}, 1);
+    run_block_local_roundtrip<3, TestType, TestDevice>(
+        {40, 64, 56}, 1, orthogonal_projection);
   }
   SECTION("one level, padded (non-multiple-of-8)") {
-    run_block_local_roundtrip<3, TestType, TestDevice>({60, 60, 60}, 1);
+    run_block_local_roundtrip<3, TestType, TestDevice>(
+        {60, 60, 60}, 1, orthogonal_projection);
   }
   SECTION("one level, padded non-cubic") {
-    run_block_local_roundtrip<3, TestType, TestDevice>({65, 48, 39}, 1);
+    run_block_local_roundtrip<3, TestType, TestDevice>(
+        {65, 48, 39}, 1, orthogonal_projection);
   }
   SECTION("two levels") {
-    run_block_local_roundtrip<3, TestType, TestDevice>({64, 64, 64}, 2);
+    run_block_local_roundtrip<3, TestType, TestDevice>(
+        {64, 64, 64}, 2, orthogonal_projection);
   }
   SECTION("two levels, padded") {
-    run_block_local_roundtrip<3, TestType, TestDevice>({60, 60, 60}, 2);
+    run_block_local_roundtrip<3, TestType, TestDevice>(
+        {60, 60, 60}, 2, orthogonal_projection);
   }
 }
 
 TEMPLATE_TEST_CASE("Hybrid Hierarchy Decomposition 3D",
                    "[mgard-x][hybrid][@DEVICE_TYPE@]", float, double) {
   DeviceRuntime<TestDevice>::Initialize();
+  bool orthogonal_projection = GENERATE(true, false);
+  CAPTURE(orthogonal_projection);
   SECTION("pure local (L=1, M=0)") {
-    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>({64, 64, 64}, 1, 0);
+    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>(
+        {64, 64, 64}, 1, 0, orthogonal_projection);
   }
   SECTION("pure local (L=2, M=0)") {
-    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>({64, 64, 64}, 2, 0);
+    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>(
+        {64, 64, 64}, 2, 0, orthogonal_projection);
   }
   SECTION("pure global (L=0, M=2)") {
-    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>({64, 64, 64}, 0, 2);
+    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>(
+        {64, 64, 64}, 0, 2, orthogonal_projection);
   }
   SECTION("hybrid (L=1, M=2)") {
-    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>({64, 64, 64}, 1, 2);
+    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>(
+        {64, 64, 64}, 1, 2, orthogonal_projection);
   }
   SECTION("hybrid, padded (L=1, M=2)") {
-    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>({60, 60, 60}, 1, 2);
+    run_hybrid_refactor_roundtrip<3, TestType, TestDevice>(
+        {60, 60, 60}, 1, 2, orthogonal_projection);
   }
 }
 
@@ -250,21 +288,28 @@ TEMPLATE_TEST_CASE("Hybrid Hierarchy Compressor 3D",
   TestType tol = GENERATE(static_cast<TestType>(1e-2),
                           static_cast<TestType>(1e-3));
   bool fused = GENERATE(true, false);
-  CAPTURE(static_cast<int>(ebtype), tol, fused);
+  const TestType s = std::numeric_limits<TestType>::infinity();
+  hybrid_projection_mode_type projection_mode =
+      GENERATE(hybrid_projection_mode_type::Orthogonal,
+               hybrid_projection_mode_type::Hierarchical);
+  CAPTURE(static_cast<int>(ebtype), tol, fused,
+          static_cast<int>(projection_mode));
   SECTION("pure local (L=1, M=0)") {
     run_hybrid_compressor_test<3, TestType, TestDevice>({64, 64, 64}, 1, 0,
-                                                     ebtype, tol, fused);
+                                                        ebtype, tol, fused, s,
+                                                        projection_mode);
   }
   SECTION("hybrid (L=1, M=2)") {
     run_hybrid_compressor_test<3, TestType, TestDevice>({64, 64, 64}, 1, 2,
-                                                     ebtype, tol, fused);
+                                                        ebtype, tol, fused, s,
+                                                        projection_mode);
   }
   SECTION("padded (L=1, M=0)") {
     run_hybrid_compressor_test<3, TestType, TestDevice>({60, 60, 60}, 1, 0,
-                                                     ebtype, tol, fused);
+                                                        ebtype, tol, fused, s,
+                                                        projection_mode);
   }
 }
-
 
 // The block transform is an MGARD level transform, not just some invertible
 // shuffle: its interpolation is exact for multilinear data. So for
@@ -472,18 +517,26 @@ TEMPLATE_TEST_CASE("Hybrid Hierarchy Compressor 2D",
   TestType tol = GENERATE(static_cast<TestType>(1e-2),
                           static_cast<TestType>(1e-3));
   bool fused = GENERATE(true, false);
-  CAPTURE(static_cast<int>(ebtype), tol, fused);
+  const TestType s = std::numeric_limits<TestType>::infinity();
+  hybrid_projection_mode_type projection_mode =
+      GENERATE(hybrid_projection_mode_type::Orthogonal,
+               hybrid_projection_mode_type::Hierarchical);
+  CAPTURE(static_cast<int>(ebtype), tol, fused,
+          static_cast<int>(projection_mode));
   SECTION("pure local (L=1, M=0)") {
     run_hybrid_compressor_test<2, TestType, TestDevice>({256, 256}, 1, 0,
-                                                        ebtype, tol, fused);
+                                                        ebtype, tol, fused, s,
+                                                        projection_mode);
   }
   SECTION("hybrid (L=1, M=2)") {
     run_hybrid_compressor_test<2, TestType, TestDevice>({256, 256}, 1, 2,
-                                                        ebtype, tol, fused);
+                                                        ebtype, tol, fused, s,
+                                                        projection_mode);
   }
   SECTION("padded (L=1, M=0)") {
     run_hybrid_compressor_test<2, TestType, TestDevice>({250, 250}, 1, 0,
-                                                        ebtype, tol, fused);
+                                                        ebtype, tol, fused, s,
+                                                        projection_mode);
   }
 }
 
@@ -495,18 +548,26 @@ TEMPLATE_TEST_CASE("Hybrid Hierarchy Compressor 1D",
   TestType tol = GENERATE(static_cast<TestType>(1e-2),
                           static_cast<TestType>(1e-3));
   bool fused = GENERATE(true, false);
-  CAPTURE(static_cast<int>(ebtype), tol, fused);
+  const TestType s = std::numeric_limits<TestType>::infinity();
+  hybrid_projection_mode_type projection_mode =
+      GENERATE(hybrid_projection_mode_type::Orthogonal,
+               hybrid_projection_mode_type::Hierarchical);
+  CAPTURE(static_cast<int>(ebtype), tol, fused,
+          static_cast<int>(projection_mode));
   SECTION("pure local (L=1, M=0)") {
     run_hybrid_compressor_test<1, TestType, TestDevice>({65536}, 1, 0, ebtype,
-                                                        tol, fused);
+                                                        tol, fused, s,
+                                                        projection_mode);
   }
   SECTION("hybrid (L=1, M=2)") {
     run_hybrid_compressor_test<1, TestType, TestDevice>({65536}, 1, 2, ebtype,
-                                                        tol, fused);
+                                                        tol, fused, s,
+                                                        projection_mode);
   }
   SECTION("padded (L=1, M=0)") {
     run_hybrid_compressor_test<1, TestType, TestDevice>({65000}, 1, 0, ebtype,
-                                                        tol, fused);
+                                                        tol, fused, s,
+                                                        projection_mode);
   }
 }
 

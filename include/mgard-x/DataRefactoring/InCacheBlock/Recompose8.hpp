@@ -25,8 +25,10 @@ public:
   MGARDX_CONT Recompose8Functor() {}
   MGARDX_CONT Recompose8Functor(SubArray<D, T, DeviceType> v,
                                 SubArray<D, T, DeviceType> coarse,
-                                SubArray<1, T, DeviceType> coeff)
-      : v(v), coarse(coarse), coeff(coeff) {
+                                SubArray<1, T, DeviceType> coeff,
+                                bool orthogonal_projection = true)
+      : v(v), coarse(coarse), coeff(coeff),
+        orthogonal_projection(orthogonal_projection) {
     Functor<DeviceType>();
   }
 
@@ -65,6 +67,8 @@ public:
 
   // MassTransX
   MGARDX_EXEC void Operation2() {
+    if (!orthogonal_projection)
+      return;
     if (active && item < NumMassTransX_8) {
       int const *index = MassTrans_X_Offset_8(item);
       T a = sm_v[base_v + index[0]];
@@ -106,6 +110,8 @@ public:
 
   // TridiagX
   MGARDX_EXEC void Operation3() {
+    if (!orthogonal_projection)
+      return;
     if (active && item == 0) {
       solve_tridiag();
     }
@@ -113,7 +119,7 @@ public:
 
   // Subtract correction
   MGARDX_EXEC void Operation4() {
-    if (active && item < NumCoarse_8) {
+    if (orthogonal_projection && active && item < NumCoarse_8) {
       sm_v[base_v + Coarse_Offset_8(item)] -= sm_x[base_x + item];
     }
   }
@@ -144,6 +150,7 @@ protected:
   SubArray<D, T, DeviceType> v;
   SubArray<D, T, DeviceType> coarse;
   SubArray<1, T, DeviceType> coeff;
+  bool orthogonal_projection;
   T *sm_v, *sm_x;
   int item, tile, bid, x_gl;
   int base_v, base_x;
@@ -167,8 +174,8 @@ public:
       SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
       SubArray<1, Q, DeviceType> quantized_coeff, T quantizer,
       SubArray<1, T, DeviceType> block_quantizers, bool use_block_quantizers,
-      bool prep_huffman, SIZE dict_size)
-      : Base(v, coarse, SubArray<1, T, DeviceType>()),
+      bool prep_huffman, SIZE dict_size, bool orthogonal_projection = true)
+      : Base(v, coarse, SubArray<1, T, DeviceType>(), orthogonal_projection),
         quantized_coeff(quantized_coeff), quantizer(quantizer),
         block_quantizers(block_quantizers),
         use_block_quantizers(use_block_quantizers), prep_huffman(prep_huffman),
@@ -218,13 +225,15 @@ public:
   MGARDX_CONT
   Recompose8Kernel(SubArray<D, T, DeviceType> v,
                    SubArray<D, T, DeviceType> coarse,
-                   SubArray<1, T, DeviceType> coeff)
-      : v(v), coarse(coarse), coeff(coeff) {}
+                   SubArray<1, T, DeviceType> coeff,
+                   bool orthogonal_projection = true)
+      : v(v), coarse(coarse), coeff(coeff),
+        orthogonal_projection(orthogonal_projection) {}
 
   MGARDX_CONT Task<Recompose8Functor<D, T, LowDim_Tiles_1D, 8, DeviceType>>
   GenTask(int queue_idx) {
     using FunctorType = Recompose8Functor<D, T, LowDim_Tiles_1D, 8, DeviceType>;
-    FunctorType functor(v, coarse, coeff);
+    FunctorType functor(v, coarse, coeff, orthogonal_projection);
 
     SIZE num_tiles = (v.shape(D - 1) + 7) / 8;
     size_t sm_size = functor.shared_memory_size();
@@ -240,6 +249,7 @@ private:
   SubArray<D, T, DeviceType> v;
   SubArray<D, T, DeviceType> coarse;
   SubArray<1, T, DeviceType> coeff;
+  bool orthogonal_projection;
 };
 
 template <DIM D, typename T, typename Q, typename DeviceType>
@@ -254,11 +264,12 @@ public:
                              T quantizer,
                              SubArray<1, T, DeviceType> block_quantizers,
                              bool use_block_quantizers, bool prep_huffman,
-                             SIZE dict_size)
+                             SIZE dict_size,
+                             bool orthogonal_projection = true)
       : v(v), coarse(coarse), quantized_coeff(quantized_coeff),
         quantizer(quantizer), block_quantizers(block_quantizers),
         use_block_quantizers(use_block_quantizers), prep_huffman(prep_huffman),
-        dict_size(dict_size) {}
+        dict_size(dict_size), orthogonal_projection(orthogonal_projection) {}
 
   MGARDX_CONT
   Task<RecomposeDequantize8Functor<D, T, Q, LowDim_Tiles_1D, 8, DeviceType>>
@@ -266,7 +277,8 @@ public:
     using FunctorType =
         RecomposeDequantize8Functor<D, T, Q, LowDim_Tiles_1D, 8, DeviceType>;
     FunctorType functor(v, coarse, quantized_coeff, quantizer, block_quantizers,
-                        use_block_quantizers, prep_huffman, dict_size);
+                        use_block_quantizers, prep_huffman, dict_size,
+                        orthogonal_projection);
 
     SIZE num_tiles = (v.shape(D - 1) + 7) / 8;
     size_t sm_size = functor.shared_memory_size();
@@ -287,6 +299,7 @@ private:
   bool use_block_quantizers;
   bool prep_huffman;
   SIZE dict_size;
+  bool orthogonal_projection;
 };
 
 } // namespace in_cache_block

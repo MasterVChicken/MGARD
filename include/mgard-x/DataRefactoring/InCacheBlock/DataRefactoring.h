@@ -25,7 +25,8 @@ namespace in_cache_block {
 
 template <DIM D, typename T, typename DeviceType>
 void decompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
-               SubArray<1, T, DeviceType> coeff, int queue_idx);
+               SubArray<1, T, DeviceType> coeff, bool orthogonal_projection,
+               int queue_idx);
 
 // Fused decompose+quantize: same block decomposition as decompose(), but the
 // coefficients are quantized in-kernel and written as Q symbols. Reads v with
@@ -38,11 +39,13 @@ void decompose_quantize(SubArray<D, T, DeviceType> v,
                         SubArray<1, Q, DeviceType> quantized_coeff, T quantizer,
                         SubArray<1, T, DeviceType> block_quantizers,
                         bool use_block_quantizers, bool prep_huffman,
-                        SIZE dict_size, int queue_idx);
+                        SIZE dict_size, bool orthogonal_projection,
+                        int queue_idx);
 
 template <DIM D, typename T, typename DeviceType>
 void recompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
-               SubArray<1, T, DeviceType> coeff, int queue_idx);
+               SubArray<1, T, DeviceType> coeff, bool orthogonal_projection,
+               int queue_idx);
 
 // Fused dequantize+recompose: same block recomposition as recompose(), but the
 // coefficients are read as Q symbols and dequantized in-kernel. Writes v with
@@ -56,7 +59,8 @@ void recompose_dequantize(SubArray<D, T, DeviceType> v,
                           T quantizer,
                           SubArray<1, T, DeviceType> block_quantizers,
                           bool use_block_quantizers, bool prep_huffman,
-                          SIZE dict_size, int queue_idx);
+                          SIZE dict_size, bool orthogonal_projection,
+                          int queue_idx);
 
 } // namespace in_cache_block
 

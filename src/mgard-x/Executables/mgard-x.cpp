@@ -49,6 +49,8 @@ void print_usage_message(std::string error) {
 \t\t (optional) -hh / --hybrid: use hybrid (block-local + global) hierarchy\n\
 \t\t (optional) -ll / --local-levels <int>: number of local refactoring levels (default: 1)\n\
 \t\t (optional) -gl / --global-levels <int>: number of global refactoring levels (default: 0)\n\
+\t\t (optional) -hp / --hybrid-projection <auto|orthogonal|hierarchical>:\n\
+\t\t\t BlockMGARD basis (default: auto; hierarchical is L-inf only)\n\
 \t\t (optional) -nkf / --no-kernel-fusion: run the hybrid local stage as\n\
 \t\t\t separate decompose and quantize passes instead of fused kernels\n\
 \t\t\t (same reconstruction either way, but slower -- use it to time the\n\
@@ -559,7 +561,8 @@ int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
                     enum mgard_x::device_type dev_type, int verbose,
                     mgard_x::SIZE max_memory_footprint, int num_local_levels,
                     int num_global_levels, bool use_hybrid, bool warm_up,
-                    bool kernel_fusion) {
+                    bool kernel_fusion,
+                    mgard_x::hybrid_projection_mode_type projection_mode) {
   mgard_x::Config config;
   config.log_level = verbose_to_log_level(verbose);
   config.fuse_decompose_quantize = kernel_fusion;
@@ -573,6 +576,7 @@ int launch_compress(mgard_x::DIM D, enum mgard_x::data_type dtype,
   }
   config.num_local_refactoring_level = num_local_levels;
   config.num_global_refactoring_level = num_global_levels;
+  config.hybrid_projection_mode = projection_mode;
 
   // Switch for ROI
   config.enable_roi = enable_roi;
@@ -935,6 +939,23 @@ bool try_compression(int argc, char *argv[]) {
 
   bool use_hybrid = has_arg(argc, argv, "-hh", "--hybrid");
 
+  mgard_x::hybrid_projection_mode_type projection_mode =
+      mgard_x::hybrid_projection_mode_type::Auto;
+  if (has_arg(argc, argv, "-hp", "--hybrid-projection")) {
+    std::string value = get_arg<std::string>(
+        argc, argv, "Hybrid projection", "-hp", "--hybrid-projection");
+    if (value == "orthogonal") {
+      projection_mode = mgard_x::hybrid_projection_mode_type::Orthogonal;
+    } else if (value == "hierarchical") {
+      projection_mode = mgard_x::hybrid_projection_mode_type::Hierarchical;
+    } else if (value != "auto") {
+      std::cout << mgard_x::log::log_err
+                << "--hybrid-projection must be auto, orthogonal, or "
+                   "hierarchical\n";
+      exit(-1);
+    }
+  }
+
   // Fusion is on by default; the flag selects the separate-pass path.
   bool kernel_fusion = !has_arg(argc, argv, "-nkf", "--no-kernel-fusion");
 
@@ -960,13 +981,15 @@ bool try_compression(int argc, char *argv[]) {
         shape.size(), dtype, input_file.c_str(), output_file.c_str(), shape,
         tol, tol_map, enable_roi, s, mode, lossless, domain_decomposition,
         block_size, dev_type, verbose, max_memory_footprint, num_local_levels,
-        num_global_levels, use_hybrid, warm_up, kernel_fusion);
+        num_global_levels, use_hybrid, warm_up, kernel_fusion,
+        projection_mode);
   } else if (dtype == mgard_x::data_type::Float) {
     launch_compress<float>(
         shape.size(), dtype, input_file.c_str(), output_file.c_str(), shape,
         tol, tol_map, enable_roi, s, mode, lossless, domain_decomposition,
         block_size, dev_type, verbose, max_memory_footprint, num_local_levels,
-        num_global_levels, use_hybrid, warm_up, kernel_fusion);
+        num_global_levels, use_hybrid, warm_up, kernel_fusion,
+        projection_mode);
   }
   mgard_x::release_cache(mgard_x::Config());
   return true;

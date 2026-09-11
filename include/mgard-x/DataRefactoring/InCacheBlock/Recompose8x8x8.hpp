@@ -43,8 +43,10 @@ public:
   MGARDX_CONT Recompose8x8x8Functor() {}
   MGARDX_CONT Recompose8x8x8Functor(SubArray<D, T, DeviceType> v,
                                     SubArray<D, T, DeviceType> coarse,
-                                    SubArray<1, T, DeviceType> coeff)
-      : v(v), coarse(coarse), coeff(coeff) {
+                                    SubArray<1, T, DeviceType> coeff,
+                                    bool orthogonal_projection = true)
+      : v(v), coarse(coarse), coeff(coeff),
+        orthogonal_projection(orthogonal_projection) {
     Functor<DeviceType>();
   }
 
@@ -117,6 +119,8 @@ public:
 
   // MassTransX
   MGARDX_EXEC void Operation2() {
+    if (!orthogonal_projection)
+      return;
 
     // #ifdef MGARDX_COMPILE_CUDA
     // __syncthreads();
@@ -169,6 +173,8 @@ public:
 
   // MassTransY
   MGARDX_EXEC void Operation3() {
+    if (!orthogonal_projection)
+      return;
     if (tid < 200) {
       int const *index = MassTrans_Y_Offset_8x8x8(tid);
       T a = sm_x[index[0]];
@@ -202,6 +208,8 @@ public:
 
   // MassTransZ
   MGARDX_EXEC void Operation4() {
+    if (!orthogonal_projection)
+      return;
     if (tid < 125) {
       int const *index = MassTrans_Z_Offset_8x8x8(tid);
       T a = sm_y[index[0]];
@@ -235,6 +243,8 @@ public:
 
   // TriadiagX
   MGARDX_EXEC void Operation5() {
+    if (!orthogonal_projection)
+      return;
     if (tid < 25) {
       int const *index = TriDiag_X_Offset_8x8x8(tid);
       T a = sm_z[index[0]];
@@ -283,6 +293,8 @@ public:
 
   // TriadiagY
   MGARDX_EXEC void Operation6() {
+    if (!orthogonal_projection)
+      return;
     if (tid < 25) {
       int const *index = TriDiag_Y_Offset_8x8x8(tid);
       T a = sm_z[index[0]];
@@ -330,6 +342,8 @@ public:
 
   // TriadiagZ
   MGARDX_EXEC void Operation7() {
+    if (!orthogonal_projection)
+      return;
     if (tid < 25) {
       int const *index = TriDiag_Z_Offset_8x8x8(tid);
       T a = sm_z[index[0]];
@@ -377,7 +391,7 @@ public:
 
   // Subtract correction
   MGARDX_EXEC void Operation8() {
-    if (tid < 125) {
+    if (orthogonal_projection && tid < 125) {
       sm_v[Coarse_Offset_8x8x8(tid)] -= sm_z[tid];
     }
   }
@@ -439,6 +453,7 @@ protected:
   SubArray<D, T, DeviceType> v;
   SubArray<D, T, DeviceType> coarse;
   SubArray<1, T, DeviceType> coeff;
+  bool orthogonal_projection;
   T *sm_v, *sm_x, *sm_y, *sm_z, *sm_c8, *sm_c5, *sm_c3, *sm_c2;
   int ld1 = X;
   int ld2 = Y;
@@ -475,8 +490,8 @@ public:
       SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
       SubArray<1, Q, DeviceType> quantized_coeff, T quantizer,
       SubArray<1, T, DeviceType> block_quantizers, bool use_block_quantizers,
-      bool prep_huffman, SIZE dict_size)
-      : Base(v, coarse, SubArray<1, T, DeviceType>()),
+      bool prep_huffman, SIZE dict_size, bool orthogonal_projection = true)
+      : Base(v, coarse, SubArray<1, T, DeviceType>(), orthogonal_projection),
         quantized_coeff(quantized_coeff), quantizer(quantizer),
         block_quantizers(block_quantizers),
         use_block_quantizers(use_block_quantizers), prep_huffman(prep_huffman),
@@ -549,13 +564,15 @@ public:
   MGARDX_CONT
   Recompose8x8x8Kernel(SubArray<D, T, DeviceType> v,
                        SubArray<D, T, DeviceType> coarse,
-                       SubArray<1, T, DeviceType> coeff)
-      : v(v), coarse(coarse), coeff(coeff) {}
+                       SubArray<1, T, DeviceType> coeff,
+                       bool orthogonal_projection = true)
+      : v(v), coarse(coarse), coeff(coeff),
+        orthogonal_projection(orthogonal_projection) {}
 
   MGARDX_CONT Task<Recompose8x8x8Functor<D, T, 8, 8, 8, DeviceType>>
   GenTask(int queue_idx) {
     using FunctorType = Recompose8x8x8Functor<D, T, 8, 8, 8, DeviceType>;
-    FunctorType functor(v, coarse, coeff);
+    FunctorType functor(v, coarse, coeff, orthogonal_projection);
 
     SIZE total_thread_z = v.shape(D - 3);
     SIZE total_thread_y = v.shape(D - 2);
@@ -578,6 +595,7 @@ private:
   SubArray<D, T, DeviceType> v;
   SubArray<D, T, DeviceType> coarse;
   SubArray<1, T, DeviceType> coeff;
+  bool orthogonal_projection;
 };
 
 template <DIM D, typename T, typename Q, typename DeviceType>
@@ -592,11 +610,12 @@ public:
                                  T quantizer,
                                  SubArray<1, T, DeviceType> block_quantizers,
                                  bool use_block_quantizers, bool prep_huffman,
-                                 SIZE dict_size)
+                                 SIZE dict_size,
+                                 bool orthogonal_projection = true)
       : v(v), coarse(coarse), quantized_coeff(quantized_coeff),
         quantizer(quantizer), block_quantizers(block_quantizers),
         use_block_quantizers(use_block_quantizers), prep_huffman(prep_huffman),
-        dict_size(dict_size) {}
+        dict_size(dict_size), orthogonal_projection(orthogonal_projection) {}
 
   MGARDX_CONT
   Task<RecomposeDequantize8x8x8Functor<D, T, Q, 8, 8, 8, DeviceType>>
@@ -604,7 +623,8 @@ public:
     using FunctorType =
         RecomposeDequantize8x8x8Functor<D, T, Q, 8, 8, 8, DeviceType>;
     FunctorType functor(v, coarse, quantized_coeff, quantizer, block_quantizers,
-                        use_block_quantizers, prep_huffman, dict_size);
+                        use_block_quantizers, prep_huffman, dict_size,
+                        orthogonal_projection);
 
     // Same launch geometry as Recompose8x8x8Kernel; v may be unpadded here
     // but ceil(shape / 8) matches the padded grid exactly.
@@ -634,6 +654,7 @@ private:
   bool use_block_quantizers;
   bool prep_huffman;
   SIZE dict_size;
+  bool orthogonal_projection;
 };
 
 } // namespace in_cache_block

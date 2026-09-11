@@ -113,6 +113,12 @@ message RunLengthTolerances {
 // layout of the decomposed buffer and which (de)quantizers run, and the ROI
 // tolerance map determines the per-block quantization step.
 message HybridHierarchy {
+  enum Projection {
+    // Streams written before this field existed used the orthogonal basis.
+    PROJECTION_UNSPECIFIED = 0;
+    ORTHOGONAL = 1;
+    HIERARCHICAL = 2;
+  }
   // Number of block-local refactoring levels (Config::
   // num_local_refactoring_level, "L").
   uint64 num_local_levels = 1;
@@ -124,6 +130,9 @@ message HybridHierarchy {
   uint64 local_block_size = 3;
   // Absent when ROI mode was disabled.
   RegionOfInterest region_of_interest = 4;
+  // Resolved transform basis. This must be persisted because two L-infinity
+  // streams may be produced with different user-selected projection modes.
+  Projection projection = 5;
 }
 
 message FunctionDecomposition {

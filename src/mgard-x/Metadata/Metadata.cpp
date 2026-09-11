@@ -261,6 +261,7 @@ void MetadataBase::InitializeConfig(Config &config) {
   if (decomposition == decomposition_type::Hybrid) {
     config.num_local_refactoring_level = (int)hybrid_num_local_levels;
     config.num_global_refactoring_level = (int)hybrid_num_global_levels;
+    config.hybrid_projection_mode = hybrid_projection_mode;
     config.enable_roi = hybrid_enable_roi;
     if (hybrid_enable_roi) {
       config.roi_tolerance_map = hybrid_roi_tolerance_map;
@@ -315,6 +316,12 @@ void MetadataBase::PrintSummary() {
     std::cout << "Global refactoring levels: " << hybrid_num_global_levels
               << "\n";
     std::cout << "Local block size: " << hybrid_local_block_size << "\n";
+    std::cout << "Projection: "
+              << (hybrid_projection_mode ==
+                          hybrid_projection_mode_type::Hierarchical
+                      ? "hierarchical"
+                      : "orthogonal")
+              << "\n";
     std::cout << "ROI: ";
     if (hybrid_enable_roi) {
       std::cout << "enabled (" << hybrid_roi_tolerance_map.size()
@@ -535,6 +542,16 @@ std::vector<SERIALIZED_TYPE> MetadataBase::Serialize() {
       hybrid.set_num_local_levels(hybrid_num_local_levels);
       hybrid.set_num_global_levels(hybrid_num_global_levels);
       hybrid.set_local_block_size(hybrid_local_block_size);
+      if (hybrid_projection_mode ==
+          hybrid_projection_mode_type::Hierarchical) {
+        hybrid.set_projection(mgard::pb::HybridHierarchy::HIERARCHICAL);
+      } else if (hybrid_projection_mode ==
+                 hybrid_projection_mode_type::Orthogonal) {
+        hybrid.set_projection(mgard::pb::HybridHierarchy::ORTHOGONAL);
+      } else {
+        throw InvalidDataException(
+            "cannot serialize an unresolved hybrid projection mode.");
+      }
       if (hybrid_enable_roi) {
         mgard::pb::RegionOfInterest &roi = *hybrid.mutable_region_of_interest();
         google::protobuf::RepeatedField<google::protobuf::uint64>
@@ -830,6 +847,21 @@ void MetadataBase::Deserialize(
       hybrid_num_local_levels = hybrid.num_local_levels();
       hybrid_num_global_levels = hybrid.num_global_levels();
       hybrid_local_block_size = hybrid.local_block_size();
+      switch (hybrid.projection()) {
+      case mgard::pb::HybridHierarchy::HIERARCHICAL:
+        hybrid_projection_mode =
+            hybrid_projection_mode_type::Hierarchical;
+        break;
+      case mgard::pb::HybridHierarchy::PROJECTION_UNSPECIFIED:
+      case mgard::pb::HybridHierarchy::ORTHOGONAL:
+        // A missing field denotes a legacy BlockMGARD stream, all of which
+        // used the orthogonal basis.
+        hybrid_projection_mode = hybrid_projection_mode_type::Orthogonal;
+        break;
+      default:
+        throw InvalidDataException(
+            "hybrid hierarchy records an unknown projection mode.");
+      }
       if (hybrid_num_local_levels == 0 && hybrid_num_global_levels == 0) {
         throw InvalidDataException(
             "hybrid hierarchy records zero local and zero global levels.");

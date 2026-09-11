@@ -96,7 +96,8 @@ public:
   }
 
   void Decompose(SubArray<D, T, DeviceType> data,
-                 SubArray<1, T, DeviceType> output_decomposed, int queue_idx) {
+                 SubArray<1, T, DeviceType> output_decomposed,
+                 int queue_idx, bool orthogonal_projection = true) {
     SubArray<D, T, DeviceType> fine(coarse_buffers[1]);
     SubArray<D, T, DeviceType> coarse;
     // Zero the level-0 fine buffer when the input needs padding up to the
@@ -146,6 +147,7 @@ public:
       coarse.project(D - 3, D - 2, D - 1);
 
       in_cache_block::decompose<D, T, DeviceType>(fine, coarse, local_coeff,
+                                                  orthogonal_projection,
                                                   queue_idx);
       if (l < this->L - 1) {
         fine = SubArray<D, T, DeviceType>(fine_shapes[l + 1],
@@ -214,7 +216,8 @@ public:
       SubArray<1, Q, DeviceType> output_quantized,
       const std::vector<T> &level_quantizers,
       const std::vector<SubArray<1, T, DeviceType>> &level_block_quantizers,
-      bool prep_huffman, SIZE dict_size, int queue_idx) {
+      bool prep_huffman, SIZE dict_size, int queue_idx,
+      bool orthogonal_projection = true) {
     bool use_block_quantizers = level_quantizers.empty();
 
     Timer timer;
@@ -255,7 +258,8 @@ public:
           use_block_quantizers ? (T)0 : level_quantizers[l],
           use_block_quantizers ? level_block_quantizers[l]
                                : SubArray<1, T, DeviceType>(),
-          use_block_quantizers, prep_huffman, dict_size, queue_idx);
+          use_block_quantizers, prep_huffman, dict_size,
+          orthogonal_projection, queue_idx);
 
       if (l < this->L - 1) {
         // Next level reads the coarse output at its true extent; the fused
@@ -295,7 +299,8 @@ public:
       SubArray<1, Q, DeviceType> input_quantized,
       const std::vector<T> &level_dequantizers,
       const std::vector<SubArray<1, T, DeviceType>> &level_block_dequantizers,
-      bool prep_huffman, SIZE dict_size, int queue_idx) {
+      bool prep_huffman, SIZE dict_size, int queue_idx,
+      bool orthogonal_projection = true) {
     bool use_block_quantizers = level_dequantizers.empty();
 
     Timer timer;
@@ -341,7 +346,8 @@ public:
           use_block_quantizers ? (T)0 : level_dequantizers[level_idx],
           use_block_quantizers ? level_block_dequantizers[level_idx]
                                : SubArray<1, T, DeviceType>(),
-          use_block_quantizers, prep_huffman, dict_size, queue_idx);
+          use_block_quantizers, prep_huffman, dict_size,
+          orthogonal_projection, queue_idx);
 
       if (l < this->L - 1) {
         coarse = SubArray<D, T, DeviceType>(coarse_shapes[level_idx - 1],
@@ -364,7 +370,8 @@ public:
   }
 
   void Recompose(SubArray<D, T, DeviceType> data,
-                 SubArray<1, T, DeviceType> input_decomposed, int queue_idx) {
+                 SubArray<1, T, DeviceType> input_decomposed,
+                 int queue_idx, bool orthogonal_projection = true) {
     Timer timer;
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
@@ -414,6 +421,7 @@ public:
       // std::to_string(buffer_idx));
 
       in_cache_block::recompose<D, T, DeviceType>(fine, coarse, local_coeff,
+                                                  orthogonal_projection,
                                                   queue_idx);
 
       if (l < this->L - 1) {

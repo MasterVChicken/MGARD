@@ -72,6 +72,11 @@ public:
     return size;
   }
 
+  void SetOrthogonalProjection(bool enabled) {
+    orthogonal_projection = enabled;
+    local_quantizer.SetOrthogonalProjection(enabled);
+  }
+
   // Set block-level tolerances according to ROI table
   void SetBlockTolerances(const std::vector<double> &initial_block_tolerances,
                           int queue_idx) {
@@ -161,7 +166,8 @@ public:
     global_data_v.project(D - 3, D - 2, D - 1);
     global_data_q.project(D - 3, D - 2, D - 1);
     global_quantizer.Quantize(global_data_v, ebtype, global_tol, s, norm,
-                              global_data_q, lossless, queue_idx);
+                              global_data_q, lossless, queue_idx,
+                              orthogonal_projection);
   }
 
   // Dequantize the global (coarsest) region at the front of the decomposed
@@ -187,7 +193,8 @@ public:
     global_data_v.project(D - 3, D - 2, D - 1);
     global_data_q.project(D - 3, D - 2, D - 1);
     global_quantizer.Dequantize(global_data_v, ebtype, global_tol, s, norm,
-                                global_data_q, lossless, queue_idx);
+                                global_data_q, lossless, queue_idx,
+                                orthogonal_projection);
   }
 
   template <typename LosslessCompressorType>
@@ -328,7 +335,7 @@ public:
       // (the fused kernel indexes them by block id, which matches the
       // idx / hybrid_local_coeff_per_block(D) mapping of the unfused ROI
       // kernel).
-      double C = (1 + std::pow(3, D));
+      double C = orthogonal_projection ? (1 + std::pow(3, D)) : 1.0;
       double norm_factor =
           (ebtype == error_bound_type::REL) ? (double)norm : 1.0;
       std::vector<Array<1, T, DeviceType>> device_quantizers(this->L);
@@ -349,20 +356,22 @@ public:
       }
       refactor.local_refactor.DecomposeQuantize(
           data, decomposed_data, quantized_data, std::vector<T>(),
-          block_quantizers, prep_huffman, huff_dict_size, queue_idx);
+          block_quantizers, prep_huffman, huff_dict_size, queue_idx,
+          orthogonal_projection);
     } else {
       std::vector<T> level_quantizers =
           local_quantizer.DecomposeLevelQuantizers(ebtype, tol, s, norm);
       refactor.local_refactor.DecomposeQuantize(
           data, decomposed_data, quantized_data, level_quantizers,
           std::vector<SubArray<1, T, DeviceType>>(), prep_huffman,
-          huff_dict_size, queue_idx);
+          huff_dict_size, queue_idx, orthogonal_projection);
     }
 
     // Coarsest region (compacted at the front of decomposed_data by the
     // fused local stage).
     if (this->M > 0) {
-      refactor.DecomposeGlobal(decomposed_data, queue_idx);
+      refactor.DecomposeGlobal(decomposed_data, queue_idx,
+                               orthogonal_projection);
       QuantizeGlobalPart(decomposed_data, ebtype, tol, s, norm, quantized_data,
                          lossless, queue_idx);
     } else {
@@ -421,7 +430,8 @@ public:
     if (this->M > 0) {
       DequantizeGlobalPart(decomposed_data, ebtype, tol, s, norm,
                            quantized_data, lossless, queue_idx);
-      refactor.RecomposeGlobal(decomposed_data, queue_idx);
+      refactor.RecomposeGlobal(decomposed_data, queue_idx,
+                               orthogonal_projection);
     } else {
       // Also in ROI mode -- see the matching branch in DecomposeQuantize.
       SIZE coarsest_size = local_quantizer.layer_len[0];
@@ -440,7 +450,7 @@ public:
       // fused kernel indexes them by block id, which matches the
       // idx / hybrid_local_coeff_per_block(D) mapping of the unfused ROI
       // kernel).
-      double C = (1 + std::pow(3, D));
+      double C = orthogonal_projection ? (1 + std::pow(3, D)) : 1.0;
       double norm_factor =
           (ebtype == error_bound_type::REL) ? (double)norm : 1.0;
       std::vector<Array<1, T, DeviceType>> device_dequantizers(this->L);
@@ -463,14 +473,15 @@ public:
       }
       refactor.local_refactor.RecomposeDequantize(
           data, decomposed_data, quantized_data, std::vector<T>(),
-          block_dequantizers, prep_huffman, huff_dict_size, queue_idx);
+          block_dequantizers, prep_huffman, huff_dict_size, queue_idx,
+          orthogonal_projection);
     } else {
       std::vector<T> level_dequantizers =
           local_quantizer.RecomposeLevelDequantizers(ebtype, tol, s, norm);
       refactor.local_refactor.RecomposeDequantize(
           data, decomposed_data, quantized_data, level_dequantizers,
           std::vector<SubArray<1, T, DeviceType>>(), prep_huffman,
-          huff_dict_size, queue_idx);
+          huff_dict_size, queue_idx, orthogonal_projection);
     }
 
     if (log::level & log::TIME) {
@@ -505,22 +516,8 @@ public:
 
     // Global dequantization
     if (this->M > 0) {
-      T global_tol = ErrorBudgetAllocation(tol);
-
-      std::vector<SIZE> global_shape =
-          global_hierarchy->level_shape(global_hierarchy->l_target());
-      SubArray<D, T, DeviceType> global_data_v(global_shape,
-                                               original_data.data());
-      SubArray<D, Q, DeviceType> global_data_q(global_shape,
-                                               quantized_data.data());
-      for (DIM d = 0; d < D; d++) {
-        global_data_v.setLd(d, global_shape[d]);
-        global_data_q.setLd(d, global_shape[d]);
-      }
-      global_data_v.project(D - 3, D - 2, D - 1);
-      global_data_q.project(D - 3, D - 2, D - 1);
-      global_quantizer.Dequantize(global_data_v, ebtype, global_tol, s, norm,
-                                  global_data_q, lossless, queue_idx);
+      DequantizeGlobalPart(original_data, ebtype, tol, s, norm, quantized_data,
+                           lossless, queue_idx);
     }
 
     // Local dequantization
@@ -813,6 +810,7 @@ public:
   Hierarchy<D, T, DeviceType> *hierarchy;
   Hierarchy<D, T, DeviceType> *global_hierarchy;
   Config config;
+  bool orthogonal_projection = true;
 
   LocalQuantizer<D, T, Q, DeviceType> local_quantizer;
   LinearQuantizer<D, T, Q, DeviceType> global_quantizer;

@@ -109,7 +109,7 @@ public:
   // decomposed_data (in-place). Factored out so the fused
   // decompose+quantize path can run it separately from the local stage.
   void DecomposeGlobal(SubArray<1, T, DeviceType> decomposed_data,
-                       int queue_idx) {
+                       int queue_idx, bool orthogonal_projection = true) {
     std::vector<SIZE> global_shape =
         (this->L > 0) ? local_refactor.coarse_shapes[this->L - 1]
                       : hierarchy->level_shape(hierarchy->l_target());
@@ -120,14 +120,15 @@ public:
     }
     global_input_data.project(D - 3, D - 2, D - 1);
 
-    global_refactor.Decompose(global_input_data, true, queue_idx);
+    global_refactor.Decompose(global_input_data, orthogonal_projection,
+                              queue_idx);
   }
 
   // Global-stage recomposition over the coarsest region at the front of
   // decomposed_data (in-place). Factored out so the fused
   // dequantize+recompose path can run it separately from the local stage.
   void RecomposeGlobal(SubArray<1, T, DeviceType> decomposed_data,
-                       int queue_idx) {
+                       int queue_idx, bool orthogonal_projection = true) {
     std::vector<SIZE> global_shape =
         (this->L > 0) ? local_refactor.coarse_shapes[this->L - 1]
                       : hierarchy->level_shape(hierarchy->l_target());
@@ -138,12 +139,14 @@ public:
     }
     global_input_data.project(D - 3, D - 2, D - 1);
 
-    global_refactor.Recompose(global_input_data, true, queue_idx);
+    global_refactor.Recompose(global_input_data, orthogonal_projection,
+                              queue_idx);
   }
 
   // Need revise further to exclude copy time
   void Decompose(SubArray<D, T, DeviceType> data,
-                 SubArray<1, T, DeviceType> decomposed_data, int queue_idx) {
+                 SubArray<1, T, DeviceType> decomposed_data,
+                 int queue_idx, bool orthogonal_projection = true) {
     if (this->L == 0 && this->M == 0) {
       throw ProcessingException("Both L and M cannot be zero");
     }
@@ -165,16 +168,19 @@ public:
 
       multi_dimension::CopyND(data, global_input_data, queue_idx);
 
-      global_refactor.Decompose(global_input_data, true, queue_idx);
+      global_refactor.Decompose(global_input_data, orthogonal_projection,
+                                queue_idx);
     } else if (this->M == 0) {
       // Pure Local
-      local_refactor.Decompose(data, decomposed_data, queue_idx);
+      local_refactor.Decompose(data, decomposed_data, queue_idx,
+                               orthogonal_projection);
     } else {
       // Local decomposition
-      local_refactor.Decompose(data, decomposed_data, queue_idx);
+      local_refactor.Decompose(data, decomposed_data, queue_idx,
+                               orthogonal_projection);
 
       // Global decomposition
-      DecomposeGlobal(decomposed_data, queue_idx);
+      DecomposeGlobal(decomposed_data, queue_idx, orthogonal_projection);
     }
 
     if (log::level & log::TIME) {
@@ -188,7 +194,8 @@ public:
 
   // Need revise further to exclude copy time
   void Recompose(SubArray<D, T, DeviceType> data,
-                 SubArray<1, T, DeviceType> decomposed_data, int queue_idx) {
+                 SubArray<1, T, DeviceType> decomposed_data,
+                 int queue_idx, bool orthogonal_projection = true) {
     if (this->L == 0 && this->M == 0) {
       throw ProcessingException("Both L and M cannot be zero");
     }
@@ -208,13 +215,15 @@ public:
       }
       global_input_data.project(D - 3, D - 2, D - 1);
 
-      global_refactor.Recompose(global_input_data, true, queue_idx);
+      global_refactor.Recompose(global_input_data, orthogonal_projection,
+                                queue_idx);
 
       // Copy back to data
       multi_dimension::CopyND(global_input_data, data, queue_idx);
     } else if (this->M == 0) {
       // Pure Local
-      local_refactor.Recompose(data, decomposed_data, queue_idx);
+      local_refactor.Recompose(data, decomposed_data, queue_idx,
+                               orthogonal_projection);
     } else {
       std::vector<SIZE> local_coarest_shape =
           local_refactor.coarse_shapes[this->L - 1];
@@ -226,10 +235,12 @@ public:
       global_input_data.project(D - 3, D - 2, D - 1);
 
       // Global recomposition
-      global_refactor.Recompose(global_input_data, true, queue_idx);
+      global_refactor.Recompose(global_input_data, orthogonal_projection,
+                                queue_idx);
 
       // Local recomposition
-      local_refactor.Recompose(data, decomposed_data, queue_idx);
+      local_refactor.Recompose(data, decomposed_data, queue_idx,
+                               orthogonal_projection);
     }
 
     if (log::level & log::TIME) {
