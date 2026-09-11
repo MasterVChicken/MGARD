@@ -1,8 +1,8 @@
-# MGARD-Lambda 
+# *MGARD*$\text{-}\lambda$
 
 Data compression while preserving non-linear quantities of interest. 
 
-*MGARD-Lambda is an experimental part of MGARD. Currently only supporting certain QoIs derived from XGC 5D data.*
+*MGARD*$\text{-}\lambda$ is an experimental part of MGARD. Currently supports only certain QoIs derived from XGC 5D data.
 
 #### Prerequisites:
 
@@ -11,7 +11,7 @@ Data compression while preserving non-linear quantities of interest.
 * CMake: version > 19.0
 * ADIOS2: any version
 
-First, build and install MGARD. Then, build the MGARD- example as follows:
+First, build and install *MGARD*. Then, build the *MGARD*$\text{-}\lambda$ example as follows:
 
 ```
 $ build_script.sh
