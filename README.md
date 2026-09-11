@@ -17,7 +17,7 @@ We encourage you to [make a GitHub issue][issue form] if you run into any proble
 
 MGARD framework consists of the following modules. Please see the detailed instructions for each module to build and install MGARD.
 
-## ***MGARD-CPU***: Legacy compression implementation for CPUs
+## ***MGARD-CPU***: MGARD compression implementation for CPUs
 *MGARD-CPU* is designed for running compression on CPUs. See the detailed user guide [here][mgard-cpu]. In addition, *MGARD-CPU* can be configured to preserve region-of-interest ([RoI user guide][mgard-roi]) and linear quantity-of-interest ([QoI user guide][mgard-qoi]) during data compression.
 
 [mgard-cpu]: doc/MGARD-CPU.md
