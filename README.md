@@ -38,13 +38,6 @@ In addition, *MGARD-X* can be configured to preserve region-of-interest ([RoI us
 [mgard-lambda-theory]: doc/images/post-processing.pdf
 [mgard-lambda]: ./examples/lambda
 
-## ***MGARD-CUDA***: CUDA-accelerated compression [deprecated]
-*MGARD-CUDA* is designed for accelerating compression specifically using NVIDIA GPUs. See the detailed user guide [here][gpu instructions].
-
-**MGARD-CUDA is deprecated and no longer being maintained. Users seeking GPU acceleration should use MGARD-X instead.**
-
-[gpu instructions]: doc/MGARD-GPU.md
-
 ## ***MDR/MDR-X***: Fine-grain progressive data reconstruction
 *MDR* and *MDR-X* are designed to enable fine-grain data refactoring and progressive data reconstruction. See the detailed user guide [here][mdr_x instructions].
 

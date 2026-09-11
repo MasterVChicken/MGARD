@@ -4,7 +4,6 @@ set(
 	"README.md"
 	"doc/MGARD-X.md"
 	"doc/MDR-X.md"
-	"doc/MGARD-GPU.md"
 	"examples/README.md"
 	"examples/linking/README.md"
 	"examples/compression/README.md"

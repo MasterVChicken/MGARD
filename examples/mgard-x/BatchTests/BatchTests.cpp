@@ -16,10 +16,8 @@
 #include <string.h>
 
 #include "mgard/compress.hpp"
-#include "mgard/compress_cuda.hpp"
 #include "mgard/compress_x.hpp"
 #include "mgard/mgard-x/Utilities/ErrorCalculator.h"
-// #include "compress_cuda.hpp"
 
 #define ANSI_RED "\x1b[31m"
 #define ANSI_GREEN "\x1b[32m"
@@ -27,7 +25,7 @@
 
 using namespace std::chrono;
 
-enum device { CPU, CUDA, X_CUDA, X_HIP, X_Serial };
+enum device { CPU, X_CUDA, X_HIP, X_Serial };
 enum data_type { SINGLE, DOUBLE };
 enum error_type { ABS, REL };
 
@@ -101,32 +99,6 @@ void compression(std::vector<mgard_x::SIZE> shape, enum device dev, T tol, T s,
     compressed_size = tmp_str.length();
     compressed_data = (void *)malloc(compressed_size);
     memcpy(compressed_data, tmp_str.c_str(), compressed_size);
-  } else if (dev == CUDA) {
-#if MGARD_ENABLE_LEGACY_CUDA
-    mgard_cuda::Config config;
-    config.lossless = mgard_cuda::lossless_type::GPU_Huffman_LZ4;
-    config.sync_and_check_all_kernels = true;
-    config.uniform_coord_mode = 1;
-
-    mgard_cuda::data_type dtype;
-    if (std::is_same<T, double>::value) {
-      dtype = mgard_cuda::data_type::Double;
-    } else if (std::is_same<T, float>::value) {
-      dtype = mgard_cuda::data_type::Float;
-    }
-
-    mgard_cuda::error_bound_type ebtype;
-    if (mode == error_type::ABS) {
-      ebtype = mgard_cuda::error_bound_type::ABS;
-    } else if (mode == error_type::REL) {
-      ebtype = mgard_cuda::error_bound_type::REL;
-    }
-
-    mgard_cuda::compress(D, dtype, shape, tol, s, ebtype, original_data,
-                         compressed_data, compressed_size, config);
-#else
-    std::cout << "MGARD legacy CUDA was not built.\n";
-#endif
   } else {
     mgard_x::Config config;
     config.lossless = mgard_x::lossless_type::Huffman_Zstd;
@@ -180,24 +152,6 @@ void decompression(std::vector<mgard_x::SIZE> shape, enum device dev, T tol,
     const void *decompressed_data_void = new_data_.data.get();
     memcpy(decompressed_data, decompressed_data_void,
            original_size * sizeof(T));
-  } else if (dev == CUDA) {
-#if MGARD_ENABLE_LEGACY_CUDA
-    mgard_cuda::Config config;
-    config.lossless = mgard_cuda::lossless_type::GPU_Huffman;
-    config.sync_and_check_all_kernels = true;
-    config.uniform_coord_mode = 1;
-    mgard_cuda::data_type dtype;
-    if (std::is_same<T, double>::value) {
-      dtype = mgard_cuda::data_type::Double;
-    } else if (std::is_same<T, float>::value) {
-      dtype = mgard_cuda::data_type::Float;
-    }
-
-    mgard_cuda::decompress(compressed_data, compressed_size, decompressed_data,
-                           config);
-#else
-    std::cout << "MGARD legacy CUDA was not built.\n";
-#endif
   } else {
     mgard_x::Config config;
     config.lossless = mgard_x::lossless_type::Huffman;
@@ -371,11 +325,6 @@ int main(int argc, char *argv[]) {
     std::cout << "CPU\n";
   }
 
-  if (strcmp(dev1, "cuda") == 0) {
-    device_type1 = device::CUDA;
-    std::cout << "LEGACY_CUDA\n";
-  }
-
   std::cout << "Device2: ";
   if (strcmp(dev2, "x-serial") == 0) {
     dev_type = mgard_x::device_type::SERIAL;
@@ -394,11 +343,6 @@ int main(int argc, char *argv[]) {
   if (strcmp(dev2, "cpu") == 0) {
     device_type2 = device::CPU;
     std::cout << "CPU\n";
-  }
-
-  if (strcmp(dev2, "cuda") == 0) {
-    device_type2 = device::CUDA;
-    std::cout << "LEGACY_CUDA\n";
   }
 
   std::vector<std::vector<mgard_x::SIZE>> shapes;

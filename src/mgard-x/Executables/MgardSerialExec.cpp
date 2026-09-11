@@ -13,7 +13,6 @@
 #include <string.h>
 
 #include "compress.hpp"
-// #include "compress_cuda.hpp"
 #include "mgard-x/Utilities/ErrorCalculator.h"
 
 using namespace std::chrono;

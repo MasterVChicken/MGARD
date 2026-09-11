@@ -37,7 +37,6 @@ option(MGARD_ENABLE_CUDA "Enable CUDA support" OFF)
 option(MGARD_ENABLE_SERIAL "Enable SERIAL support" ON)
 option(MGARD_ENABLE_HIP "Enable HIP support" OFF)
 option(MGARD_ENABLE_SYCL "Enable SYCL support" OFF)
-option(MGARD_ENABLE_LEGACY_CUDA "Enable legacy CUDA support" OFF)
 option(MGARD_ENABLE_AUTO_TUNING "Enable auto tuning" OFF)
 option(MGARD_ENABLE_MDR "Enable MDR" ON)
 option(MGARD_ENABLE_EXTERNAL_COMPRESSOR "Enable external compressor" OFF)
@@ -188,32 +187,6 @@ if(MGARD_ENABLE_CUDA)
        CUDA_SEPARABLE_COMPILATION ON)
 
   set_source_files_properties(${MGARD_X_CUDA_SRC} PROPERTIES LANGUAGE CUDA)
-endif()
-
-if (MGARD_ENABLE_LEGACY_CUDA)
-  enable_language(CUDA)
-  set(CMAKE_CUDA_STANDARD_REQUIRED TRUE)
-  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-      set(CMAKE_CUDA_ARCHITECTURES 70)
-  endif()
-
-  find_package(nvcomp REQUIRED)
-  find_package(CUDAToolkit REQUIRED)
-
-  add_subdirectory (src/cuda)
-  add_subdirectory (include/cuda)
-  add_executable(mgard-gpu ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/MgardCudaExec.cpp)
-    target_link_libraries(mgard-gpu mgard-library  ${CMAKE_DL_LIBS})
-    target_include_directories(mgard-gpu PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-                                                $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>)
-
-  target_compile_definitions(mgard-library PUBLIC MGARD_ENABLE_LEGACY_CUDA)
-  set (CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr -w")
-  
-  set (MGARD_X_SEPARATE_COMPILE_COMPILATION_OPTION 
-       CUDA_SEPARABLE_COMPILATION ON)
-
-  install(TARGETS mgard-gpu)
 endif()
 
 if (MGARD_ENABLE_HIP)
@@ -378,13 +351,7 @@ if(ZSTD_FOUND)
 endif()
 
 if(MGARD_ENABLE_CUDA)
-  # mgard-x no longer uses nvcomp (its LZ4 backend is portable); only the legacy
-  # CUDA backend below still needs it.
   target_link_libraries(mgard-library PUBLIC CUDA::cudart)
-endif()
-
-if(MGARD_ENABLE_LEGACY_CUDA)
-  target_link_libraries(mgard-library PUBLIC nvcomp::nvcomp CUDA::cudart)
 endif()
 
 if(MGARD_ENABLE_OPENMP)
@@ -517,12 +484,6 @@ if (MGARD_ENABLE_HIP)
 endif()
 message(STATUS "SYCL:        ${MGARD_ENABLE_SYCL}")
 list(POP_BACK CMAKE_MESSAGE_INDENT)
-message(STATUS "LEGACY CUDA:   ${MGARD_ENABLE_LEGACY_CUDA}")
-if (MGARD_ENABLE_LEGACY_CUDA)
-  list(APPEND CMAKE_MESSAGE_INDENT "  ")
-  message(STATUS "CUDA Arch: ${CMAKE_CUDA_ARCHITECTURES}")
-  list(POP_BACK CMAKE_MESSAGE_INDENT)
-endif()
 message(STATUS "auto tuning:   ${MGARD_ENABLE_AUTO_TUNING}")
 message(STATUS "MDR:           ${MGARD_ENABLE_MDR}")
 message(STATUS "timing:        ${MGARD_ENABLE_TIMING}")
