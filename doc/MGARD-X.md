@@ -23,8 +23,6 @@ MGARD-X is a portable implementation of the MGARD lossy compressor supporting va
 |Intel GPUs|Yes|Gen9|
 |Integrated GPUs|Yes|Gen9|
 
-*LZ4 lossless compressor is only avaialble to choose on NVIDIA GPUs. Portable version is under development.
-
 ## Interfaces
 
 * **Command Line Inteface:** Full-featured command line executable for compression/decompression. 
@@ -54,7 +52,7 @@ MGARD-X is a portable implementation of the MGARD lossy compressor supporting va
 
 ### For AMD GPUs
 
-* ROCm 4.5.0+
+* ROCm 7.0.0+
 * CMake 3.21+
 
 ### For Intel GPUs
@@ -64,11 +62,9 @@ MGARD-X is a portable implementation of the MGARD lossy compressor supporting va
 
 
 ## Software dependencies 
-* [NVCOMP v2.2.0][nvcomp] (for NVIDIA GPUs only)
 * [ZSTD v1.5.0][zstd]
 * [Protobuf v3.19.4][protobuf]
 
-[nvcomp]: https://github.com/NVIDIA/nvcomp.git
 [zstd]: https://github.com/facebook/zstd.git
 [protobuf]: https://github.com/protocolbuffers/protobuf.git
 ## Configure and build
@@ -84,8 +80,6 @@ MGARD-X is a portable implementation of the MGARD lossy compressor supporting va
 |MGARD\_ENABLE\_CUDA|ON/OFF|OFF|Enable portable GPU compression/decompression with CUDA on NVIDIA GPUs|
 |MGARD\_ENABLE\_HIP|ON/OFF|OFF|Enable portable GPU compression/decompression with HIP on AMD GPUs|
 |MGARD\_ENABLE\_SYCL|ON/OFF|OFF|Enable portable GPU compression/decompression with SYCL on Intel GPUs|
-|MGARD\_ENABLE\_MULTI_DEVICE|ON/OFF|OFF|Enable multi-device (GPUs) compression/decompression|
-|MGARD\_ENABLE\_COORDINATE\_NORMALIZATION|ON/OFF|ON|Enable coordinate normalization|
 |MGARD\_ENABLE\_AUTO\_TUNING|ON/OFF|OFF|Enable auto tuning feature|
 |MGARD\_ENABLE\_MDR|ON/OFF|OFF|Enable building MDR and MDR-X|
 

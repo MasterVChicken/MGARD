@@ -13,45 +13,42 @@ We encourage you to [make a GitHub issue][issue form] if you run into any proble
 [format workflow badge]: https://github.com/CODARcode/MGARD/actions/workflows/format.yml/badge.svg
 [issue form]: https://github.com/CODARcode/MGARD/issues/new/choose
 
-[<img src="./doc/images/MGARD-familytree.png" width="800" />](./doc/images/MGARD-familytree.png)
+[<img src="./doc/images/MGARD-family2.png" width="800" />](./doc/images/MGARD-family2.png)
 
 MGARD framework consists of the following modules. Please see the detailed instructions for each module to build and install MGARD.
 
-## `MGARD-CPU`: MGARD implementation for CPUs
-MGARD-CPU is design for running compression on CPUs. See detailed user guide in [here][mgard-cpu]
+## ***MGARD-CPU***: Legacy compression implementation for CPUs
+MGARD-CPU is design for running compression on CPUs. See detailed user guide in [here][mgard-cpu]. In addition, MGARD-CPU can be configured to preserving region-of-interest ([RoI user guide][mgard-roi]) and linear quantity-of-interest ([QoI user guide][mgard-qoi]) during data compression.
 
 [mgard-cpu]: doc/MGARD-CPU.md
-
-## `MGARD-CUDA`: CUDA accelerated compression
-MGARD-CUDA is designed for accelerating compression specifically using NVIDIA GPUs. See detailed user guide in [here][gpu instructions].
-
-[gpu instructions]: doc/MGARD-GPU.md
-
-## `MGARD-X`: Accelerated and portable compression
-MGARD-X is designed for portable compression on NVIDIA GPUs, AMD GPUs, and CPUs. See detailed user guide in [here][mgard_x instructions].
-
-[mgard_x instructions]: doc/MGARD-X.md
-
-## `MGARD-DR`/`MGARD-XDR`: Fine-grain progressive data reconstruction
-MGARD-DR and MGARD-XDR are designed for enabling fine-grain data refactoring and progressive data reconstruction. See detailed user guide in [here][mdr_x instructions].
-
-[mdr_x instructions]: doc/MDR-X.md
-
-## `MGARD-ROI`: Preserving Region-of-Interest
-MGARD-ROI is designed for preserving region-of-interest during data compression. See detailed user guide in [here][mgard-roi].
-
 [mgard-roi]: doc/MGARD-RoI.md
-
-## `MGARD-QOI`: Preserving Linear Quantity-of-Interest
-MGARD-QOI is designed for preserving linear quantity-of-interest during data compression. See detailed user guide in [here][mgard-qoi].
-
 [mgard-qoi]: doc/MGARD-QoI.md
 
-## `MGARD-Lambda`: Preserving Non-Linear Quantity-of-Interest
-MGARD-Lambda is designed for preserving non-linear quantity-of-interest during data compression. This is an experimental part of MGARD. Currently only support certain QoIs derived from XGC 5D data. See theory in [here][mgard-lambda-theory] and example in [here][mgard-lambda].
+## ***MGARD-X***: Accelerated and portable compression
+MGARD-X is designed for portable compression on NVIDIA GPUs, AMD GPUs, and CPUs. See detailed user guide in [here][mgard_x instructions].
+In addition, MGARD-X can be configured to preserving region-of-interest ([RoI user guide][mgard-roi2]) and linear quantity-of-interest ([QoI user guide][mgard-qoi]) during data compression.
+
+[mgard_x instructions]: doc/MGARD-X.md
+[mgard-roi2]: doc/MGARD-RoI2.md
+[mgard-qoi]: doc/MGARD-QoI.md
+
+## ***MGARD-$\lambda$***: Preserving Non-Linear Quantity-of-Interest
+MGARD-$\lambda$ is specifically designed for preserving non-linear quantity-of-interest during data compression. This is an experimental part of MGARD. Currently only support certain QoIs derived from XGC 5D data. See theory in [here][mgard-lambda-theory] and example in [here][mgard-lambda].
 
 [mgard-lambda-theory]: doc/images/post-processing.pdf
 [mgard-lambda]: ./examples/lambda
+
+## ***MGARD-CUDA***: CUDA accelerated compression [deprecated]
+MGARD-CUDA is designed for accelerating compression specifically using NVIDIA GPUs. See detailed user guide in [here][gpu instructions].
+
+**MGARD-CUDA is deprecated and no longer being maintained. Users seeking GPU acceleration should use MGARD-X instead.**
+
+[gpu instructions]: doc/MGARD-GPU.md
+
+## ***MDR/MDR-X***: Fine-grain progressive data reconstruction
+MDR and MDR-X are designed for enabling fine-grain data refactoring and progressive data reconstruction. See detailed user guide in [here][mdr_x instructions].
+
+[mdr_x instructions]: doc/MDR-X.md
 
 ## Self-describing format for compressed and refactored data
 Data produced by MGARD, MGARD-X, and MDR-X are designed to follow a unified self-describing format. See format details in [here][mgard format].
@@ -69,7 +66,7 @@ Data produced by MGARD, MGARD-X, and MDR-X are designed to follow a unified self
 * Ben Whitney. [Multilevel Techniques for Compression and Reduction of Scientific Data.][thesis] PhD thesis, Brown University, 2018.
 
 ### Preserving Quantites of Interest (QoIs)
-* Xuan Wu et al. [Error-controlled Progressive Retrieval of Scientific Data under Derivable Quantities of Interest.] [qoi] **the International Conference for High Performance Computing, Networking, Storage and Analysis 2024*, Nov, 2024* 
+* Xuan Wu et al. [Error-controlled Progressive Retrieval of Scientific Data under Derivable Quantities of Interest.][qoi] **the International Conference for High Performance Computing, Networking, Storage and Analysis 2024*, Nov, 2024* 
 * Tania Banerjee et al. [Scalable Hybrid Learning Techniques for Scientific Data Compression.][pp3], *Arxiv*, 2022
 * Qian Gong et al. [Region-adaptive, Error-controlled Scientific Data Compression using Multilevel Decomposition.][roi2] *the 34th International Conference on Scientific and Statistical Database Management*, Jul. 2022
 * Tania Benerjee et al. An algorithmic and software pipeline for very large scale scientific data compression with error guarantees. *International Conference on High Performance Computing, Data, and Analytics*, 2022
@@ -81,9 +78,9 @@ Data produced by MGARD, MGARD-X, and MDR-X are designed to follow a unified self
 * Xin Liang et al. [Error-controlled, progressive, and adaptable retrieval of scientific data with multilevel decomposition.][mdr] *the International Conference for High Performance Computing, Networking, Storage and Analysis 2021*, Nov, 2021
 
 ### Parallelization and GPU Acceleration
-* Jieyang Chen et al. [HPDR: High-Performance Portable Scientific Data Reduction Framework.][gpu3] 39th IEEE International Parallel and Distributed Processing Symposium, June 3-7, 2025
+* Jieyang Chen et al. [HPDR: High-Performance Portable Scientific Data Reduction Framework.][gpu3] 39th IEEE International Parallel and Distributed Processing Symposium, June, 2025
 * Jieyang Chen et al. [Scalable Multigrid-based Hierarchical Scientific Data Refactoring on GPUs.][gpu2] *Arxiv*
-* Jieyang Chen et al. [Accelerating Multigrid-based Hierarchical Scientific Data Refactoring on GPUs.][gpu] *35th IEEE International Parallel & Distributed Processing Symposium*, May 17–21, 2021.
+* Jieyang Chen et al. [Accelerating Multigrid-based Hierarchical Scientific Data Refactoring on GPUs.][gpu] *35th IEEE International Parallel & Distributed Processing Symposium*, May, 2021.
 
 ### System Optimizations
 * Lipeng Wan et al. RAPIDS: Reconciling Availability, Accuracy, and Performance in Managing Geo-Distributed Scientific Data. *the International ACM Symposium on High-Performance Parallel and Distributed Computing*, Jun. 2023
