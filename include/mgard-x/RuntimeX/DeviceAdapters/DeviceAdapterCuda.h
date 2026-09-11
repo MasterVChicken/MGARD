@@ -12,10 +12,14 @@
 #include <iostream>
 // #include <mma.h>
 
+#if defined(CUB_VERSION) && CUB_VERSION >= 300000
+#include <cuda/functional>
+#endif
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
 #include <thrust/functional.h>
 #include <thrust/host_vector.h>
+#include <thrust/iterator/transform_iterator.h>
 #include <thrust/scan.h>
 
 // using namespace nvcuda;
@@ -1138,7 +1142,12 @@ struct BlockReduce<T, nblockx, nblocky, nblockz, CUDA> {
   static void Max(T intput, T &output) {
     __shared__ TempStorageType temp_storage;
     BlockReduceType blockReduce(temp_storage);
+#if defined(CUB_VERSION) && CUB_VERSION >= 300000
+    // cub::Max() was removed as of CCCL 3.0 (bundled with CUDA 13+).
+    output = blockReduce.Reduce(intput, ::cuda::maximum<>());
+#else
     output = blockReduce.Reduce(intput, cub::Max());
+#endif
   }
 };
 
@@ -2617,8 +2626,8 @@ public:
                                     bool workspace_allocated, int queue_idx) {
 
     SquareOp squareOp;
-    cub::TransformInputIterator<T, SquareOp, T *> transformed_input_iter(
-        v.data(), squareOp);
+    auto transformed_input_iter =
+        thrust::make_transform_iterator(v.data(), squareOp);
     Byte *d_temp_storage = workspace_allocated ? workspace.data() : nullptr;
     size_t temp_storage_bytes = workspace_allocated ? workspace.shape(0) : 0;
     cudaStream_t stream = DeviceRuntime<CUDA>::GetQueue(queue_idx);
@@ -2735,8 +2744,7 @@ public:
 
     thrust::equal_to<KeyT> binary_pred;
 
-    struct ThrustBinaryOp
-        : public thrust::binary_function<ValueT, ValueT, ValueT> {
+    struct ThrustBinaryOp {
       MGARDX_CONT_EXEC
       ValueT operator()(ValueT x, ValueT y) {
         BinaryOpType op;
