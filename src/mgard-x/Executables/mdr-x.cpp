@@ -44,6 +44,10 @@ void print_usage_message(std::string error) {
 \t\t (optional) -dd / --domain-decomposition <max-dim|block>\n\
 \t\t\t (optional) -dd-size / --domain-decomposition-size <integer> (for block domain decomposition only) \n\
 \t\t (optional) -l / --lossless <huffman|huffman-zstd>: bitplane lossless stage (default: huffman)\n\
+\t\t (optional) -hh / --hybrid: use the hybrid (BlockMGARD) decomposition: block-local\n\
+\t\t\t in-cache levels + global levels over the coarsest block-local region (1D-3D)\n\
+\t\t\t (optional) -ll / --local-levels <int>: block-local levels (default: 1)\n\
+\t\t\t (optional) -gl / --global-levels <int>: global levels, -1 = as many as possible (default: -1)\n\
 \n\
 \t -x / --reconstruct: reconstruct data\n\
 \t\t -i / --input <path to refactored data dir>\n\
@@ -308,13 +312,19 @@ int launch_refactor(mgard_x::DIM D, enum mgard_x::data_type dtype,
                     std::string domain_decomposition, mgard_x::SIZE block_size,
                     enum mgard_x::device_type dev_type, int verbose,
                     mgard_x::SIZE max_memory_footprint,
-                    enum mgard_x::lossless_type lossless) {
+                    enum mgard_x::lossless_type lossless, bool use_hybrid,
+                    int num_local_levels, int num_global_levels) {
 
   mgard_x::Config config;
   config.normalize_coordinates = false;
   config.lossless = lossless;
   config.log_level = verbose_to_log_level(verbose);
   config.decomposition = mgard_x::decomposition_type::MultiDim;
+  if (use_hybrid) {
+    config.decomposition = mgard_x::decomposition_type::Hybrid;
+    config.num_local_refactoring_level = num_local_levels;
+    config.num_global_refactoring_level = num_global_levels;
+  }
   if (domain_decomposition == "max-dim") {
     config.domain_decomposition = mgard_x::domain_decomposition_type::MaxDim;
   } else if (domain_decomposition == "block") {
@@ -528,16 +538,29 @@ bool try_refactoring(int argc, char *argv[]) {
                                           "--domain-decomposition-size");
     }
   }
+  bool use_hybrid = has_arg(argc, argv, "-hh", "--hybrid");
+  int num_local_levels = 1;
+  if (has_arg(argc, argv, "-ll", "--local-levels")) {
+    num_local_levels =
+        get_arg<int>(argc, argv, "Local levels", "-ll", "--local-levels");
+  }
+  int num_global_levels = -1;
+  if (has_arg(argc, argv, "-gl", "--global-levels")) {
+    num_global_levels =
+        get_arg<int>(argc, argv, "Global levels", "-gl", "--global-levels");
+  }
   if (dtype == mgard_x::data_type::Double) {
     launch_refactor<double>(shape.size(), dtype, input_file.c_str(),
                             output_file.c_str(), shape, domain_decomposition,
                             block_size, dev_type, verbose, max_memory_footprint,
-                            lossless);
+                            lossless, use_hybrid, num_local_levels,
+                            num_global_levels);
   } else if (dtype == mgard_x::data_type::Float) {
     launch_refactor<float>(shape.size(), dtype, input_file.c_str(),
                            output_file.c_str(), shape, domain_decomposition,
                            block_size, dev_type, verbose, max_memory_footprint,
-                           lossless);
+                           lossless, use_hybrid, num_local_levels,
+                           num_global_levels);
   }
   return true;
 }

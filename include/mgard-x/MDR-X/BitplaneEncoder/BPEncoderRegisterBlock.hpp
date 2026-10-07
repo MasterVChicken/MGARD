@@ -587,10 +587,17 @@ public:
   }
 
   void Adapt(Hierarchy<D, T_data, DeviceType> &hierarchy, int queue_idx) {
+    Adapt(hierarchy, hierarchy.level_num_elems(hierarchy.l_target()),
+          queue_idx);
+  }
+
+  // max_level_num_elems: element count of the largest level to be encoded
+  // (with the hybrid decomposition the levels do not follow the hierarchy).
+  void Adapt(Hierarchy<D, T_data, DeviceType> &hierarchy,
+             SIZE max_level_num_elems, int queue_idx) {
     this->initialized = true;
     this->hierarchy = &hierarchy;
-    SIZE max_level_num_elems =
-        round_up(hierarchy.level_num_elems(hierarchy.l_target()), BATCH_SIZE);
+    max_level_num_elems = round_up(max_level_num_elems, BATCH_SIZE);
 
     level_errors_work_array.resize(
         {MAX_BITPLANES + 1, num_blocks(max_level_num_elems)}, queue_idx);

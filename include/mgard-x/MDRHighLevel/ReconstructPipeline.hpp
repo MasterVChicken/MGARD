@@ -42,6 +42,8 @@ void reconstruct_pipeline(
       Cache::cache.GetHierarchyCache(domain_decomposer.subdomain_shape(0));
 
   log::info("Adjust device buffers");
+  // The level layout (and so the buffer sizes) comes from the reconstructor
+  reconstructor.Adapt(hierarchy, config, 0);
   mdr_data[0].Resize(reconstructor, hierarchy, 0);
   mdr_data[1].Resize(reconstructor, hierarchy, 0);
   mdr_data[2].Resize(reconstructor, hierarchy, 0);

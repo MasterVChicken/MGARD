@@ -98,10 +98,9 @@ public:
     data.resize(num_subdomains);
     data_allocation_size.resize(num_subdomains);
     for (SIZE id = 0; id < domain_decomposer.num_subdomains(); id++) {
-      Hierarchy<D, T, DeviceType> hierarchy(
-          domain_decomposer.subdomain_shape(id), config);
       std::vector<std::vector<SIZE>> estimation =
-          RefactorType::EstimateMaxBitplaneSizes(hierarchy);
+          RefactorType::EstimateMaxBitplaneSizes(
+              domain_decomposer.subdomain_shape(id), config);
       SIZE num_levels = estimation.size();
       SIZE num_bitplanes = estimation[0].size();
       data[id].resize(num_levels);

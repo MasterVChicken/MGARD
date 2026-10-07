@@ -54,6 +54,13 @@ void load(Config &config, Metadata<DeviceType> &metadata) {
   config.huff_dict_size = metadata.huff_dict_size;
   config.huff_block_size = metadata.huff_block_size;
   config.total_num_bitplanes = metadata.number_bitplanes;
+  if (metadata.decomposition == decomposition_type::Hybrid) {
+    // Needed to rebuild the hybrid level layout
+    config.num_local_refactoring_level = (int)metadata.hybrid_num_local_levels;
+    config.num_global_refactoring_level =
+        (int)metadata.hybrid_num_global_levels;
+    config.projection_mode = metadata.hybrid_projection_mode;
+  }
 }
 
 template <DIM D, typename T, typename DeviceType>
@@ -143,6 +150,15 @@ void MDRefactor(std::vector<SIZE> shape, const void *original_data,
         config.domain_decomposition, domain_decomposer.domain_decomposed_dim(),
         domain_decomposer.domain_decomposed_size(), config.total_num_bitplanes,
         coords);
+  }
+
+  if (config.decomposition == decomposition_type::Hybrid) {
+    // The reconstructor needs the level counts to rebuild the level layout.
+    m.hybrid_num_local_levels = (uint64_t)config.num_local_refactoring_level;
+    m.hybrid_num_global_levels = (uint64_t)config.num_global_refactoring_level;
+    m.hybrid_local_block_size = MGARDX_HYBRID_LOCAL_BLOCK_SIZE;
+    // MDR-X uses the hierarchical basis (no L2 projection)
+    m.hybrid_projection_mode = compression_projection_mode_type::Hierarchical;
   }
 
   uint32_t metadata_size;

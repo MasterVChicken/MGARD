@@ -31,11 +31,13 @@ public:
   // Resize before refactoring
   template <typename RefactorType, typename HierarchyType>
   void Resize(RefactorType &refactor, HierarchyType &hierarchy, int queue_idx) {
+    // Level structure comes from the refactor/reconstructor, not the
+    // hierarchy: with the hybrid decomposition they differ.
     std::vector<std::vector<SIZE>> estimation =
-        RefactorType::EstimateMaxBitplaneSizes(hierarchy);
+        refactor.EstimateMaxBitplaneSizes();
     SIZE num_levels = estimation.size();
     SIZE num_bitplanes = estimation[0].size();
-    std::vector<SIZE> level_num_elems = hierarchy.level_num_elems();
+    const std::vector<SIZE> &level_num_elems = refactor.LevelNumElems();
     compressed_bitplanes.resize(num_levels);
     level_signs.resize(num_levels);
     for (int level_idx = 0; level_idx < num_levels; level_idx++) {
@@ -48,8 +50,7 @@ public:
       // overruns it whenever a level's element count isn't already a
       // multiple of the batch size.
       level_signs[level_idx].resize(
-          {round_up(hierarchy.level_num_elems(level_idx),
-                    RefactorType::BATCH_SIZE)},
+          {round_up(level_num_elems[level_idx], RefactorType::BATCH_SIZE)},
           queue_idx);
       for (int bitplane_idx = 0; bitplane_idx < num_bitplanes; bitplane_idx++) {
         compressed_bitplanes[level_idx][bitplane_idx].resize(

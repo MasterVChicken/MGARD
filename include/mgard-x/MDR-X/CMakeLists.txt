@@ -5,6 +5,7 @@ SET(MDR_HEADER
 	${CMAKE_CURRENT_SOURCE_DIR}/Decomposer/MGARD.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/Decomposer/Decomposer.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/Decomposer/DecomposerInterface.hpp
+	${CMAKE_CURRENT_SOURCE_DIR}/Decomposer/HybridDecomposer.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/Reorganizer
 	${CMAKE_CURRENT_SOURCE_DIR}/Reorganizer/Reorganizer.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/Reorganizer/BasicReorganizer.hpp

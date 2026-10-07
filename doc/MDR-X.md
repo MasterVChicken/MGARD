@@ -14,6 +14,10 @@ Multi-precision Data Refactoring designed on top of MGARD for enabling fine-grai
 * **Error-bound type:** L\_Inf error and L\_2 error
 * **Data structure:** Uniform spaced Cartisan gird
 * **Portability:** Same as MGARD-X (MDR-X only)
+* **Decomposition (MDR-X only):** global multigrid hierarchy (default), or the hybrid BlockMGARD hierarchy (1D-3D, see below)
+
+### Hybrid decomposition (MDR-X)
+With `config.decomposition = decomposition_type::Hybrid` (`mdr-x -z ... -hh`), MDR-X replaces the global multigrid decomposition with the BlockMGARD design: `num_local_refactoring_level` (`-ll`, default 1) levels of the block-local in-cache decomposition (each 8^D block coarsens to 5^D nodes), followed by `num_global_refactoring_level` (`-gl`, default -1 = as many as possible) global multigrid levels over the coarsest block-local region. Each block-local level becomes one MDR level and its coefficients are written directly into the level buffer, so no interleaving pass is needed for them. The level counts are stored in the header, so reconstruction needs no extra options. The hierarchical basis (no L2 projection) is used. Adaptive-resolution reconstruction is not supported in this mode; it falls back to full resolution.
 
 ## Configure and build
 

@@ -26,6 +26,9 @@ public:
   using T_error = double;
   using Decomposer = MGARDDecomposer<D, T_data, Basis, DeviceType>;
   using Interleaver = DirectInterleaver<D, T_data, DeviceType>;
+  using LocalDecomposer = HybridDecomposer<D, T_data, DeviceType>;
+  static constexpr bool OrthogonalBasis =
+      std::is_same<Basis, Orthogonal>::value;
 
   constexpr static bool ProfileBPEncoder = false;
   // using Encoder = GroupedBPEncoder<D, T_data, T_bitplane, T_error,
@@ -64,12 +67,11 @@ public:
   }
 
   static SIZE MaxOutputDataSize(std::vector<SIZE> shape, Config config) {
-    Hierarchy<D, T_data, DeviceType> hierarchy;
-    hierarchy.EstimateMemoryFootprint(shape);
+    MDRLevelLayout layout = build_level_layout(shape, config);
     SIZE size = 0;
-    for (int level_idx = 0; level_idx < hierarchy.l_target() + 1; level_idx++) {
+    for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       size += Encoder::MAX_BITPLANES *
-              Encoder::bitplane_length(hierarchy.level_num_elems(level_idx)) *
+              Encoder::bitplane_length(layout.level_num_elems[level_idx]) *
               sizeof(T_bitplane);
     }
     return size;
@@ -81,21 +83,25 @@ public:
              int queue_idx) {
     this->initialized = true;
     this->hierarchy = &hierarchy;
-    decomposer.Adapt(hierarchy, config, queue_idx);
-    interleaver.Adapt(hierarchy, queue_idx);
-    encoder.Adapt(hierarchy, queue_idx);
+    this->layout =
+        build_level_layout(hierarchy.level_shape(hierarchy.l_target()), config);
+    if (layout.hybrid) {
+      local_decomposer.Adapt(layout, OrthogonalBasis, queue_idx);
+    } else {
+      decomposer.Adapt(hierarchy, config, queue_idx);
+      interleaver.Adapt(hierarchy, queue_idx);
+    }
+    encoder.Adapt(hierarchy, layout.max_level_num_elems(), queue_idx);
     // batched_encoder.Adapt(hierarchy, queue_idx);
-    compressor.Adapt(encoder.bitplane_length(
-                         hierarchy.level_num_elems(hierarchy.l_target())),
+    compressor.Adapt(encoder.bitplane_length(layout.max_level_num_elems()),
                      Encoder::MAX_BITPLANES, config, queue_idx);
 
-    level_data_array.resize(hierarchy.l_target() + 1);
-    level_data_subarray.resize(hierarchy.l_target() + 1);
-    abs_max_array.resize(hierarchy.l_target() + 1);
-    for (int level_idx = 0; level_idx < hierarchy.l_target() + 1; level_idx++) {
+    level_data_array.resize(layout.num_levels());
+    level_data_subarray.resize(layout.num_levels());
+    abs_max_array.resize(layout.num_levels());
+    for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       level_data_array[level_idx].resize(
-          {round_up(hierarchy.level_num_elems(level_idx), BATCH_SIZE)},
-          queue_idx);
+          {round_up(layout.level_num_elems[level_idx], BATCH_SIZE)}, queue_idx);
       // interleave() only ever writes the level's real elements; the
       // round-up padding above (needed so the encoder's batch-aligned
       // kernels can run) is otherwise left as whatever cudaMalloc/pool
@@ -114,24 +120,23 @@ public:
     }
 
     DeviceCollective<DeviceType>::AbsMax(
-        hierarchy.level_num_elems(hierarchy.l_target()),
-        SubArray<1, T_data, DeviceType>(), SubArray<1, T_data, DeviceType>(),
-        abs_max_workspace, false, 0);
-    encoded_bitplanes_array.resize(hierarchy.l_target() + 1);
-    encoded_bitplanes_subarray.resize(hierarchy.l_target() + 1);
-    level_num_elems.resize(hierarchy.l_target() + 1);
-    level_errors_array.resize(hierarchy.l_target() + 1);
-    level_errors_subarray.resize(hierarchy.l_target() + 1);
-    exp.resize(hierarchy.l_target() + 1);
-    for (int level_idx = 0; level_idx < hierarchy.l_target() + 1; level_idx++) {
+        layout.max_level_num_elems(), SubArray<1, T_data, DeviceType>(),
+        SubArray<1, T_data, DeviceType>(), abs_max_workspace, false, 0);
+    encoded_bitplanes_array.resize(layout.num_levels());
+    encoded_bitplanes_subarray.resize(layout.num_levels());
+    level_num_elems.resize(layout.num_levels());
+    level_errors_array.resize(layout.num_levels());
+    level_errors_subarray.resize(layout.num_levels());
+    exp.resize(layout.num_levels());
+    for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       encoded_bitplanes_array[level_idx].resize(
           {(SIZE)Encoder::MAX_BITPLANES,
-           encoder.bitplane_length(hierarchy.level_num_elems(level_idx))},
+           encoder.bitplane_length(layout.level_num_elems[level_idx])},
           queue_idx);
       encoded_bitplanes_subarray[level_idx] =
           SubArray<2, T_bitplane, DeviceType>(
               encoded_bitplanes_array[level_idx]);
-      level_num_elems[level_idx] = hierarchy.level_num_elems(level_idx);
+      level_num_elems[level_idx] = layout.level_num_elems[level_idx];
       level_errors_array[level_idx].resize({(SIZE)Encoder::MAX_BITPLANES + 1},
                                            queue_idx);
       level_errors_subarray[level_idx] =
@@ -141,49 +146,65 @@ public:
 
   static size_t EstimateMemoryFootprint(std::vector<SIZE> shape,
                                         Config config) {
+    MDRLevelLayout layout = build_level_layout(shape, config);
     Hierarchy<D, T_data, DeviceType> hierarchy;
     size_t size = 0;
     size += hierarchy.EstimateMemoryFootprint(shape);
-    for (int level_idx = 0; level_idx < hierarchy.l_target() + 1; level_idx++) {
-      size += round_up(hierarchy.level_num_elems(level_idx), BATCH_SIZE) *
+    for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
+      size += round_up(layout.level_num_elems[level_idx], BATCH_SIZE) *
               sizeof(T_data);
     }
     size += sizeof(T_data);
     Array<1, Byte, DeviceType> tmp;
     DeviceCollective<DeviceType>::AbsMax(
-        hierarchy.level_num_elems(hierarchy.l_target()),
-        SubArray<1, T_data, DeviceType>(), SubArray<1, T_data, DeviceType>(),
-        tmp, false, 0);
+        layout.max_level_num_elems(), SubArray<1, T_data, DeviceType>(),
+        SubArray<1, T_data, DeviceType>(), tmp, false, 0);
     size += tmp.shape(0);
-    for (int level_idx = 0; level_idx < hierarchy.l_target() + 1; level_idx++) {
+    for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       size += Encoder::MAX_BITPLANES *
-              Encoder::bitplane_length(hierarchy.level_num_elems(level_idx)) *
+              Encoder::bitplane_length(layout.level_num_elems[level_idx]) *
               sizeof(T_bitplane);
       size += sizeof(T_error) * (Encoder::MAX_BITPLANES + 1);
     }
 
-    SIZE max_n = Encoder::bitplane_length(
-        hierarchy.level_num_elems(hierarchy.l_target()));
+    SIZE max_n = Encoder::bitplane_length(layout.max_level_num_elems());
 
     size += (Encoder::MAX_BITPLANES + 1) * sizeof(T_error);
-    size += Decomposer::EstimateMemoryFootprint(shape);
-    size += Interleaver::EstimateMemoryFootprint(shape);
+    if (layout.hybrid) {
+      size += LocalDecomposer::EstimateMemoryFootprint(layout);
+    } else {
+      size += Decomposer::EstimateMemoryFootprint(shape);
+      size += Interleaver::EstimateMemoryFootprint(shape);
+    }
     size += Encoder::EstimateMemoryFootprint(shape);
     size += Compressor::EstimateMemoryFootprint(max_n, config);
     return size;
   }
 
   static std::vector<std::vector<SIZE>>
-  EstimateMaxBitplaneSizes(Hierarchy<D, T_data, DeviceType> &hierarchy) {
+  EstimateMaxBitplaneSizes(std::vector<SIZE> shape, Config config) {
+    return EstimateMaxBitplaneSizes(build_level_layout(shape, config));
+  }
+
+  std::vector<std::vector<SIZE>> EstimateMaxBitplaneSizes() const {
+    return EstimateMaxBitplaneSizes(layout);
+  }
+
+  const std::vector<SIZE> &LevelNumElems() const {
+    return layout.level_num_elems;
+  }
+
+  static std::vector<std::vector<SIZE>>
+  EstimateMaxBitplaneSizes(const MDRLevelLayout &layout) {
     std::vector<std::vector<SIZE>> estimation;
-    estimation.resize(hierarchy.l_target() + 1);
-    for (int level_idx = 0; level_idx < hierarchy.l_target() + 1; level_idx++) {
+    estimation.resize(layout.num_levels());
+    for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       estimation[level_idx].resize(Encoder::MAX_BITPLANES);
       for (int bitplane_idx = 0; bitplane_idx < Encoder::MAX_BITPLANES;
            bitplane_idx++) {
         if (bitplane_idx % Compressor::num_merged_bitplanes == 0) {
           estimation[level_idx][bitplane_idx] =
-              Encoder::bitplane_length(hierarchy.level_num_elems(level_idx)) *
+              Encoder::bitplane_length(layout.level_num_elems[level_idx]) *
               sizeof(T_bitplane) * Compressor::num_merged_bitplanes;
           // For Huffman-only model (metadata storage)
           estimation[level_idx][bitplane_idx] += 1e6;
@@ -198,8 +219,7 @@ public:
   void Refactor(Array<D, T_data, DeviceType> &data_array,
                 MDRMetadata &mdr_metadata, MDRData<DeviceType> &mdr_data,
                 int queue_idx) {
-    SIZE target_level = hierarchy->l_target();
-    mdr_metadata.Initialize(hierarchy->l_target() + 1, Encoder::MAX_BITPLANES);
+    mdr_metadata.Initialize(layout.num_levels(), Encoder::MAX_BITPLANES);
     mdr_data.Resize(*this, *hierarchy, queue_idx);
 
     SubArray<D, T_data, DeviceType> data(data_array);
@@ -209,28 +229,34 @@ public:
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer_all.start();
     }
-    decomposer.decompose(data_array, hierarchy->l_target(), 0, queue_idx);
+    if (layout.hybrid) {
+      // Writes every level's coefficients directly into level_data_subarray
+      // (no separate interleave pass for the block-local levels).
+      local_decomposer.decompose(data, level_data_subarray, queue_idx);
+    } else {
+      decomposer.decompose(data_array, hierarchy->l_target(), 0, queue_idx);
+
+      if (log::level & log::TIME) {
+        DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+        timer.start();
+      }
+      interleaver.interleave(data, level_data_subarray, hierarchy->l_target(),
+                             queue_idx);
+      if (log::level & log::TIME) {
+        DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+        timer.end();
+        timer.print("Interleave",
+                    hierarchy->total_num_elems() * sizeof(T_data));
+        timer.clear();
+      }
+    }
 
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer.start();
     }
-    interleaver.interleave(data, level_data_subarray, hierarchy->l_target(),
-                           queue_idx);
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.end();
-      timer.print("Interleave", hierarchy->total_num_elems() * sizeof(T_data));
-      timer.clear();
-    }
 
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.start();
-    }
-
-    for (int level_idx = 0; level_idx < hierarchy->l_target() + 1;
-         level_idx++) {
+    for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       DeviceCollective<DeviceType>::AbsMax(
           level_data_subarray[level_idx].shape(0),
           level_data_subarray[level_idx], SubArray(abs_max_array[level_idx]),
@@ -289,7 +315,7 @@ public:
 
       encoded_bitplanes_array[level_idx].resize(
           {(SIZE)Encoder::MAX_BITPLANES,
-           encoder.bitplane_length(hierarchy->level_num_elems(level_idx))},
+           encoder.bitplane_length(layout.level_num_elems[level_idx])},
           queue_idx);
       encoded_bitplanes_subarray[level_idx] =
           SubArray<2, T_bitplane, DeviceType>(
@@ -327,7 +353,7 @@ public:
     //   timer.start();
     // }
 
-    // for (int level_idx = 0; level_idx < hierarchy->l_target() + 1;
+    // for (int level_idx = 0; level_idx < layout.num_levels();
     //      level_idx++) {
     //   compressor.compress_level(encoded_bitplanes_subarray[level_idx],
     //                             mdr_data.compressed_bitplanes[level_idx],
@@ -347,14 +373,14 @@ public:
 
     // Compress(mdr_metadata, mdr_data, queue_idx);
     // StoreMetadata(mdr_metadata, mdr_data, queue_idx);
-    // for (int level_idx = 0; level_idx < hierarchy->l_target() + 1;
+    // for (int level_idx = 0; level_idx < layout.num_levels();
     //      level_idx++) {
     //   abs_max_array[level_idx].hostCopy(false, queue_idx);
     //   DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
     //   T_data level_max_error = abs_max_array[level_idx].dataHost()[0];
     //   mdr_metadata.level_error_bounds[level_idx] = level_max_error;
     //   mdr_metadata.level_num_elems[level_idx] =
-    //   hierarchy->level_num_elems(level_idx); std::vector<T_error>
+    //   layout.level_num_elems[level_idx]; std::vector<T_error>
     //   squared_error(Encoder::MAX_BITPLANES + 1);
     //   MemoryManager<DeviceType>::Copy1D(squared_error.data(),
     //                                     level_errors_array[level_idx].data(),
@@ -367,7 +393,8 @@ public:
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer_all.end();
-      timer_all.print("Decompose + Interleave + Encoding",
+      timer_all.print(layout.hybrid ? "Hybrid Decompose + Encoding"
+                                    : "Decompose + Interleave + Encoding",
                       hierarchy->total_num_elems() * sizeof(T_data));
       timer_all.clear();
     }
@@ -380,8 +407,7 @@ public:
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer.start();
     }
-    for (int level_idx = 0; level_idx < hierarchy->l_target() + 1;
-         level_idx++) {
+    for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       compressor.compress_level(encoded_bitplanes_subarray[level_idx],
                                 mdr_data.compressed_bitplanes[level_idx],
                                 level_idx, queue_idx);
@@ -396,14 +422,13 @@ public:
 
   void StoreMetadata(MDRMetadata &mdr_metadata, MDRData<DeviceType> &mdr_data,
                      int queue_idx) {
-    for (int level_idx = 0; level_idx < hierarchy->l_target() + 1;
-         level_idx++) {
+    for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       abs_max_array[level_idx].hostCopy(false, queue_idx);
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       T_data level_max_error = abs_max_array[level_idx].dataHost()[0];
       mdr_metadata.level_error_bounds[level_idx] = level_max_error;
       mdr_metadata.level_num_elems[level_idx] =
-          hierarchy->level_num_elems(level_idx);
+          layout.level_num_elems[level_idx];
       std::vector<T_error> squared_error(Encoder::MAX_BITPLANES + 1);
       MemoryManager<DeviceType>::Copy1D(squared_error.data(),
                                         level_errors_array[level_idx].data(),
@@ -422,9 +447,13 @@ public:
     std::cout << "Composed refactor with the following components."
               << std::endl;
     std::cout << "Decomposer: ";
-    decomposer.print();
-    std::cout << "Interleaver: ";
-    interleaver.print();
+    if (layout.hybrid) {
+      local_decomposer.print();
+    } else {
+      decomposer.print();
+      std::cout << "Interleaver: ";
+      interleaver.print();
+    }
     std::cout << "Encoder: ";
     encoder.print();
   }
@@ -433,8 +462,10 @@ public:
 
 private:
   Hierarchy<D, T_data, DeviceType> *hierarchy;
+  MDRLevelLayout layout;
   Decomposer decomposer;
   Interleaver interleaver;
+  LocalDecomposer local_decomposer;
   Encoder encoder;
   // BatchedEncoder batched_encoder;
   Compressor compressor;
