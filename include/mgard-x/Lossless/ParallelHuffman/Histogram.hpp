@@ -172,9 +172,26 @@ private:
   int numBlocks;
 };
 
+// RPerBlock is in/out: the caller sizes the shared (or global) replicas from
+// the value chosen here.
 template <typename DeviceType>
-MGARDX_CONT void ExecutionConfig(int N, int bins, int RPerBlock,
+MGARDX_CONT void ExecutionConfig(SIZE N, int bins, int &RPerBlock,
                                  int &threadsPerBlock, int &numBlocks) {
+  if constexpr (!std::is_same<DeviceType, SERIAL>::value &&
+                !std::is_same<DeviceType, OPENMP>::value) {
+    // A few full-size blocks per SM, each thread looping over many items, so
+    // that zeroing and reducing the RPerBlock * bins block-local counters is
+    // amortized. Up to one replica per lane: on skewed input (bitplanes are
+    // mostly zero bytes) the lanes of a warp then never collide on a counter.
+    int numSMs = DeviceRuntime<DeviceType>::GetNumSMs();
+    threadsPerBlock = DeviceRuntime<DeviceType>::GetMaxNumThreadsPerTB();
+    SIZE items_per_block = (SIZE)threadsPerBlock * 64;
+    numBlocks = (int)std::max<SIZE>(
+        1, std::min<SIZE>((SIZE)numSMs * 4,
+                          (N + items_per_block - 1) / items_per_block));
+    RPerBlock = std::max(1, std::min(RPerBlock, 32));
+    return;
+  }
   int numSMs = DeviceRuntime<DeviceType>::GetNumSMs();
   int numBuckets = bins;
   int numValues = N;
