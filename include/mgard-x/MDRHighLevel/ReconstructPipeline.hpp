@@ -164,8 +164,11 @@ void reconstruct_pipeline(
   }
 
   // Copy the last subdomain
-  int previous_buffer = std::abs((current_buffer - 1) % 3);
-  int previous_queue = std::abs((current_queue - 1) % 3);
+  // (x + 3 - 1) % 3, not abs((x - 1) % 3): the latter gives 1 instead of 2
+  // when x == 0, i.e. whenever the number of subdomains is a multiple of 3,
+  // and copied the last subdomain back from the wrong buffer.
+  int previous_buffer = (current_buffer + 3 - 1) % 3;
+  int previous_queue = (current_queue + 3 - 1) % 3;
   SIZE prev_subdomain_id = domain_decomposer.num_subdomains() - 1;
   // Update level signs for future progressive reconstruction
   mdr_data[previous_buffer].CopyToRefactoredSigns(
