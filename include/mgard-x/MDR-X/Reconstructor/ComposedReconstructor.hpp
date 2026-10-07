@@ -290,8 +290,10 @@ public:
             std::pow(mdr_metadata.requested_tol, 2),
             mdr_metadata.requested_level_num_bitplanes);
       } else if constexpr (std::is_same<Basis, Hierarchical>::value) {
-        using Estimator = L2ErrorEstimator_HB<T_data>;
-        Estimator estimator(D, layout.num_levels() - 1);
+        // Norm-additive bound: compared with the tolerance itself. In double:
+        // weight * squared error overflows float for large data.
+        using Estimator = L2NormErrorEstimatorHB<double>;
+        Estimator estimator(layout.level_l2_weight);
         using BinaryInterp = GreedyBasedSizeInterpreter<Estimator>;
         using NegaBinaryInterp =
             NegaBinaryGreedyBasedSizeInterpreter<Estimator>;
@@ -300,8 +302,7 @@ public:
                                       BinaryInterp>::type;
         Interpreter interpreter(estimator);
         retrieve_sizes = interpreter.interpret_retrieve_size(
-            mdr_metadata.level_sizes, level_errors,
-            std::pow(mdr_metadata.requested_tol, 2),
+            mdr_metadata.level_sizes, level_errors, mdr_metadata.requested_tol,
             mdr_metadata.requested_level_num_bitplanes);
       }
       // using BinaryInterpreter = InorderSizeInterpreter<Estimator>;

@@ -8,6 +8,18 @@
 // inorder and round-robin size interpreter
 namespace mgard_x {
 namespace MDR {
+// Error reduction per retrieved byte. Within a merged bitplane group only the
+// first bitplane carries the group's size, so size == 0 is common: a positive
+// gain is then free (+inf, as IEEE division gives), but 0 / 0 would be NaN,
+// which breaks the heap ordering. That happens once a level's collected
+// squared error reaches exactly 0 (L2 requests); rank it last instead.
+inline double safe_unit_error_gain(double error_gain, SIZE size) {
+  if (size == 0 && error_gain <= 0) {
+    return 0;
+  }
+  return error_gain / size;
+}
+
 struct UnitErrorGain {
   double unit_error_gain;
   int level;
@@ -44,7 +56,8 @@ public:
     //     double error_gain = error_estimator.estimate_error_gain(
     //         accumulated_error, level_errors[i][index[i]],
     //         level_errors[i][index[i] + 1], i);
-    //     heap.push(UnitErrorGain(error_gain / level_sizes[i][index[i]], i));
+    //     heap.push(UnitErrorGain(safe_unit_error_gain(error_gain,
+    //     level_sizes[i][index[i]]), i));
     //   }
     // }
     // new
@@ -63,12 +76,8 @@ public:
         // std::cout << i;
       }
       // push the next one
-      if (index[i] != level_sizes[i].size()) {
-        double error_gain = error_estimator.estimate_error_gain(
-            accumulated_error, level_errors[i][index[i]],
-            level_errors[i][index[i] + 1], i);
-        heap.push(UnitErrorGain(error_gain / level_sizes[i][index[i]], i));
-      }
+      push_next_step(level_sizes, level_errors, accumulated_error, i, index[i],
+                     heap);
       if (min_error < tolerance) {
         // the min error of first 0~i levels meets the tolerance
         num_levels = i + 1;
@@ -82,21 +91,20 @@ public:
       heap.pop();
       int i = unit_error_gain.level;
       int j = index[i];
-      retrieve_sizes[i] += level_sizes[i][j];
+      int j_end = step_end(level_errors, i, j);
+      for (int k = j; k < j_end; k++) {
+        retrieve_sizes[i] += level_sizes[i][k];
+      }
       accumulated_error -=
           error_estimator.estimate_error(level_errors[i][j], i);
       accumulated_error +=
-          error_estimator.estimate_error(level_errors[i][j + 1], i);
+          error_estimator.estimate_error(level_errors[i][j_end], i);
       if (accumulated_error < tolerance) {
         tolerance_met = true;
       }
-      index[i]++;
-      if (index[i] < level_sizes[i].size()) {
-        double error_gain = error_estimator.estimate_error_gain(
-            accumulated_error, level_errors[i][index[i]],
-            level_errors[i][index[i] + 1], i);
-        heap.push(UnitErrorGain(error_gain / level_sizes[i][index[i]], i));
-      }
+      index[i] = j_end;
+      push_next_step(level_sizes, level_errors, accumulated_error, i, index[i],
+                     heap);
     }
     // std::cout << "Requested tolerance = " << tolerance
     //           << ", estimated error = " << accumulated_error << std::endl;
@@ -124,7 +132,8 @@ public:
         double error_gain = error_estimator.estimate_error_gain(
             accumulated_error, level_errors[i][index[i]],
             level_errors[i][index[i] + 1], i);
-        heap.push(UnitErrorGain(error_gain / level_sizes[i][index[i]], i));
+        heap.push(UnitErrorGain(
+            safe_unit_error_gain(error_gain, level_sizes[i][index[i]]), i));
       }
     }
 
@@ -147,7 +156,8 @@ public:
         double error_gain = error_estimator.estimate_error_gain(
             accumulated_error, level_errors[i][index[i]],
             level_errors[i][index[i] + 1], i);
-        heap.push(UnitErrorGain(error_gain / level_sizes[i][index[i]], i));
+        heap.push(UnitErrorGain(
+            safe_unit_error_gain(error_gain, level_sizes[i][index[i]]), i));
       }
     }
     // std::cout << "Requested tolerance = " << tolerance
@@ -177,7 +187,8 @@ public:
         double error_gain = error_estimator.estimate_error_gain(
             accumulated_error, level_errors[i][index[i]],
             level_errors[i][index[i] + 1], i);
-        heap.push(UnitErrorGain(error_gain / level_sizes[i][index[i]], i));
+        heap.push(UnitErrorGain(
+            safe_unit_error_gain(error_gain, level_sizes[i][index[i]]), i));
       }
     }
 
@@ -197,7 +208,8 @@ public:
         double error_gain = error_estimator.estimate_error_gain(
             accumulated_error, level_errors[i][index[i]],
             level_errors[i][index[i] + 1], i);
-        heap.push(UnitErrorGain(error_gain / level_sizes[i][index[i]], i));
+        heap.push(UnitErrorGain(
+            safe_unit_error_gain(error_gain, level_sizes[i][index[i]]), i));
       }
     }
     // std::cout << "Requested size = " << requested_size
@@ -211,6 +223,41 @@ public:
   }
 
 private:
+  // End (exclusive) of the next retrieval step of level i from bitplane j:
+  // bitplanes that do not lower the estimated error are merged into the step
+  // that does. Without this a zero-gain bitplane (no coefficient has that bit
+  // set, common with the exact L2 errors) ranks last and stalls its whole
+  // level. An estimate that drops at every bitplane (L-inf) gives j + 1.
+  int step_end(const std::vector<std::vector<double>> &level_errors, int i,
+               int j) const {
+    int n = level_errors[i].size() - 1;
+    double current = error_estimator.estimate_error(level_errors[i][j], i);
+    int j_end = j + 1;
+    while (j_end < n && error_estimator.estimate_error(level_errors[i][j_end],
+                                                       i) >= current) {
+      j_end++;
+    }
+    return j_end;
+  }
+
+  template <typename Heap>
+  void push_next_step(const std::vector<std::vector<SIZE>> &level_sizes,
+                      const std::vector<std::vector<double>> &level_errors,
+                      double accumulated_error, int i, int j,
+                      Heap &heap) const {
+    if (j >= level_sizes[i].size()) {
+      return;
+    }
+    int j_end = step_end(level_errors, i, j);
+    SIZE size = 0;
+    for (int k = j; k < j_end; k++) {
+      size += level_sizes[i][k];
+    }
+    double error_gain = error_estimator.estimate_error_gain(
+        accumulated_error, level_errors[i][j], level_errors[i][j_end], i);
+    heap.push(UnitErrorGain(safe_unit_error_gain(error_gain, size), i));
+  }
+
   ErrorEstimator error_estimator;
 };
 // greedy bit-plane retrieval with sign exculsion (excluding the first
@@ -262,7 +309,8 @@ public:
         double error_gain = error_estimator.estimate_error_gain(
             accumulated_error, level_errors[i][index[i]],
             level_errors[i][index[i] + 1], i);
-        heap.push(UnitErrorGain(error_gain / level_sizes[i][index[i]], i));
+        heap.push(UnitErrorGain(
+            safe_unit_error_gain(error_gain, level_sizes[i][index[i]]), i));
       }
       if (min_error < tolerance) {
         // the min error of first 0~i levels meets the tolerance
@@ -290,7 +338,8 @@ public:
         double error_gain = error_estimator.estimate_error_gain(
             accumulated_error, level_errors[i][index[i]],
             level_errors[i][index[i] + 1], i);
-        heap.push(UnitErrorGain(error_gain / level_sizes[i][index[i]], i));
+        heap.push(UnitErrorGain(
+            safe_unit_error_gain(error_gain, level_sizes[i][index[i]]), i));
       }
       // std::cout << i;
     }
@@ -415,14 +464,15 @@ private:
         accumulated_error, bitplane_errors[index], bitplane_errors[index + 1],
         level);
     SIZE current_size = bitplane_sizes[index];
-    double current_efficiency = current_error_gain / current_size;
+    double current_efficiency =
+        safe_unit_error_gain(current_error_gain, current_size);
     int consecutive_num = 1;
     for (int i = 2; i < bitplane_sizes.size() - index; i++) {
       double next_error_gain = error_estimator.estimate_error_gain(
           accumulated_error, bitplane_errors[index], bitplane_errors[index + i],
           level);
       SIZE next_size = current_size + bitplane_sizes[index + i - 1];
-      double next_efficiency = next_error_gain / next_size;
+      double next_efficiency = safe_unit_error_gain(next_error_gain, next_size);
       if ((current_efficiency > 0) && (current_efficiency > next_efficiency)) {
         break;
       } else {

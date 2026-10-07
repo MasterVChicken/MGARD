@@ -19,6 +19,9 @@ Multi-precision Data Refactoring designed on top of MGARD for enabling fine-grai
 ### Hybrid decomposition (MDR-X)
 With `config.decomposition = decomposition_type::Hybrid` (`mdr-x -z ... -hh`), MDR-X replaces the global multigrid decomposition with the BlockMGARD design: `num_local_refactoring_level` (`-ll`, default 1) levels of the block-local in-cache decomposition (each 8^D block coarsens to 5^D nodes), followed by `num_global_refactoring_level` (`-gl`, default -1 = as many as possible) global multigrid levels over the coarsest block-local region. Each block-local level becomes one MDR level and its coefficients are written directly into the level buffer, so no interleaving pass is needed for them. The level counts are stored in the header, so reconstruction needs no extra options. The hierarchical basis (no L2 projection) is used. Adaptive-resolution reconstruction is not supported in this mode; it falls back to full resolution.
 
+### L2 error bound (MDR-X)
+An L2 request (`-s 0`, any finite `s` is treated the same way) bounds the discrete norm `sqrt(sum_i (x_i - x'_i)^2)` of the reconstruction error, for both the global and the hybrid decomposition. The refactor records, for every level and every number of retrieved bitplanes, the exact squared coefficient error of the truncating bitplane decoder. Since every recomposition stage is convex multilinear interpolation, recomposing level `l` alone amplifies the L2 norm by at most `sqrt(2^(D * s_l))`, where `s_l` is the number of stages finer than level `l`. The retrieval plan keeps `sum_l sqrt(2^(D * s_l) * E_l) <= tol` (triangle inequality over levels), and splits the tolerance as `tol / sqrt(#subdomains)` under domain decomposition. The bound is rigorous and therefore conservative.
+
 ## Configure and build
 
 Both MDR and MDR-X are automatically built together with MGARD-X. Please follow the [instruction of MGARD-X][mgard-x-build] to build MDR and MDR-X.

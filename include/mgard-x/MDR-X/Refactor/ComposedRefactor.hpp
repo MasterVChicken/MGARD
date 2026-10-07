@@ -16,7 +16,9 @@ namespace mgard_x {
 namespace MDR {
 // a decomposition-based scientific data refactor: compose a refactor using
 // decomposer, interleaver, encoder, and error collector
-template <DIM D, typename T_data, typename DeviceType, bool ControlL2 = false,
+// ControlL2: collect the per-level squared errors for every bitplane count.
+// They are stored in the metadata and needed for L2 (s != inf) requests.
+template <DIM D, typename T_data, typename DeviceType, bool ControlL2 = true,
           typename Basis = Hierarchical, bool NegaBinary = false>
 class ComposedRefactor
     : public concepts::RefactorInterface<D, T_data, DeviceType> {

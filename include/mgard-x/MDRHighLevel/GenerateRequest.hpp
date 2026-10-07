@@ -21,7 +21,17 @@ void generate_request(DomainDecomposer<D, T, ComposedRefactor<D, T, DeviceType>,
     Hierarchy<D, T, DeviceType> hierarchy =
         domain_decomposer.subdomain_hierarchy(subdomain_id);
     ComposedReconstructor<D, T, DeviceType> reconstructor(hierarchy, config);
-    reconstructor.GenerateRequest(refactored_metadata.metadata[subdomain_id]);
+    MDRMetadata &metadata = refactored_metadata.metadata[subdomain_id];
+    // L2 errors of disjoint subdomains add in quadrature: give each subdomain
+    // tol / sqrt(#subdomains) so the whole domain meets tol. L-inf needs no
+    // split.
+    double requested_tol = metadata.requested_tol;
+    if (metadata.requested_s != std::numeric_limits<double>::infinity()) {
+      metadata.requested_tol =
+          requested_tol / std::sqrt((double)domain_decomposer.num_subdomains());
+    }
+    reconstructor.GenerateRequest(metadata);
+    metadata.requested_tol = requested_tol;
   }
 }
 

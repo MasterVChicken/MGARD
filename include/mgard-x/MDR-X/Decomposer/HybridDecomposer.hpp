@@ -38,6 +38,11 @@ struct MDRLevelLayout {
   int L = 0; // block-local levels
   int G = 0; // l_target of the global hierarchy (MultiDim mode: whole domain)
   std::vector<SIZE> level_num_elems;
+  // Upper bound on ||R_l||_2^2, R_l = recomposition of level l alone to the
+  // finest grid (hierarchical basis): 2^(D * s_l), s_l = number of
+  // recomposition stages finer than the grid level l lives on. See
+  // L2NormErrorEstimatorHB.
+  std::vector<double> level_l2_weight;
 
   // Hybrid only
   std::vector<std::vector<SIZE>> local_fine_shapes;   // level 0 = finest
@@ -132,6 +137,7 @@ inline MDRLevelLayout build_level_layout(std::vector<SIZE> shape,
     for (int l = 0; l <= layout.G; l++) {
       SIZE curr = product(level_shapes[l]);
       layout.level_num_elems.push_back(curr - prev);
+      layout.level_l2_weight.push_back(std::pow(2.0, D * (layout.G - l)));
       prev = curr;
     }
     return layout;
@@ -166,10 +172,16 @@ inline MDRLevelLayout build_level_layout(std::vector<SIZE> shape,
   for (int l = 0; l <= layout.G; l++) {
     SIZE curr = product(layout.global_level_shapes[l]);
     layout.level_num_elems.push_back(curr - prev);
+    // G - l global stages plus all L block-local stages are finer
+    layout.level_l2_weight.push_back(
+        std::pow(2.0, D * (layout.G - l + layout.L)));
     prev = curr;
   }
   for (int l = layout.L - 1; l >= 0; l--) {
     layout.level_num_elems.push_back(layout.local_coeff_size[l]);
+    // block-local level l lives on the fine grid of stage l; the l stages
+    // below it are finer
+    layout.level_l2_weight.push_back(std::pow(2.0, D * l));
   }
   return layout;
 }

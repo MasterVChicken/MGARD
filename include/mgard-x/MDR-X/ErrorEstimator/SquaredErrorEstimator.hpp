@@ -2,6 +2,8 @@
 #define _MDR_SQUARED_ERROR_ESTIMATOR_HPP
 
 #include "ErrorEstimatorInterface.hpp"
+#include <cmath>
+#include <vector>
 namespace mgard_x {
 namespace MDR {
 template <class T>
@@ -36,6 +38,47 @@ public:
 
 private:
   std::vector<T> s_table;
+};
+
+// Rigorous discrete L2 bound for the hierarchical basis (no L2 projection),
+// additive in norms rather than squared norms, so it is used with the
+// tolerance itself (not squared).
+//
+// The reconstruction error is e = sum_l R_l dc_l, where dc_l are the level-l
+// coefficient errors and R_l recomposes level l alone to the finest grid. By
+// the triangle inequality
+//   ||e||_2 <= sum_l ||R_l dc_l||_2 <= sum_l sqrt(w_l * ||dc_l||_2^2),
+// with w_l >= ||R_l||_2^2. Every recomposition stage (global n -> n/2+1, or
+// block-local 8 -> 5) is convex multilinear interpolation, so R_l has row
+// sums <= 1 and each stage multiplies column sums by at most 2^D; hence
+// ||R_l||_2^2 <= ||R_l||_1 ||R_l||_inf <= 2^(D * s_l), s_l = number of stages
+// finer than the grid level l lives on (see MDRLevelLayout::level_l2_weight).
+// The level squared errors are the ones collected by the encoder
+// (ControlL2), which are exact for the truncating bitplane decoder.
+template <class T>
+class L2NormErrorEstimatorHB : public SquaredErrorEstimator<T> {
+public:
+  L2NormErrorEstimatorHB(std::vector<T> level_weights)
+      : weights(level_weights) {}
+  L2NormErrorEstimatorHB() {}
+  inline T estimate_error(T squared_error, int level) const {
+    return std::sqrt(weights[level] * squared_error);
+  }
+  inline T estimate_error(T data, T reconstructed_data, int level) const {
+    return std::sqrt(weights[level]) * std::fabs(data - reconstructed_data);
+  }
+  inline T estimate_error_gain(T base, T current_level_err, T next_level_err,
+                               int level) const {
+    return estimate_error(current_level_err, level) -
+           estimate_error(next_level_err, level);
+  }
+  void print() const {
+    std::cout << "Rigorous L2-norm error bound for hierarchical basis"
+              << std::endl;
+  }
+
+private:
+  std::vector<T> weights;
 };
 
 // S-norm error estimator for orthogonal basis
