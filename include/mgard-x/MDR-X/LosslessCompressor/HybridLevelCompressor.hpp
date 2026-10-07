@@ -90,12 +90,20 @@ public:
               compress_zstd((Byte *)bitplane, merged_bitplane_size,
                             compressed_bitplanes[bitplane_idx], queue_idx);
         } else if (merged_bitplane_size > size_threshold) {
-          rle_success =
-              rle.Compress(encoded_bitplane, compressed_bitplanes[bitplane_idx],
-                           cr_threshold, queue_idx);
+          // Decide from cheap statistics before compressing: RLE only when
+          // its own estimate passes (same formula, one counting pass instead
+          // of start marks + scan), Huffman only when the entropy bound can
+          // reach the target. Skips exactly the attempts that would fail, so
+          // the output is unchanged.
+          SubArray<1, T_compress, DeviceType> group(encoded_bitplane);
+          if (rle.EstimateCRFast(group, queue_idx) >= cr_threshold) {
+            rle_success = rle.Compress(encoded_bitplane,
+                                       compressed_bitplanes[bitplane_idx],
+                                       cr_threshold, queue_idx);
+          }
           if (rle_success) {
             rle.Serialize(compressed_bitplanes[bitplane_idx], queue_idx);
-          } else {
+          } else if (huffman_may_reach(group, cr_threshold, queue_idx)) {
             ATOMIC_IDX zero = 0;
             MemoryManager<DeviceType>::Copy1D(
                 huffman.workspace.outlier_count_subarray.data(), &zero, 1,
@@ -144,6 +152,38 @@ public:
     //   time_string += std::to_string(x) + " ";
     // }
     // log::info("Time: " + time_string);
+  }
+
+  // Upper bound on the CR that Huffman::CompressPrimary estimates (and tests
+  // against target_cr): with two or more symbols every codeword has >= 1 bit
+  // and the total length is >= n * entropy, so the encoded bits are at least
+  // n * max(H, 1).
+  bool huffman_may_reach(SubArray<1, T_compress, DeviceType> group,
+                         float target_cr, int queue_idx) {
+    SIZE n = group.shape(0);
+    freq_array.resize({(SIZE)_huff_dict_size}, queue_idx);
+    freq_array.memset(0, queue_idx);
+    Histogram<T_compress, unsigned int, DeviceType>(
+        group, SubArray(freq_array), n, _huff_dict_size, queue_idx);
+    std::vector<unsigned int> freq(_huff_dict_size);
+    MemoryManager<DeviceType>::Copy1D(freq.data(), freq_array.data(),
+                                      _huff_dict_size, queue_idx);
+    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    int num_symbols = 0;
+    double entropy = 0;
+    for (unsigned int f : freq) {
+      if (f > 0) {
+        num_symbols++;
+        double p = (double)f / n;
+        entropy -= p * std::log2(p);
+      }
+    }
+    if (num_symbols < 2) {
+      return true;
+    }
+    double min_bits = n * std::max(entropy, 1.0) * (1.0 - 1e-9);
+    double max_cr = (double)(n * sizeof(T_compress)) / (min_bits / 8 + 2000);
+    return max_cr >= target_cr;
   }
 
   // decompress level, create new buffer and overwrite original streams; will
@@ -258,6 +298,7 @@ public:
       rle;
   Zstd<DeviceType> zstd;
   Config config;
+  Array<1, unsigned int, DeviceType> freq_array;
 };
 
 } // namespace MDR

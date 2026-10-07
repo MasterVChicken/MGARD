@@ -10,6 +10,7 @@
 
 #include "../../RuntimeX/RuntimeX.h"
 #include "Convert.hpp"
+#include "CountRuns.hpp"
 #include "Decode.hpp"
 #include "Encode.hpp"
 #include "StartMarks.hpp"
@@ -50,6 +51,35 @@ public:
         SubArray<1, C_global, DeviceType>(), tmp_workspace, false, 0);
     memory_footprint += tmp_workspace.shape(0);
     return 0;
+  }
+
+  // CR that Compress() estimates (and tests against target_cr) from the
+  // number of runs.
+  static double CRFromRuns(SIZE original_length, SIZE total_run_length) {
+    return (double)(original_length * sizeof(T_symbol)) /
+           (total_run_length * (sizeof(T_symbol) + sizeof(C_run)) + 30);
+  }
+
+  // Same estimate as EstimateCR() / Compress(), from a single counting pass
+  // instead of materializing and scanning the run start marks.
+  double EstimateCRFast(SubArray<1, T_symbol, DeviceType> original_data,
+                        int queue_idx) {
+    using KernelType = CountRunsKernel<T_symbol, C_run, DeviceType>;
+    run_count_partials.resize({KernelType::NUM_PARTIALS}, queue_idx);
+    run_count.resize({1}, queue_idx);
+    SubArray<1, SIZE, DeviceType> partials(run_count_partials);
+    DeviceLauncher<DeviceType>::Execute(KernelType(original_data, partials),
+                                        queue_idx);
+    DeviceCollective<DeviceType>::Sum(KernelType::NUM_PARTIALS, partials,
+                                      SubArray(run_count), run_count_workspace,
+                                      false, queue_idx);
+    DeviceCollective<DeviceType>::Sum(KernelType::NUM_PARTIALS, partials,
+                                      SubArray(run_count), run_count_workspace,
+                                      true, queue_idx);
+    SIZE runs = 0;
+    MemoryManager<DeviceType>::Copy1D(&runs, run_count.data(), 1, queue_idx);
+    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    return CRFromRuns(original_data.shape(0), runs);
   }
 
   double EstimateCR(Array<1, T_symbol, DeviceType> &original_data,
@@ -101,8 +131,7 @@ public:
       timer.clear();
     }
 
-    return (double)(original_length * sizeof(T_symbol)) /
-           (_total_run_length * (sizeof(T_symbol) + sizeof(C_run)) + 30);
+    return CRFromRuns(original_length, _total_run_length);
   }
 
   bool Compress(Array<1, T_symbol, DeviceType> &original_data,
@@ -150,9 +179,7 @@ public:
         queue_idx);
 
     if (target_cr > 0) {
-      double est_cr =
-          (double)(original_length * sizeof(T_symbol)) /
-          (_total_run_length * (sizeof(T_symbol) + sizeof(C_run)) + 30);
+      double est_cr = CRFromRuns(original_length, _total_run_length);
       log::info("RLE estimated CR: " + std::to_string(est_cr) +
                 " (target: " + std::to_string(target_cr) + ")");
       if (est_cr < target_cr) {
@@ -354,6 +381,9 @@ public:
   Array<1, C_global, DeviceType> scanned_start_marks;
   Array<1, C_global, DeviceType> start_positions;
   Array<1, Byte, DeviceType> scan_workspace;
+  Array<1, SIZE, DeviceType> run_count_partials;
+  Array<1, SIZE, DeviceType> run_count;
+  Array<1, Byte, DeviceType> run_count_workspace;
 };
 
 } // namespace parallel_rle
