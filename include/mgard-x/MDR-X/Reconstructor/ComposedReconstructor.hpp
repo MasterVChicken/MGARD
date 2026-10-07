@@ -209,6 +209,14 @@ public:
   }
 
   void GenerateRequest(MDRMetadata &mdr_metadata) {
+    PlanRequest(mdr_metadata, layout);
+  }
+
+  // Retrieval planning from the metadata and the level layout alone: no
+  // device work, so requests can be planned without constructing (and
+  // allocating) a reconstructor.
+  static void PlanRequest(MDRMetadata &mdr_metadata,
+                          const MDRLevelLayout &layout) {
     mdr_metadata.CheckFormatVersion();
     mgard_x::Timer timer;
     timer.start();

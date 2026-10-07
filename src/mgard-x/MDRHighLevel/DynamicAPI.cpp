@@ -151,8 +151,10 @@ void MDRefactor(DIM D, data_type dtype, std::vector<SIZE> shape,
 
 template <typename DeviceType>
 void MDRequest(RefactoredMetadata &refactored_metadata, Config config) {
-  Metadata<DeviceType> meta;
-  meta.Deserialize((SERIALIZED_TYPE *)refactored_metadata.header.data());
+  // Parsed on the host: planning a request does no device work, so the header
+  // does not need a device-side Metadata.
+  MetadataBase meta;
+  meta.Deserialize(refactored_metadata.header);
 
   std::vector<SIZE> shape = std::vector<SIZE>(meta.total_dims);
   for (DIM d = 0; d < shape.size(); d++)

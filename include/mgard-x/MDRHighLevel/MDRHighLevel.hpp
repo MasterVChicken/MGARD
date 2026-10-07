@@ -46,8 +46,7 @@ SIZE get_max_output_data_size(
   return size;
 }
 
-template <typename DeviceType>
-void load(Config &config, Metadata<DeviceType> &metadata) {
+inline void load(Config &config, MetadataBase &metadata) {
   config.domain_decomposition = metadata.ddtype;
   config.decomposition = metadata.decomposition;
   config.lossless = metadata.ltype;
@@ -212,9 +211,11 @@ void MDRefactor(std::vector<SIZE> shape, const void *original_data,
 template <DIM D, typename T, typename DeviceType>
 void MDRequest(std::vector<SIZE> shape, RefactoredMetadata &refactored_metadata,
                Config config) {
-  DeviceRuntime<DeviceType>::Initialize();
-  Metadata<DeviceType> m;
-  m.Deserialize((SERIALIZED_TYPE *)refactored_metadata.header.data());
+  // Host only: the header is parsed on the host and generate_request plans
+  // from the metadata, so a request allocates no device memory and issues no
+  // device work.
+  MetadataBase m;
+  m.Deserialize(refactored_metadata.header);
   load(config, m);
   DomainDecomposer<D, T, ComposedRefactor<D, T, DeviceType>, DeviceType>
       domain_decomposer;
@@ -223,7 +224,6 @@ void MDRequest(std::vector<SIZE> shape, RefactoredMetadata &refactored_metadata,
           shape, m.domain_decomposed, m.domain_decomposed_dim,
           m.domain_decomposed_size, config);
   generate_request(domain_decomposer, config, refactored_metadata);
-  DeviceRuntime<DeviceType>::Finalize();
 }
 
 template <DIM D, typename T, typename DeviceType, typename ReconstructorType>
