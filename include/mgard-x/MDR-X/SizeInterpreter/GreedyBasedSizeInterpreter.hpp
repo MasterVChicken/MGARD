@@ -34,7 +34,7 @@ struct CompareUnitErrorGain {
 template <class ErrorEstimator>
 class GreedyBasedSizeInterpreter : public concepts::SizeInterpreterInterface {
 public:
-  GreedyBasedSizeInterpreter(const ErrorEstimator &e) { error_estimator = e; }
+  GreedyBasedSizeInterpreter(const ErrorEstimator &e) : error_estimator(e) {}
   std::vector<SIZE>
   interpret_retrieve_size(const std::vector<std::vector<SIZE>> &level_sizes,
                           const std::vector<std::vector<double>> &level_errors,

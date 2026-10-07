@@ -258,8 +258,12 @@ public:
               mdr_metadata.requested_level_num_bitplanes);
         }
       } else if constexpr (std::is_same<Basis, Hierarchical>::value) {
-        MaxErrorEstimatorHB<T_data> estimator;
+        MaxErrorEstimatorHB<T_data> estimator(NegaBinary);
         GreedyBasedSizeInterpreter interpreter(estimator);
+        // The estimator bounds the error in exact arithmetic; leave room for
+        // the rounding of decomposition, recomposition and decoding.
+        double tolerance =
+            mdr_metadata.requested_tol - RoundingAllowance(mdr_metadata);
         if (mdr_metadata.segmented) {
           retrieve_sizes = interpreter.interpret_retrieve_size(
               mdr_metadata.level_sizes, level_errors,
@@ -267,13 +271,12 @@ public:
               mdr_metadata.requested_level_num_bitplanes);
         } else if (mdr_metadata.corresponding_error_return) {
           retrieve_sizes = interpreter.interpret_retrieve_size(
-              mdr_metadata.level_sizes, level_errors,
-              mdr_metadata.requested_tol, mdr_metadata.corresponding_error,
+              mdr_metadata.level_sizes, level_errors, tolerance,
+              mdr_metadata.corresponding_error,
               mdr_metadata.requested_level_num_bitplanes);
         } else {
           retrieve_sizes = interpreter.interpret_retrieve_size(
-              mdr_metadata.level_sizes, level_errors,
-              mdr_metadata.requested_tol,
+              mdr_metadata.level_sizes, level_errors, tolerance,
               mdr_metadata.requested_level_num_bitplanes);
         }
       }
@@ -332,6 +335,25 @@ public:
     }
     timer.end();
     // timer.print("Preprocessing");
+  }
+
+  // Floating-point rounding allowance for L-inf requests: 2 ulp (in T_data)
+  // of sum_l max|level l coefficients|, which bounds the magnitude of the
+  // reconstructed data. The measured rounding error of a full reconstruction
+  // is 1-2 ulp of the largest value; negligible for double, it matters for
+  // float only when the tolerance approaches the data's precision.
+  static double RoundingAllowance(const MDRMetadata &mdr_metadata) {
+    double magnitude = 0;
+    for (double e : mdr_metadata.level_error_bounds) {
+      magnitude += std::abs(e);
+    }
+    T_data m = (T_data)magnitude;
+    if ((double)m < magnitude) {
+      m = std::nextafter(m, std::numeric_limits<T_data>::infinity());
+    }
+    return 2.0 *
+           ((double)std::nextafter(m, std::numeric_limits<T_data>::infinity()) -
+            (double)m);
   }
 
   void InterpolateToLevel(Array<D, T_data, DeviceType> &reconstructed_data,

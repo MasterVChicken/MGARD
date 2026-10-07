@@ -48,17 +48,18 @@ private:
   T c = 0;
 };
 // max error estimator for hierarchical basis
-// c = 1 as all the operations are linear (before the negabinary correction
-// below: negabinary shifts the encoder's fixed-point exponent by 2 extra
-// bits of range headroom -- see BPEncoderLocalityBlock/RegisterBlock's
-// EncodeNegaBinary, `exp += 2` -- so a given bitplane count buys less
-// achievable precision under negabinary than under binary. MaxErrorEstimatorOB
-// already discounts for this ("2 more bitplane for negabinary"); this was
-// missing here, which let the greedy interpreter under-request bitplanes for
-// Hierarchical + NegaBinary and narrowly miss the requested L-infinity bound.
+// Every recomposition stage of the hierarchical basis (the global multilinear
+// one and the block-local one) sets each new node to its coefficient plus a
+// convex combination of coarser nodes, so the L-inf error of the
+// reconstruction is at most the sum over levels of each level's largest
+// coefficient error (exact arithmetic). With the binary encoder that error is
+// below 2^(exp - b) for b bitplanes (MaxErrorCollector), so c = 1.
+// NegaBinary shifts the encoder's fixed-point exponent by 2 extra bits of
+// range headroom (EncodeNegaBinary, `exp += 2`), so a given bitplane count
+// buys 4x less precision: c = 4, as MaxErrorEstimatorOB also discounts.
 template <class T> class MaxErrorEstimatorHB : public MaxErrorEstimator<T> {
 public:
-  MaxErrorEstimatorHB() { c *= 4; }
+  explicit MaxErrorEstimatorHB(bool negabinary) : c(negabinary ? 4 : 1) {}
   inline T estimate_error(T error, int level) const { return c * error; }
   inline T estimate_error(T data, T reconstructed_data, int level) const {
     return c * (data - reconstructed_data);
@@ -73,7 +74,7 @@ public:
   }
 
 private:
-  T c = 1;
+  T c;
 };
 } // namespace MDR
 } // namespace mgard_x
