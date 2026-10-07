@@ -8,6 +8,8 @@
 #ifndef MGARD_X_MDR_RECONSTRUCT_PIPELINE_HPP
 #define MGARD_X_MDR_RECONSTRUCT_PIPELINE_HPP
 
+#include <algorithm>
+
 namespace mgard_x {
 namespace MDR {
 
@@ -55,6 +57,24 @@ void reconstruct_pipeline(
   if (timing_pipeline)
     timer_series.start();
   // Prefetch the first subdomain
+  // Load the previously reconstructed data of a subdomain, to which this
+  // reconstruction adds. Before any bitplane of it has been used that data
+  // is all zero: clear the device buffer instead of copying it from the host.
+  auto load_previous = [&](int buffer, SIZE subdomain_id, int queue) {
+    const std::vector<uint8_t> &used =
+        refactored_metadata.metadata[subdomain_id]
+            .prev_used_level_num_bitplanes;
+    bool first =
+        std::all_of(used.begin(), used.end(), [](uint8_t n) { return n == 0; });
+    if (first && !config.mdr_adaptive_resolution) {
+      device_subdomain_buffer[buffer].memset(0, queue);
+    } else {
+      domain_decomposer.copy_subdomain(
+          device_subdomain_buffer[buffer], subdomain_id,
+          subdomain_copy_direction::OriginalToSubdomain, queue);
+    }
+  };
+
   int current_buffer = 0;
   int current_queue = 0;
   mdr_data[current_buffer].Resize(refactored_metadata.metadata[0],
@@ -67,9 +87,7 @@ void reconstruct_pipeline(
       refactored_metadata.metadata[0], refactored_data.level_signs[0],
       current_queue);
   // Load previously reconstructred data
-  domain_decomposer.copy_subdomain(
-      device_subdomain_buffer[current_buffer], 0,
-      subdomain_copy_direction::OriginalToSubdomain, current_queue);
+  load_previous(current_buffer, 0, current_queue);
 
   SIZE total_size = 0;
 
@@ -100,9 +118,7 @@ void reconstruct_pipeline(
           refactored_metadata.metadata[next_subdomain_id],
           refactored_data.level_signs[next_subdomain_id], next_queue);
       // Load previously reconstructred data
-      domain_decomposer.copy_subdomain(
-          device_subdomain_buffer[next_buffer], next_subdomain_id,
-          subdomain_copy_direction::OriginalToSubdomain, next_queue);
+      load_previous(next_buffer, next_subdomain_id, next_queue);
     }
 
     std::stringstream ss;

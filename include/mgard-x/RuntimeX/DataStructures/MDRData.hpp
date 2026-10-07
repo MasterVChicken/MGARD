@@ -102,6 +102,11 @@ public:
                                std::vector<bool *> &refactored_level_signs,
                                int queue_idx) {
     for (int level_idx = 0; level_idx < mdr_metadata.num_levels; level_idx++) {
+      // Signs are decoded with a level's first bitplanes; only levels already
+      // started need the stored ones.
+      if (mdr_metadata.prev_used_level_num_bitplanes[level_idx] == 0) {
+        continue;
+      }
       MemoryManager<DeviceType>::Copy1D(
           level_signs[level_idx].data(), refactored_level_signs[level_idx],
           mdr_metadata.level_num_elems[level_idx], queue_idx);
