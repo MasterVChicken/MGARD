@@ -105,16 +105,32 @@ public:
       SIZE num_bitplanes = estimation[0].size();
       data[id].resize(num_levels);
       data_allocation_size[id].resize(num_levels);
+      // One pinned allocation per subdomain, carved into the per-bitplane
+      // buffers: pinning is slow per call (hundreds of calls took most of the
+      // high-level refactoring time).
+      const SIZE align = 64;
+      SIZE total = 0;
+      for (int level_idx = 0; level_idx < num_levels; level_idx++) {
+        for (int bitplane_idx = 0; bitplane_idx < num_bitplanes;
+             bitplane_idx++) {
+          total +=
+              (estimation[level_idx][bitplane_idx] + align - 1) / align * align;
+        }
+      }
+      Byte *block = nullptr;
+      MemoryManager<DeviceType>::MallocHost(block, total, 0);
+      data_blocks.push_back(block);
+      SIZE offset = 0;
       for (int level_idx = 0; level_idx < num_levels; level_idx++) {
         data[id][level_idx].resize(num_bitplanes);
         data_allocation_size[id][level_idx].resize(num_bitplanes);
         for (int bitplane_idx = 0; bitplane_idx < num_bitplanes;
              bitplane_idx++) {
-          MemoryManager<DeviceType>::MallocHost(
-              data[id][level_idx][bitplane_idx],
-              estimation[level_idx][bitplane_idx], 0);
+          data[id][level_idx][bitplane_idx] = block + offset;
           data_allocation_size[id][level_idx][bitplane_idx] =
               estimation[level_idx][bitplane_idx];
+          offset +=
+              (estimation[level_idx][bitplane_idx] + align - 1) / align * align;
         }
       }
     }
@@ -138,6 +154,9 @@ public:
 
   std::vector<std::vector<std::vector<Byte *>>> data;
   std::vector<std::vector<std::vector<SIZE>>> data_allocation_size;
+  // Pinned blocks backing `data` after InitializeForRefactor (one per
+  // subdomain); free these, not the per-bitplane pointers.
+  std::vector<Byte *> data_blocks;
   std::vector<std::vector<bool *>> level_signs;
   SIZE num_subdomains;
 };
