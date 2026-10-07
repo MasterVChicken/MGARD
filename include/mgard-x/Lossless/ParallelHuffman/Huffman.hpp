@@ -20,6 +20,7 @@ static bool debug_print_huffman = false;
 #include "EncodeFixedLen.hpp"
 #include "GetCodebook.hpp"
 #include "Histogram.hpp"
+#include "HostCodebook.hpp"
 #include "HuffmanWorkspace.hpp"
 #include "OutlierSeparator.hpp"
 #include "ParallelDeflate.hpp"
@@ -238,6 +239,55 @@ public:
       PrintSubarray("GetCodebook::decodebook_subarray",
                     workspace.decodebook_subarray);
     }
+    return DeflatePrimary(primary_subarray, compressed_data, timer, queue_idx);
+  }
+
+  // CompressPrimary with the symbol histogram already on the host (host_freq,
+  // dict_size counts of primary_data): the codebook is built on the host
+  // (HostCodebook) and the target ratio is checked before any device work.
+  // The output equals CompressPrimary's except, on code length ties, in which
+  // of the equally long (optimal) codes is used.
+  bool CompressPrimary(Array<1, Q, DeviceType> &primary_data,
+                       Array<1, Byte, DeviceType> &compressed_data,
+                       float target_cr, const unsigned int *host_freq,
+                       int queue_idx) {
+    double total_bits = 0;
+    if (!HostCodebook<Q, H>(dict_size, host_freq, host_codebook,
+                            host_decodebook, total_bits)) {
+      return CompressPrimary(primary_data, compressed_data, target_cr,
+                             queue_idx);
+    }
+    SubArray primary_subarray(primary_data);
+    primary_count = primary_subarray.shape(0);
+    if (target_cr > 1.0) {
+      double estimated_cr =
+          (double)(sizeof(Q) * primary_count) / (total_bits / 8 + 2000);
+      log::info("Huffman estimated CR: " + std::to_string(estimated_cr) +
+                " (target: " + std::to_string(target_cr) + ")");
+      if (estimated_cr < target_cr) {
+        return false;
+      }
+    }
+    Timer timer;
+    if (log::level & log::TIME) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+      timer.start();
+    }
+    workspace.reset(queue_idx);
+    MemoryManager<DeviceType>::Copy1D(workspace.codebook_subarray.data(),
+                                      host_codebook.data(), dict_size,
+                                      queue_idx);
+    MemoryManager<DeviceType>::Copy1D(workspace.decodebook_subarray.data(),
+                                      host_decodebook.data(),
+                                      host_decodebook.size(), queue_idx);
+    return DeflatePrimary(primary_subarray, compressed_data, timer, queue_idx);
+  }
+
+private:
+  // Deflate primary data with the codebook in workspace.
+  bool DeflatePrimary(SubArray<1, Q, DeviceType> primary_subarray,
+                      Array<1, Byte, DeviceType> &compressed_data, Timer &timer,
+                      int queue_idx) {
     // Encoding is fused into the deflate kernels below: instead of first
     // materializing huff[i] = codebook[data[i]] into a primary_count-sized
     // array and reading it back twice, GroupBits and Pack look up
@@ -322,6 +372,7 @@ public:
     return true;
   }
 
+public:
   // Walks the serialized layout, returning the total compressed size and, via
   // packed_byte_offset, the byte offset at which the densely-packed Huffman
   // stream lands. Must stay in lockstep with the section order written by
@@ -658,6 +709,10 @@ public:
   H *ddata;
   Byte signature[7] = {'M', 'G', 'X', 'H', 'U', 'F', 'F'};
   HuffmanWorkspace<Q, S, H, DeviceType> workspace;
+  // Host-built codebook and decodebook (see HostCodebook), kept until the
+  // next compression so the asynchronous uploads read valid memory.
+  std::vector<H> host_codebook;
+  std::vector<uint8_t> host_decodebook;
 };
 
 } // namespace mgard_x

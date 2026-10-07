@@ -10,7 +10,6 @@
 
 #include "../../RuntimeX/RuntimeX.h"
 #include "Convert.hpp"
-#include "CountRuns.hpp"
 #include "Decode.hpp"
 #include "Encode.hpp"
 #include "StartMarks.hpp"
@@ -58,28 +57,6 @@ public:
   static double CRFromRuns(SIZE original_length, SIZE total_run_length) {
     return (double)(original_length * sizeof(T_symbol)) /
            (total_run_length * (sizeof(T_symbol) + sizeof(C_run)) + 30);
-  }
-
-  // Same estimate as EstimateCR() / Compress(), from a single counting pass
-  // instead of materializing and scanning the run start marks.
-  double EstimateCRFast(SubArray<1, T_symbol, DeviceType> original_data,
-                        int queue_idx) {
-    using KernelType = CountRunsKernel<T_symbol, C_run, DeviceType>;
-    run_count_partials.resize({KernelType::NUM_PARTIALS}, queue_idx);
-    run_count.resize({1}, queue_idx);
-    SubArray<1, SIZE, DeviceType> partials(run_count_partials);
-    DeviceLauncher<DeviceType>::Execute(KernelType(original_data, partials),
-                                        queue_idx);
-    DeviceCollective<DeviceType>::Sum(KernelType::NUM_PARTIALS, partials,
-                                      SubArray(run_count), run_count_workspace,
-                                      false, queue_idx);
-    DeviceCollective<DeviceType>::Sum(KernelType::NUM_PARTIALS, partials,
-                                      SubArray(run_count), run_count_workspace,
-                                      true, queue_idx);
-    SIZE runs = 0;
-    MemoryManager<DeviceType>::Copy1D(&runs, run_count.data(), 1, queue_idx);
-    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-    return CRFromRuns(original_data.shape(0), runs);
   }
 
   double EstimateCR(Array<1, T_symbol, DeviceType> &original_data,
@@ -381,9 +358,6 @@ public:
   Array<1, C_global, DeviceType> scanned_start_marks;
   Array<1, C_global, DeviceType> start_positions;
   Array<1, Byte, DeviceType> scan_workspace;
-  Array<1, SIZE, DeviceType> run_count_partials;
-  Array<1, SIZE, DeviceType> run_count;
-  Array<1, Byte, DeviceType> run_count_workspace;
 };
 
 } // namespace parallel_rle

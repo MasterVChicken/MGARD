@@ -5,6 +5,7 @@
 #include "../../Lossless/ParallelRLE/RunLengthEncoding.hpp"
 #include "../../Lossless/Zstd.hpp"
 // #include "../RefactorUtils.hpp"
+#include "GroupStatistics.hpp"
 #include "LevelCompressorInterface.hpp"
 #include "LosslessCompressor.hpp"
 #include <cstring>
@@ -81,19 +82,24 @@ public:
     std::vector<float> cr, time;
     bool huffman_success, rle_success, zstd_success;
     SIZE num_bitplanes = encoded_bitplanes.shape(0) - sign_rows;
+    // What size_threshold is compared with: a full group in the format
+    // version 0 layout, where encoders with a sign row instead reserved a
+    // sign slot in every row and so had rows twice as long. This keeps
+    // compressing the same groups; with the halved rows, groups of 1-2M
+    // coefficients (e.g. the finest level of a 128^3 subdomain) would be
+    // stored raw.
+    SIZE threshold_size = encoded_bitplanes.shape(1) * byte_ratio *
+                          num_merged_bitplanes * (sign_rows > 0 ? 2 : 1);
+    bool try_rle_huffman = threshold_size > size_threshold &&
+                           config.lossless != lossless_type::Huffman_Zstd;
+    if (try_rle_huffman) {
+      group_statistics(encoded_bitplanes, num_bitplanes, sign_rows, queue_idx);
+    }
     for (SIZE bitplane_idx = 0; bitplane_idx < num_bitplanes; bitplane_idx++) {
       if (bitplane_idx % num_merged_bitplanes == 0) {
         SIZE merged_bitplane_size =
             encoded_bitplanes.shape(1) * byte_ratio *
             group_num_rows(bitplane_idx, num_bitplanes, sign_rows);
-        // What size_threshold is compared with: a full group in the format
-        // version 0 layout, where encoders with a sign row instead reserved a
-        // sign slot in every row and so had rows twice as long. This keeps
-        // compressing the same groups; with the halved rows, groups of 1-2M
-        // coefficients (e.g. the finest level of a 128^3 subdomain) would be
-        // stored raw.
-        SIZE threshold_size = encoded_bitplanes.shape(1) * byte_ratio *
-                              num_merged_bitplanes * (sign_rows > 0 ? 2 : 1);
         Timer timer;
         timer.start();
         T_compress *bitplane = (T_compress *)encoded_bitplanes(
@@ -112,21 +118,23 @@ public:
           zstd_success =
               compress_zstd((Byte *)bitplane, merged_bitplane_size,
                             compressed_bitplanes[bitplane_idx], queue_idx);
-        } else if (threshold_size > size_threshold) {
-          // Decide from cheap statistics before compressing: RLE only when
-          // its own estimate passes (same formula, one counting pass instead
-          // of start marks + scan), Huffman only when the entropy bound can
-          // reach the target. Skips exactly the attempts that would fail, so
-          // the output is unchanged.
-          SubArray<1, T_compress, DeviceType> group(encoded_bitplane);
-          if (rle.EstimateCRFast(group, queue_idx) >= cr_threshold) {
+        } else if (try_rle_huffman) {
+          // Decide from the group's statistics before compressing: RLE only
+          // when its own estimate passes (same formula, from the run count),
+          // Huffman only when the entropy bound can reach the target. Skips
+          // exactly the attempts that would fail.
+          SIZE group = bitplane_idx / num_merged_bitplanes;
+          const unsigned int *freq = &group_freqs[group * _huff_dict_size];
+          if (rle.CRFromRuns(merged_bitplane_size, group_runs[group]) >=
+              cr_threshold) {
             rle_success = rle.Compress(encoded_bitplane,
                                        compressed_bitplanes[bitplane_idx],
                                        cr_threshold, queue_idx);
           }
           if (rle_success) {
             rle.Serialize(compressed_bitplanes[bitplane_idx], queue_idx);
-          } else if (huffman_may_reach(group, cr_threshold, queue_idx)) {
+          } else if (huffman_may_reach(freq, merged_bitplane_size,
+                                       cr_threshold)) {
             ATOMIC_IDX zero = 0;
             MemoryManager<DeviceType>::Copy1D(
                 huffman.workspace.outlier_count_subarray.data(), &zero, 1,
@@ -136,7 +144,7 @@ public:
                 huffman.workspace.outlier_count_subarray.data(), 1, queue_idx);
             huffman_success = huffman.CompressPrimary(
                 encoded_bitplane, compressed_bitplanes[bitplane_idx],
-                cr_threshold, queue_idx);
+                cr_threshold, freq, queue_idx);
             if (huffman_success) {
               huffman.Serialize(compressed_bitplanes[bitplane_idx], queue_idx);
             }
@@ -198,23 +206,14 @@ public:
   // against target_cr): with two or more symbols every codeword has >= 1 bit
   // and the total length is >= n * entropy, so the encoded bits are at least
   // n * max(H, 1).
-  bool huffman_may_reach(SubArray<1, T_compress, DeviceType> group,
-                         float target_cr, int queue_idx) {
-    SIZE n = group.shape(0);
-    freq_array.resize({(SIZE)_huff_dict_size}, queue_idx);
-    freq_array.memset(0, queue_idx);
-    Histogram<T_compress, unsigned int, DeviceType>(
-        group, SubArray(freq_array), n, _huff_dict_size, queue_idx);
-    std::vector<unsigned int> freq(_huff_dict_size);
-    MemoryManager<DeviceType>::Copy1D(freq.data(), freq_array.data(),
-                                      _huff_dict_size, queue_idx);
-    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+  static bool huffman_may_reach(const unsigned int *freq, SIZE n,
+                                float target_cr) {
     int num_symbols = 0;
     double entropy = 0;
-    for (unsigned int f : freq) {
-      if (f > 0) {
+    for (int s = 0; s < _huff_dict_size; s++) {
+      if (freq[s] > 0) {
         num_symbols++;
-        double p = (double)f / n;
+        double p = (double)freq[s] / n;
         entropy -= p * std::log2(p);
       }
     }
@@ -224,6 +223,33 @@ public:
     double min_bits = n * std::max(entropy, 1.0) * (1.0 - 1e-9);
     double max_cr = (double)(n * sizeof(T_compress)) / (min_bits / 8 + 2000);
     return max_cr >= target_cr;
+  }
+
+  // Run counts and byte histograms of all merged groups of a level, in one
+  // kernel and one transfer (group_runs, group_freqs on the host).
+  void group_statistics(SubArray<2, T_bitplane, DeviceType> &encoded_bitplanes,
+                        SIZE num_bitplanes, int sign_rows, int queue_idx) {
+    SIZE num_groups =
+        (num_bitplanes + num_merged_bitplanes - 1) / num_merged_bitplanes;
+    group_runs_array.resize({num_groups}, queue_idx);
+    group_freqs_array.resize({num_groups * _huff_dict_size}, queue_idx);
+    group_runs_array.memset(0, queue_idx);
+    group_freqs_array.memset(0, queue_idx);
+    SIZE max_run = (SIZE)1 << (sizeof(u_int32_t) * 8);
+    DeviceLauncher<DeviceType>::Execute(
+        GroupStatisticsKernel<T_bitplane, DeviceType>(
+            encoded_bitplanes, num_bitplanes, num_merged_bitplanes, sign_rows,
+            max_run, num_groups, SubArray(group_runs_array),
+            SubArray(group_freqs_array)),
+        queue_idx);
+    group_runs.resize(num_groups);
+    group_freqs.resize(num_groups * _huff_dict_size);
+    MemoryManager<DeviceType>::Copy1D(
+        group_runs.data(), group_runs_array.data(), num_groups, queue_idx);
+    MemoryManager<DeviceType>::Copy1D(group_freqs.data(),
+                                      group_freqs_array.data(),
+                                      num_groups * _huff_dict_size, queue_idx);
+    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
   }
 
   // decompress level, create new buffer and overwrite original streams; will
@@ -341,7 +367,11 @@ public:
       rle;
   Zstd<DeviceType> zstd;
   Config config;
-  Array<1, unsigned int, DeviceType> freq_array;
+  // Per-group run counts and byte histograms of the level being compressed
+  // (group_statistics); Huffman::CompressPrimary builds its codebook from the
+  // host histogram.
+  Array<1, unsigned int, DeviceType> group_runs_array, group_freqs_array;
+  std::vector<unsigned int> group_runs, group_freqs;
 };
 
 } // namespace MDR
