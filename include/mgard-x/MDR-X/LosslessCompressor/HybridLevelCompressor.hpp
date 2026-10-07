@@ -36,25 +36,38 @@ public:
   }
   ~HybridLevelCompressor(){};
 
+  // A merged group spans num_merged_bitplanes rows of encoded bitplanes;
+  // group 0 also carries the encoder's sign rows (sign_rows, 0 or 1), so a
+  // group has at most MAX_GROUP_ROWS rows.
+  static constexpr int MAX_GROUP_ROWS = num_merged_bitplanes + 1;
+  static SIZE group_first_row(SIZE bitplane_idx, int sign_rows) {
+    return bitplane_idx == 0 ? 0 : bitplane_idx + sign_rows;
+  }
+  static SIZE group_num_rows(SIZE bitplane_idx, SIZE num_bitplanes,
+                             int sign_rows) {
+    return std::min((SIZE)num_merged_bitplanes, num_bitplanes - bitplane_idx) +
+           (bitplane_idx == 0 ? sign_rows : 0);
+  }
+
   void Adapt(SIZE max_n, SIZE max_bitplanes, Config config, int queue_idx) {
     this->initialized = true;
     this->config = config;
-    huffman.Resize(max_n * byte_ratio * num_merged_bitplanes, _huff_dict_size,
+    huffman.Resize(max_n * byte_ratio * MAX_GROUP_ROWS, _huff_dict_size,
                    _huff_block_size, config.estimate_outlier_ratio, queue_idx);
-    rle.Resize(max_n * byte_ratio * num_merged_bitplanes, queue_idx);
+    rle.Resize(max_n * byte_ratio * MAX_GROUP_ROWS, queue_idx);
     zstd.Resize(max_n * sizeof(T_bitplane), config.zstd_compress_level,
                 queue_idx);
   }
   static size_t EstimateMemoryFootprint(SIZE max_n, Config config) {
     size_t size = 0;
     size += Huffman<T_bitplane, T_bitplane, HUFFMAN_CODE, DeviceType>::
-        EstimateMemoryFootprint(max_n * byte_ratio * num_merged_bitplanes,
+        EstimateMemoryFootprint(max_n * byte_ratio * MAX_GROUP_ROWS,
                                 _huff_dict_size, _huff_block_size,
                                 config.estimate_outlier_ratio);
     size += parallel_rle::RunLengthEncoding<
         T_compress, u_int32_t, u_int32_t,
         DeviceType>::EstimateMemoryFootprint(max_n * byte_ratio *
-                                             num_merged_bitplanes);
+                                             MAX_GROUP_ROWS);
     size +=
         Zstd<DeviceType>::EstimateMemoryFootprint(max_n * sizeof(T_bitplane));
     return size;
@@ -63,18 +76,28 @@ public:
   void
   compress_level(SubArray<2, T_bitplane, DeviceType> &encoded_bitplanes,
                  std::vector<Array<1, Byte, DeviceType>> &compressed_bitplanes,
-                 int level_idx, int queue_idx) {
+                 int level_idx, int queue_idx, int sign_rows) {
 
     std::vector<float> cr, time;
     bool huffman_success, rle_success, zstd_success;
-    for (SIZE bitplane_idx = 0; bitplane_idx < encoded_bitplanes.shape(0);
-         bitplane_idx++) {
+    SIZE num_bitplanes = encoded_bitplanes.shape(0) - sign_rows;
+    for (SIZE bitplane_idx = 0; bitplane_idx < num_bitplanes; bitplane_idx++) {
       if (bitplane_idx % num_merged_bitplanes == 0) {
         SIZE merged_bitplane_size =
-            encoded_bitplanes.shape(1) * byte_ratio * num_merged_bitplanes;
+            encoded_bitplanes.shape(1) * byte_ratio *
+            group_num_rows(bitplane_idx, num_bitplanes, sign_rows);
+        // What size_threshold is compared with: a full group in the format
+        // version 0 layout, where encoders with a sign row instead reserved a
+        // sign slot in every row and so had rows twice as long. This keeps
+        // compressing the same groups; with the halved rows, groups of 1-2M
+        // coefficients (e.g. the finest level of a 128^3 subdomain) would be
+        // stored raw.
+        SIZE threshold_size = encoded_bitplanes.shape(1) * byte_ratio *
+                              num_merged_bitplanes * (sign_rows > 0 ? 2 : 1);
         Timer timer;
         timer.start();
-        T_compress *bitplane = (T_compress *)encoded_bitplanes(bitplane_idx, 0);
+        T_compress *bitplane = (T_compress *)encoded_bitplanes(
+            group_first_row(bitplane_idx, sign_rows), 0);
 
         Array<1, T_compress, DeviceType> encoded_bitplane(
             {merged_bitplane_size}, bitplane);
@@ -84,12 +107,12 @@ public:
         rle_success = false;
         zstd_success = false;
         // cr_threshold = 2.0;
-        if (merged_bitplane_size > size_threshold &&
+        if (threshold_size > size_threshold &&
             config.lossless == lossless_type::Huffman_Zstd) {
           zstd_success =
               compress_zstd((Byte *)bitplane, merged_bitplane_size,
                             compressed_bitplanes[bitplane_idx], queue_idx);
-        } else if (merged_bitplane_size > size_threshold) {
+        } else if (threshold_size > size_threshold) {
           // Decide from cheap statistics before compressing: RLE only when
           // its own estimate passes (same formula, one counting pass instead
           // of start marks + scan), Huffman only when the entropy bound can
@@ -154,6 +177,23 @@ public:
     // log::info("Time: " + time_string);
   }
 
+  // LevelCompressorInterface: encoded bitplanes without sign rows
+  void
+  compress_level(SubArray<2, T_bitplane, DeviceType> &encoded_bitplanes,
+                 std::vector<Array<1, Byte, DeviceType>> &compressed_bitplanes,
+                 int level_idx, int queue_idx) {
+    compress_level(encoded_bitplanes, compressed_bitplanes, level_idx,
+                   queue_idx, 0);
+  }
+  void decompress_level(
+      std::vector<Array<1, Byte, DeviceType>> &compressed_bitplanes,
+      SubArray<2, T_bitplane, DeviceType> &encoded_bitplanes,
+      uint8_t starting_bitplane, uint8_t num_bitplanes, int level_idx,
+      int queue_idx) {
+    decompress_level(compressed_bitplanes, encoded_bitplanes, starting_bitplane,
+                     num_bitplanes, level_idx, queue_idx, 0);
+  }
+
   // Upper bound on the CR that Huffman::CompressPrimary estimates (and tests
   // against target_cr): with two or more symbols every codeword has >= 1 bit
   // and the total length is >= n * entropy, so the encoded bits are at least
@@ -192,17 +232,20 @@ public:
       std::vector<Array<1, Byte, DeviceType>> &compressed_bitplanes,
       SubArray<2, T_bitplane, DeviceType> &encoded_bitplanes,
       uint8_t starting_bitplane, uint8_t num_bitplanes, int level_idx,
-      int queue_idx) {
+      int queue_idx, int sign_rows) {
 
     std::vector<float> time;
+    SIZE total_bitplanes = encoded_bitplanes.shape(0) - sign_rows;
     for (SIZE bitplane_idx = starting_bitplane;
          bitplane_idx < starting_bitplane + num_bitplanes; bitplane_idx++) {
       if (bitplane_idx % num_merged_bitplanes == 0) {
         Timer timer;
         timer.start();
-        T_compress *bitplane = (T_compress *)encoded_bitplanes(bitplane_idx, 0);
+        T_compress *bitplane = (T_compress *)encoded_bitplanes(
+            group_first_row(bitplane_idx, sign_rows), 0);
         SIZE merged_bitplane_size =
-            encoded_bitplanes.shape(1) * byte_ratio * num_merged_bitplanes;
+            encoded_bitplanes.shape(1) * byte_ratio *
+            group_num_rows(bitplane_idx, total_bitplanes, sign_rows);
 
         Array<1, T_compress, DeviceType> encoded_bitplane(
             {merged_bitplane_size}, bitplane);

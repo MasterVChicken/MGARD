@@ -162,20 +162,13 @@ public:
     }
     // encode data
     encode_batch(fp_data, encoded_data);
-// store data
+// store data: row 0 holds the signs, bitplane b is row b + 1
 #pragma unroll
     for (int bp_idx = 0; bp_idx < NUM_BITPLANES; bp_idx++) {
-      // if (num_full_batches == 1) printf("encoded_data: %u\n",
-      // encoded_data[bp_idx]);
-      *encoded_bitplanes(bp_idx, batch_idx) = encoded_data[bp_idx];
+      *encoded_bitplanes(bp_idx + 1, batch_idx) = encoded_data[bp_idx];
     }
     // store sign
-    *encoded_bitplanes(0, num_full_batches + batch_idx) = encoded_sign;
-// set rest of the bitplanes to 0
-#pragma unroll
-    for (int bp_idx = 1; bp_idx < NUM_BITPLANES; bp_idx++) {
-      *encoded_bitplanes(bp_idx, num_full_batches + batch_idx) = (T_bitplane)0;
-    }
+    *encoded_bitplanes(0, batch_idx) = encoded_sign;
     if constexpr (ControlL2) {
       // errors[] is uninitialized stack memory; error_collect_binary
       // accumulates into it with +=, so it must be zeroed first.
@@ -381,7 +374,7 @@ public:
 #pragma unroll
     for (int bp_idx = 0; bp_idx < NUM_BITPLANES; bp_idx++) {
       encoded_data[bp_idx] =
-          *encoded_bitplanes(starting_bitplane + bp_idx, batch_idx);
+          *encoded_bitplanes(starting_bitplane + bp_idx + 1, batch_idx);
       // if (num_full_batches == 1) printf("encoded_data: %u\n",
       // encoded_data[bp_idx]);
     }
@@ -390,7 +383,7 @@ public:
 
     if (starting_bitplane == 0) {
       // decode sign
-      encoded_sign = *encoded_bitplanes(0, num_full_batches + batch_idx);
+      encoded_sign = *encoded_bitplanes(0, batch_idx);
 #pragma unroll
       for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
         fp_sign[data_idx] =
@@ -572,13 +565,15 @@ public:
     DeviceRuntime<DeviceType>::SyncQueue(0);
   }
 
-  static SIZE bitplane_length(SIZE n) {
-    if constexpr (!NegaBinary) {
-      return num_blocks(n) * 2;
-    } else {
-      return num_blocks(n);
-    }
-  }
+  // Layout of the encoded bitplanes: NUM_ROWS rows of bitplane_length(n)
+  // words. With the binary (sign-magnitude) encoding row 0 holds the signs
+  // and bitplane b is row b + 1; the negabinary encoding has no sign row.
+  // (The signs used to share row 0 with bitplane 0 in a row twice as long,
+  // which left the second half of every other row as zero padding.)
+  static constexpr int SIGN_ROWS = NegaBinary ? 0 : 1;
+  static constexpr int NUM_ROWS = MAX_BITPLANES + SIGN_ROWS;
+
+  static SIZE bitplane_length(SIZE n) { return num_blocks(n); }
 
   static SIZE num_blocks(SIZE n) {
     const SIZE batch_size = sizeof(T_bitplane) * 8;

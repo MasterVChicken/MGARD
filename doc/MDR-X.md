@@ -22,6 +22,9 @@ With `config.decomposition = decomposition_type::Hybrid` (`mdr-x -z ... -hh`), M
 ### L2 error bound (MDR-X)
 An L2 request (`-s 0`, any finite `s` is treated the same way) bounds the discrete norm `sqrt(sum_i (x_i - x'_i)^2)` of the reconstruction error, for both the global and the hybrid decomposition. The refactor records, for every level and every number of retrieved bitplanes, the exact squared coefficient error of the truncating bitplane decoder. Since every recomposition stage is convex multilinear interpolation, recomposing level `l` alone amplifies the L2 norm by at most `sqrt(2^(D * s_l))`, where `s_l` is the number of stages finer than level `l`. The retrieval plan keeps `sum_l sqrt(2^(D * s_l) * E_l) <= tol` (triangle inequality over levels), and splits the tolerance as `tol / sqrt(#subdomains)` under domain decomposition. The bound is rigorous and therefore conservative.
 
+### Data format version (MDR-X)
+The header of refactored data records a format version (currently 1). Version 1 stores the sign bits of the binary bitplane encoder once per level, as an extra row in the first merged bitplane group, instead of reserving a sign slot in every bitplane; incompressible bitplane groups are no longer half zeros. Data refactored by an earlier MDR-X (version 0) cannot be read by this version: requests and reconstruction stop with an error asking to refactor the data again.
+
 ## Configure and build
 
 Both MDR and MDR-X are automatically built together with MGARD-X. Please follow the [instruction of MGARD-X][mgard-x-build] to build MDR and MDR-X.

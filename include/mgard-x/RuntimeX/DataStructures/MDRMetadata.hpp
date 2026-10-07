@@ -9,6 +9,8 @@
 #define MDR_X_MDR_METADATA_HPP
 
 #include <cstring>
+#include <stdexcept>
+#include <string>
 
 namespace mgard_x {
 namespace MDR {
@@ -35,6 +37,11 @@ public:
   }
 
   using T_error = double;
+  // Layout of the refactored bitplanes. 1: signs in their own row (part of
+  // the first bitplane group). 0 (absent): signs shared row 0 with bitplane 0
+  // in rows twice as long; no longer readable.
+  static constexpr uint32_t FORMAT_VERSION = 1;
+  uint32_t format_version = FORMAT_VERSION;
   // Metadata
   SIZE num_levels;
   SIZE num_bitplanes;
@@ -157,6 +164,7 @@ public:
     metadata_size += sizeof(T_error) * num_levels * (num_bitplanes + 1);
     metadata_size += sizeof(SIZE) * num_levels * num_bitplanes;
     metadata_size += sizeof(SIZE) * num_levels;
+    metadata_size += sizeof(uint32_t);
     return metadata_size;
   }
 
@@ -184,6 +192,10 @@ public:
       Serialize(ptr, level_sizes[i].data(), sizeof(SIZE) * (num_bitplanes));
     }
     Serialize(ptr, level_num_elems.data(), sizeof(SIZE) * num_levels);
+    // Appended last, so metadata written before it existed still parses
+    // (as version 0).
+    uint32_t version = FORMAT_VERSION;
+    Serialize(ptr, &version, sizeof(uint32_t));
     return serialize_metadata;
   }
 
@@ -201,6 +213,20 @@ public:
       Deserialize(ptr, level_sizes[i].data(), sizeof(SIZE) * (num_bitplanes));
     }
     Deserialize(ptr, level_num_elems.data(), sizeof(SIZE) * num_levels);
+    format_version = 0;
+    if (ptr + sizeof(uint32_t) <=
+        serialize_metadata.data() + serialize_metadata.size()) {
+      Deserialize(ptr, &format_version, sizeof(uint32_t));
+    }
+  }
+
+  void CheckFormatVersion() const {
+    if (format_version != FORMAT_VERSION) {
+      throw std::runtime_error(
+          "MDR-X: this data was refactored with bitplane layout version " +
+          std::to_string(format_version) + "; this build reads version " +
+          std::to_string(FORMAT_VERSION) + ". Refactor it again.");
+    }
   }
 };
 

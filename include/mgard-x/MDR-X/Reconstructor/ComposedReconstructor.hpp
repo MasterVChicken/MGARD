@@ -117,7 +117,7 @@ public:
     abs_max_array.resize(layout.num_levels());
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       encoded_bitplanes_array[level_idx].resize(
-          {(SIZE)Encoder::MAX_BITPLANES,
+          {(SIZE)Encoder::NUM_ROWS,
            encoder.bitplane_length(layout.level_num_elems[level_idx])},
           queue_idx);
       encoded_bitplanes_subarray[level_idx] =
@@ -152,7 +152,7 @@ public:
     }
 
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
-      size += Encoder::MAX_BITPLANES *
+      size += Encoder::NUM_ROWS *
               Encoder::bitplane_length(layout.level_num_elems[level_idx]) *
               sizeof(T_bitplane);
     }
@@ -195,7 +195,9 @@ public:
         if (bitplane_idx % Compressor::num_merged_bitplanes == 0) {
           estimation[level_idx][bitplane_idx] =
               Encoder::bitplane_length(layout.level_num_elems[level_idx]) *
-              sizeof(T_bitplane) * Compressor::num_merged_bitplanes;
+              sizeof(T_bitplane) *
+              (Compressor::num_merged_bitplanes +
+               (bitplane_idx == 0 ? Encoder::SIGN_ROWS : 0));
           // For Huffman-only model (metadata storage)
           estimation[level_idx][bitplane_idx] += 1e6;
         } else {
@@ -207,6 +209,7 @@ public:
   }
 
   void GenerateRequest(MDRMetadata &mdr_metadata) {
+    mdr_metadata.CheckFormatVersion();
     mgard_x::Timer timer;
     timer.start();
     std::vector<std::vector<double>> level_abs_errors;
@@ -346,6 +349,7 @@ public:
 
   void LoadMetadata(MDRMetadata &mdr_metadata, MDRData<DeviceType> &mdr_data,
                     int queue_idx) {
+    mdr_metadata.CheckFormatVersion();
     // All levels, not just up to CurrFinalLevel(): levels with no bitplanes
     // must get level_num_bitplanes = 0 rather than keep a value from a
     // previous use of this reconstructor (ProgressiveReconstruct visits all).
@@ -384,7 +388,8 @@ public:
           mdr_data.compressed_bitplanes[level_idx],
           encoded_bitplanes_subarray[level_idx],
           mdr_metadata.prev_used_level_num_bitplanes[level_idx],
-          level_num_bitplanes[level_idx], level_idx, queue_idx);
+          level_num_bitplanes[level_idx], level_idx, queue_idx,
+          Encoder::SIGN_ROWS);
       decompressed_size += encoded_bitplanes_subarray[level_idx].shape(1) *
                            num_bitplanes * sizeof(T_bitplane);
     }

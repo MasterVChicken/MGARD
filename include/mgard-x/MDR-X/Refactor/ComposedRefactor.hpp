@@ -72,7 +72,7 @@ public:
     MDRLevelLayout layout = build_level_layout(shape, config);
     SIZE size = 0;
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
-      size += Encoder::MAX_BITPLANES *
+      size += Encoder::NUM_ROWS *
               Encoder::bitplane_length(layout.level_num_elems[level_idx]) *
               sizeof(T_bitplane);
     }
@@ -132,7 +132,7 @@ public:
     exp.resize(layout.num_levels());
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       encoded_bitplanes_array[level_idx].resize(
-          {(SIZE)Encoder::MAX_BITPLANES,
+          {(SIZE)Encoder::NUM_ROWS,
            encoder.bitplane_length(layout.level_num_elems[level_idx])},
           queue_idx);
       encoded_bitplanes_subarray[level_idx] =
@@ -163,7 +163,7 @@ public:
         SubArray<1, T_data, DeviceType>(), tmp, false, 0);
     size += tmp.shape(0);
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
-      size += Encoder::MAX_BITPLANES *
+      size += Encoder::NUM_ROWS *
               Encoder::bitplane_length(layout.level_num_elems[level_idx]) *
               sizeof(T_bitplane);
       size += sizeof(T_error) * (Encoder::MAX_BITPLANES + 1);
@@ -207,7 +207,9 @@ public:
         if (bitplane_idx % Compressor::num_merged_bitplanes == 0) {
           estimation[level_idx][bitplane_idx] =
               Encoder::bitplane_length(layout.level_num_elems[level_idx]) *
-              sizeof(T_bitplane) * Compressor::num_merged_bitplanes;
+              sizeof(T_bitplane) *
+              (Compressor::num_merged_bitplanes +
+               (bitplane_idx == 0 ? Encoder::SIGN_ROWS : 0));
           // For Huffman-only model (metadata storage)
           estimation[level_idx][bitplane_idx] += 1e6;
         } else {
@@ -316,7 +318,7 @@ public:
       }
 
       encoded_bitplanes_array[level_idx].resize(
-          {(SIZE)Encoder::MAX_BITPLANES,
+          {(SIZE)Encoder::NUM_ROWS,
            encoder.bitplane_length(layout.level_num_elems[level_idx])},
           queue_idx);
       encoded_bitplanes_subarray[level_idx] =
@@ -412,7 +414,7 @@ public:
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       compressor.compress_level(encoded_bitplanes_subarray[level_idx],
                                 mdr_data.compressed_bitplanes[level_idx],
-                                level_idx, queue_idx);
+                                level_idx, queue_idx, Encoder::SIGN_ROWS);
     }
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
