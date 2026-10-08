@@ -8,6 +8,8 @@
 #ifndef MGARD_X_SERIALIZER_HH
 #define MGARD_X_SERIALIZER_HH
 
+#include <cstring>
+
 namespace mgard_x {
 template <typename T>
 MGARDX_CONT_EXEC void align_byte_offset(SIZE &byte_offset) {
@@ -44,6 +46,26 @@ void DeserializeArray(SubArray<1, Byte, DeviceType> &array, T *&data_ptr,
     Mem::Copy1D((Byte *)data_ptr, array(byte_offset), count * sizeof(T),
                 queue_idx);
   }
+  byte_offset += count * sizeof(T);
+}
+
+// SerializeArray into a host buffer that is uploaded later: same offsets.
+template <typename T>
+void SerializeArrayHost(Byte *host_data, const T *data_ptr, SIZE count,
+                        SIZE &byte_offset) {
+  align_byte_offset<T>(byte_offset);
+  std::memcpy(host_data + byte_offset, (const Byte *)data_ptr,
+              count * sizeof(T));
+  byte_offset += count * sizeof(T);
+}
+
+// DeserializeArray without zero copy, reading a host copy of the serialized
+// bytes instead of the device array: same offsets, no transfer.
+template <typename T>
+void DeserializeArrayHost(const Byte *host_data, T *data_ptr, SIZE count,
+                          SIZE &byte_offset) {
+  align_byte_offset<T>(byte_offset);
+  std::memcpy((Byte *)data_ptr, host_data + byte_offset, count * sizeof(T));
   byte_offset += count * sizeof(T);
 }
 

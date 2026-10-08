@@ -249,6 +249,11 @@ void MDReconstruct(std::vector<SIZE> shape,
   Metadata<DeviceType> m;
   m.Deserialize((SERIALIZED_TYPE *)refactored_metadata.header.data());
   load(config, m);
+  // The bitplane group size the data was refactored with (the same for all
+  // subdomains); buffers are sized for it before any metadata is loaded.
+  if (!refactored_metadata.metadata.empty()) {
+    config.mdr_bitplane_group_size = refactored_metadata.metadata[0].group_size;
+  }
 
   std::vector<T *> coords(D);
   if (m.dstype == data_structure_type::Cartesian_Grid_Non_Uniform) {

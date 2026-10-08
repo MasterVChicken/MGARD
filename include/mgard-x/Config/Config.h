@@ -31,6 +31,9 @@ struct Config {
   SIZE domain_decomposition_dim;
   std::vector<SIZE> domain_decomposition_sizes;
   bool mdr_adaptive_resolution;
+  // MDR-X: bitplanes per merged group (1-4), the unit of compression and of
+  // retrieval. Smaller groups retrieve closer to a requested error.
+  int mdr_bitplane_group_size;
   bool adjust_shape;
   bool compress_with_dryrun;
   int num_local_refactoring_level;

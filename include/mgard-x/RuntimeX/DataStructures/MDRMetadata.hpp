@@ -37,11 +37,15 @@ public:
   }
 
   using T_error = double;
-  // Layout of the refactored bitplanes. 1: signs in their own row (part of
-  // the first bitplane group). 0 (absent): signs shared row 0 with bitplane 0
-  // in rows twice as long; no longer readable.
-  static constexpr uint32_t FORMAT_VERSION = 1;
+  // Layout of the refactored bitplanes. 2: as 1, with the number of
+  // bitplanes per merged group recorded (group_size). 1: signs in their own
+  // row (part of the first bitplane group), groups of 4 bitplanes. 0
+  // (absent): signs shared row 0 with bitplane 0 in rows twice as long; no
+  // longer readable.
+  static constexpr uint32_t FORMAT_VERSION = 2;
   uint32_t format_version = FORMAT_VERSION;
+  // Bitplanes per merged group (Config::mdr_bitplane_group_size).
+  uint32_t group_size = 4;
   // Metadata
   SIZE num_levels;
   SIZE num_bitplanes;
@@ -164,7 +168,7 @@ public:
     metadata_size += sizeof(T_error) * num_levels * (num_bitplanes + 1);
     metadata_size += sizeof(SIZE) * num_levels * num_bitplanes;
     metadata_size += sizeof(SIZE) * num_levels;
-    metadata_size += sizeof(uint32_t);
+    metadata_size += sizeof(uint32_t) * 2;
     return metadata_size;
   }
 
@@ -196,6 +200,7 @@ public:
     // (as version 0).
     uint32_t version = FORMAT_VERSION;
     Serialize(ptr, &version, sizeof(uint32_t));
+    Serialize(ptr, &group_size, sizeof(uint32_t));
     return serialize_metadata;
   }
 
@@ -213,18 +218,22 @@ public:
       Deserialize(ptr, level_sizes[i].data(), sizeof(SIZE) * (num_bitplanes));
     }
     Deserialize(ptr, level_num_elems.data(), sizeof(SIZE) * num_levels);
+    Byte *end = serialize_metadata.data() + serialize_metadata.size();
     format_version = 0;
-    if (ptr + sizeof(uint32_t) <=
-        serialize_metadata.data() + serialize_metadata.size()) {
+    if (ptr + sizeof(uint32_t) <= end) {
       Deserialize(ptr, &format_version, sizeof(uint32_t));
+    }
+    group_size = 4;
+    if (format_version >= 2 && ptr + sizeof(uint32_t) <= end) {
+      Deserialize(ptr, &group_size, sizeof(uint32_t));
     }
   }
 
   void CheckFormatVersion() const {
-    if (format_version != FORMAT_VERSION) {
+    if (format_version < 1 || format_version > FORMAT_VERSION) {
       throw std::runtime_error(
           "MDR-X: this data was refactored with bitplane layout version " +
-          std::to_string(format_version) + "; this build reads version " +
+          std::to_string(format_version) + "; this build reads versions 1-" +
           std::to_string(FORMAT_VERSION) + ". Refactor it again.");
     }
   }

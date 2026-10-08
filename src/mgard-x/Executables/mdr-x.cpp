@@ -48,6 +48,7 @@ void print_usage_message(std::string error) {
 \t\t\t in-cache levels + global levels over the coarsest block-local region (1D-3D)\n\
 \t\t\t (optional) -ll / --local-levels <int>: block-local levels (default: 1)\n\
 \t\t\t (optional) -gl / --global-levels <int>: global levels, -1 = as many as possible (default: -1)\n\
+\t\t (optional) -gs / --group-size <1-4>: bitplanes per merged group, the unit of compression and retrieval (default: 2)\n\
 \n\
 \t -x / --reconstruct: reconstruct data\n\
 \t\t -i / --input <path to refactored data dir>\n\
@@ -313,9 +314,11 @@ int launch_refactor(mgard_x::DIM D, enum mgard_x::data_type dtype,
                     enum mgard_x::device_type dev_type, int verbose,
                     mgard_x::SIZE max_memory_footprint,
                     enum mgard_x::lossless_type lossless, bool use_hybrid,
-                    int num_local_levels, int num_global_levels) {
+                    int num_local_levels, int num_global_levels,
+                    int group_size) {
 
   mgard_x::Config config;
+  config.mdr_bitplane_group_size = group_size;
   config.normalize_coordinates = false;
   config.lossless = lossless;
   config.log_level = verbose_to_log_level(verbose);
@@ -549,18 +552,22 @@ bool try_refactoring(int argc, char *argv[]) {
     num_global_levels =
         get_arg<int>(argc, argv, "Global levels", "-gl", "--global-levels");
   }
+  int group_size = mgard_x::Config().mdr_bitplane_group_size;
+  if (has_arg(argc, argv, "-gs", "--group-size")) {
+    group_size = get_arg<int>(argc, argv, "Group size", "-gs", "--group-size");
+  }
   if (dtype == mgard_x::data_type::Double) {
     launch_refactor<double>(shape.size(), dtype, input_file.c_str(),
                             output_file.c_str(), shape, domain_decomposition,
                             block_size, dev_type, verbose, max_memory_footprint,
                             lossless, use_hybrid, num_local_levels,
-                            num_global_levels);
+                            num_global_levels, group_size);
   } else if (dtype == mgard_x::data_type::Float) {
     launch_refactor<float>(shape.size(), dtype, input_file.c_str(),
                            output_file.c_str(), shape, domain_decomposition,
                            block_size, dev_type, verbose, max_memory_footprint,
                            lossless, use_hybrid, num_local_levels,
-                           num_global_levels);
+                           num_global_levels, group_size);
   }
   return true;
 }

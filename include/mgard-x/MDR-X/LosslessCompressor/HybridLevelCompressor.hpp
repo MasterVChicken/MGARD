@@ -24,7 +24,23 @@ public:
   static constexpr int byte_ratio = sizeof(T_bitplane) / sizeof(T_compress);
   static constexpr int _huff_dict_size = 256;
   static constexpr int _huff_block_size = 1024;
-  static constexpr int num_merged_bitplanes = 4;
+  // Bitplanes per merged group (1 to MAX_GROUP_SIZE): the unit of
+  // compression and of retrieval. Set from the config when refactoring and
+  // from the metadata when reconstructing.
+  static constexpr int MAX_GROUP_SIZE = 4;
+  // Queues for concurrent Huffman decoding (the MDR pipelines use 0-2).
+  static constexpr int FIRST_DECODE_QUEUE = 3;
+  static constexpr int DECODE_QUEUES = 8;
+  static_assert(FIRST_DECODE_QUEUE + DECODE_QUEUES <= MGARDX_NUM_QUEUES);
+  int num_merged_bitplanes = MAX_GROUP_SIZE;
+  void SetGroupSize(int group_size) {
+    if (group_size < 1 || group_size > MAX_GROUP_SIZE) {
+      throw std::runtime_error("MDR-X: bitplane group size must be 1 to " +
+                               std::to_string(MAX_GROUP_SIZE) + ", got " +
+                               std::to_string(group_size));
+    }
+    num_merged_bitplanes = group_size;
+  }
 
   SIZE size_threshold = 1e6;
   float cr_threshold = 2.0;
@@ -40,12 +56,12 @@ public:
   // A merged group spans num_merged_bitplanes rows of encoded bitplanes;
   // group 0 also carries the encoder's sign rows (sign_rows, 0 or 1), so a
   // group has at most MAX_GROUP_ROWS rows.
-  static constexpr int MAX_GROUP_ROWS = num_merged_bitplanes + 1;
+  static constexpr int MAX_GROUP_ROWS = MAX_GROUP_SIZE + 1;
   static SIZE group_first_row(SIZE bitplane_idx, int sign_rows) {
     return bitplane_idx == 0 ? 0 : bitplane_idx + sign_rows;
   }
-  static SIZE group_num_rows(SIZE bitplane_idx, SIZE num_bitplanes,
-                             int sign_rows) {
+  SIZE group_num_rows(SIZE bitplane_idx, SIZE num_bitplanes,
+                      int sign_rows) const {
     return std::min((SIZE)num_merged_bitplanes, num_bitplanes - bitplane_idx) +
            (bitplane_idx == 0 ? sign_rows : 0);
   }
@@ -53,6 +69,7 @@ public:
   void Adapt(SIZE max_n, SIZE max_bitplanes, Config config, int queue_idx) {
     this->initialized = true;
     this->config = config;
+    SetGroupSize(config.mdr_bitplane_group_size);
     huffman.Resize(max_n * byte_ratio * MAX_GROUP_ROWS, _huff_dict_size,
                    _huff_block_size, config.estimate_outlier_ratio, queue_idx);
     rle.Resize(max_n * byte_ratio * MAX_GROUP_ROWS, queue_idx);
@@ -82,14 +99,14 @@ public:
     std::vector<float> cr, time;
     bool huffman_success, rle_success, zstd_success;
     SIZE num_bitplanes = encoded_bitplanes.shape(0) - sign_rows;
-    // What size_threshold is compared with: a full group in the format
-    // version 0 layout, where encoders with a sign row instead reserved a
-    // sign slot in every row and so had rows twice as long. This keeps
-    // compressing the same groups; with the halved rows, groups of 1-2M
-    // coefficients (e.g. the finest level of a 128^3 subdomain) would be
-    // stored raw.
+    // What size_threshold is compared with: a full group of 4 bitplanes in
+    // the format version 0 layout, where encoders with a sign row instead
+    // reserved a sign slot in every row and so had rows twice as long. It
+    // depends only on the level, so every group size compresses the same
+    // levels as before (with the halved rows, groups of 1-2M coefficients,
+    // e.g. the finest level of a 128^3 subdomain, would be stored raw).
     SIZE threshold_size = encoded_bitplanes.shape(1) * byte_ratio *
-                          num_merged_bitplanes * (sign_rows > 0 ? 2 : 1);
+                          MAX_GROUP_SIZE * (sign_rows > 0 ? 2 : 1);
     bool try_rle_huffman = threshold_size > size_threshold &&
                            config.lossless != lossless_type::Huffman_Zstd;
     if (try_rle_huffman) {
@@ -127,21 +144,16 @@ public:
           const unsigned int *freq = &group_freqs[group * _huff_dict_size];
           if (rle.CRFromRuns(merged_bitplane_size, group_runs[group]) >=
               cr_threshold) {
-            rle_success = rle.Compress(encoded_bitplane,
-                                       compressed_bitplanes[bitplane_idx],
-                                       cr_threshold, queue_idx);
+            rle.Compress(encoded_bitplane, compressed_bitplanes[bitplane_idx],
+                         (SIZE)group_runs[group], queue_idx);
+            rle_success = true;
           }
           if (rle_success) {
             rle.Serialize(compressed_bitplanes[bitplane_idx], queue_idx);
           } else if (huffman_may_reach(freq, merged_bitplane_size,
                                        cr_threshold)) {
-            ATOMIC_IDX zero = 0;
-            MemoryManager<DeviceType>::Copy1D(
-                huffman.workspace.outlier_count_subarray.data(), &zero, 1,
-                queue_idx);
-            MemoryManager<DeviceType>::Copy1D(
-                &huffman.outlier_count,
-                huffman.workspace.outlier_count_subarray.data(), 1, queue_idx);
+            // Primary data only: no outliers.
+            huffman.outlier_count = 0;
             huffman_success = huffman.CompressPrimary(
                 encoded_bitplane, compressed_bitplanes[bitplane_idx],
                 cr_threshold, freq, queue_idx);
@@ -258,10 +270,18 @@ public:
       std::vector<Array<1, Byte, DeviceType>> &compressed_bitplanes,
       SubArray<2, T_bitplane, DeviceType> &encoded_bitplanes,
       uint8_t starting_bitplane, uint8_t num_bitplanes, int level_idx,
-      int queue_idx, int sign_rows) {
-
+      int queue_idx, int sign_rows,
+      const std::vector<Byte *> *host_bitplanes = nullptr) {
+    // With host_bitplanes (host copies of compressed_bitplanes), each group's
+    // format and header are read on the host and the decoding stays queued:
+    // no transfer or synchronization per group. Huffman decoding of a group
+    // is latency bound (one thread per 1024-symbol chunk) and groups write
+    // disjoint rows, so the Huffman groups of the level are decoded
+    // concurrently on DECODE_QUEUES queues of their own, which are joined
+    // before returning.
     std::vector<float> time;
     SIZE total_bitplanes = encoded_bitplanes.shape(0) - sign_rows;
+    int huffman_groups = 0;
     for (SIZE bitplane_idx = starting_bitplane;
          bitplane_idx < starting_bitplane + num_bitplanes; bitplane_idx++) {
       if (bitplane_idx % num_merged_bitplanes == 0) {
@@ -278,18 +298,40 @@ public:
         int old_log_level = log::level;
         log::level = 0;
 
+        Array<1, Byte, DeviceType> &compressed =
+            compressed_bitplanes[bitplane_idx];
+        const Byte *host =
+            host_bitplanes ? (*host_bitplanes)[bitplane_idx] : nullptr;
         // Huffman
-        if (huffman.Verify(compressed_bitplanes[bitplane_idx], queue_idx)) {
-          huffman.Deserialize(compressed_bitplanes[bitplane_idx], queue_idx);
-          huffman.DecompressPrimary(compressed_bitplanes[bitplane_idx],
-                                    encoded_bitplane, queue_idx);
+        if (host ? huffman.Verify(host)
+                 : huffman.Verify(compressed, queue_idx)) {
+          if (host) {
+            if (huffman_groups == 0) {
+              // The compressed groups are uploaded on queue_idx.
+              DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+            }
+            huffman.Deserialize(compressed, host);
+            huffman.DecompressPrimary(
+                compressed, encoded_bitplane,
+                FIRST_DECODE_QUEUE + huffman_groups % DECODE_QUEUES, false);
+            huffman_groups++;
+          } else {
+            huffman.Deserialize(compressed, queue_idx);
+            huffman.DecompressPrimary(compressed, encoded_bitplane, queue_idx);
+          }
           // RLE
-        } else if (rle.Verify(compressed_bitplanes[bitplane_idx], queue_idx)) {
-          rle.Deserialize(compressed_bitplanes[bitplane_idx], queue_idx);
-          rle.Decompress(compressed_bitplanes[bitplane_idx], encoded_bitplane,
-                         queue_idx);
-        } else if (is_zstd(compressed_bitplanes[bitplane_idx],
-                           merged_bitplane_size, queue_idx)) {
+        } else if (host ? rle.Verify(host)
+                        : rle.Verify(compressed, queue_idx)) {
+          if (host) {
+            rle.Deserialize(compressed, host);
+          } else {
+            rle.Deserialize(compressed, queue_idx);
+          }
+          rle.Decompress(compressed, encoded_bitplane, queue_idx);
+        } else if (host
+                       ? is_zstd(host, compressed.shape(0),
+                                 merged_bitplane_size)
+                       : is_zstd(compressed, merged_bitplane_size, queue_idx)) {
           decompress_zstd(compressed_bitplanes[bitplane_idx], (Byte *)bitplane,
                           merged_bitplane_size, queue_idx);
         } else {
@@ -303,6 +345,9 @@ public:
         time.push_back(timer.get());
         timer.clear();
       }
+    }
+    for (int q = 0; q < std::min(huffman_groups, DECODE_QUEUES); q++) {
+      DeviceRuntime<DeviceType>::SyncQueue(FIRST_DECODE_QUEUE + q);
     }
     // std::string time_string = "";
     // for (auto x : time) {
@@ -335,6 +380,13 @@ public:
   }
 
   // A raw group is exactly n bytes; a ZSTD group is smaller and signed.
+  bool is_zstd(const Byte *host_data, SIZE size, SIZE n) {
+    if (size >= n || size <= sizeof(zstd_signature)) {
+      return false;
+    }
+    return std::memcmp(host_data, zstd_signature, sizeof(zstd_signature)) == 0;
+  }
+
   bool is_zstd(Array<1, Byte, DeviceType> &data, SIZE n, int queue_idx) {
     if (data.shape(0) >= n || data.shape(0) <= sizeof(zstd_signature)) {
       return false;

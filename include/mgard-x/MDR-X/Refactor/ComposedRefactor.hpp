@@ -185,11 +185,12 @@ public:
 
   static std::vector<std::vector<SIZE>>
   EstimateMaxBitplaneSizes(std::vector<SIZE> shape, Config config) {
-    return EstimateMaxBitplaneSizes(build_level_layout(shape, config));
+    return EstimateMaxBitplaneSizes(build_level_layout(shape, config),
+                                    config.mdr_bitplane_group_size);
   }
 
   std::vector<std::vector<SIZE>> EstimateMaxBitplaneSizes() const {
-    return EstimateMaxBitplaneSizes(layout);
+    return EstimateMaxBitplaneSizes(layout, compressor.num_merged_bitplanes);
   }
 
   const std::vector<SIZE> &LevelNumElems() const {
@@ -197,21 +198,22 @@ public:
   }
 
   static std::vector<std::vector<SIZE>>
-  EstimateMaxBitplaneSizes(const MDRLevelLayout &layout) {
+  EstimateMaxBitplaneSizes(const MDRLevelLayout &layout, int group_size) {
     std::vector<std::vector<SIZE>> estimation;
     estimation.resize(layout.num_levels());
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       estimation[level_idx].resize(Encoder::MAX_BITPLANES);
       for (int bitplane_idx = 0; bitplane_idx < Encoder::MAX_BITPLANES;
            bitplane_idx++) {
-        if (bitplane_idx % Compressor::num_merged_bitplanes == 0) {
+        if (bitplane_idx % group_size == 0) {
           estimation[level_idx][bitplane_idx] =
               Encoder::bitplane_length(layout.level_num_elems[level_idx]) *
               sizeof(T_bitplane) *
-              (Compressor::num_merged_bitplanes +
-               (bitplane_idx == 0 ? Encoder::SIGN_ROWS : 0));
-          // For Huffman-only model (metadata storage)
-          estimation[level_idx][bitplane_idx] += 1e6;
+              (group_size + (bitplane_idx == 0 ? Encoder::SIGN_ROWS : 0));
+          // A group is stored compressed only when that at least halves it
+          // (HybridLevelCompressor checks the ratio before writing), so its
+          // size is at most the raw size plus a few KB of headers.
+          estimation[level_idx][bitplane_idx] += 4096;
         } else {
           estimation[level_idx][bitplane_idx] = 1;
         }
@@ -426,6 +428,7 @@ public:
 
   void StoreMetadata(MDRMetadata &mdr_metadata, MDRData<DeviceType> &mdr_data,
                      int queue_idx) {
+    mdr_metadata.group_size = compressor.num_merged_bitplanes;
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       abs_max_array[level_idx].hostCopy(false, queue_idx);
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);

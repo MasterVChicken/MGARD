@@ -158,6 +158,7 @@ public:
   bool CompressPrimary(Array<1, Q, DeviceType> &primary_data,
                        Array<1, Byte, DeviceType> &compressed_data,
                        float target_cr, int queue_idx) {
+    codebook_on_host = false;
 
     Timer timer;
     if (log::level & log::TIME) {
@@ -273,7 +274,12 @@ public:
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer.start();
     }
-    workspace.reset(queue_idx);
+    // The codebook and decodebook are uploaded whole; of the rest of
+    // workspace.reset() only these are used by the primary path.
+    workspace.outlier_count_array.memset(0, queue_idx);
+    workspace.huff_bitwidths_array.memset(0, queue_idx);
+    outlier_count = 0;
+    codebook_on_host = true;
     MemoryManager<DeviceType>::Copy1D(workspace.codebook_subarray.data(),
                                       host_codebook.data(), dict_size,
                                       queue_idx);
@@ -403,7 +409,64 @@ public:
     return byte_offset;
   }
 
+  // Serialize for a compression with a host codebook: the same layout as
+  // Serialize, but the header fields and the decodebook are assembled on the
+  // host and uploaded in two pieces (the per-chunk metadata is copied on the
+  // device), with no synchronization: 5 copies instead of 13 and a sync.
+  void SerializeHostCodebook(Array<1, Byte, DeviceType> &compressed_data,
+                             int queue_idx) {
+    using Mem = MemoryManager<DeviceType>;
+    auto nchunk = (primary_count - 1) / chunk_size + 1;
+    size_t decodebook_size = workspace.decodebook_subarray.shape(0);
+    size_t huffmeta_size = 2 * nchunk;
+    SIZE byte_offset = 0;
+    advance_with_align<Byte>(byte_offset, 7);
+    advance_with_align<size_t>(byte_offset, 1);
+    advance_with_align<int>(byte_offset, 1);
+    advance_with_align<int>(byte_offset, 1);
+    advance_with_align<size_t>(byte_offset, 1);
+    align_byte_offset<size_t>(byte_offset);
+    SIZE meta_offset = byte_offset;
+    SIZE meta_end = meta_offset + huffmeta_size * sizeof(size_t);
+    byte_offset = meta_end;
+    advance_with_align<size_t>(byte_offset, 1);
+    advance_with_align<uint8_t>(byte_offset, decodebook_size);
+    advance_with_align<size_t>(byte_offset, 1);
+    SIZE header_end = byte_offset;
+    advance_with_align<H>(byte_offset, ddata_size);
+    align_byte_offset<ATOMIC_IDX>(byte_offset);
+    SIZE tail_offset = byte_offset;
+
+    host_header.resize(header_end);
+    Byte *h = host_header.data();
+    byte_offset = 0;
+    SerializeArrayHost<Byte>(h, signature, 7, byte_offset);
+    SerializeArrayHost<size_t>(h, &primary_count, 1, byte_offset);
+    SerializeArrayHost<int>(h, &dict_size, 1, byte_offset);
+    SerializeArrayHost<int>(h, &chunk_size, 1, byte_offset);
+    SerializeArrayHost<size_t>(h, &huffmeta_size, 1, byte_offset);
+    byte_offset = meta_end;
+    SerializeArrayHost<size_t>(h, &decodebook_size, 1, byte_offset);
+    SerializeArrayHost<uint8_t>(h, host_decodebook.data(), decodebook_size,
+                                byte_offset);
+    SerializeArrayHost<size_t>(h, &ddata_size, 1, byte_offset);
+
+    Byte *d = compressed_data.data();
+    Mem::Copy1D(d, h, meta_offset, queue_idx);
+    Mem::Copy1D((size_t *)(d + meta_offset),
+                workspace.huff_bitwidths_subarray.data(), nchunk, queue_idx);
+    Mem::Copy1D((size_t *)(d + meta_offset) + nchunk,
+                workspace.deflate_chunk_word_offsets_subarray.data(), nchunk,
+                queue_idx);
+    Mem::Copy1D(d + meta_end, h + meta_end, header_end - meta_end, queue_idx);
+    Mem::Copy1D((ATOMIC_IDX *)(d + tail_offset), &outlier_count, 1, queue_idx);
+  }
+
   void Serialize(Array<1, Byte, DeviceType> &compressed_data, int queue_idx) {
+    if (codebook_on_host) {
+      SerializeHostCodebook(compressed_data, queue_idx);
+      return;
+    }
     Timer timer;
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
@@ -512,6 +575,45 @@ public:
     return true;
   }
 
+  // Verify / Deserialize reading the header from host_data, a host copy of
+  // compressed_data: no device transfer or synchronization. The data
+  // pointers still refer to compressed_data on the device.
+  bool Verify(const Byte *host_data) const {
+    return std::memcmp(host_data, signature, 7) == 0;
+  }
+  void Deserialize(Array<1, Byte, DeviceType> &compressed_data,
+                   const Byte *host_data) {
+    if (!Verify(host_data)) {
+      throw std::runtime_error("Huffman signature mismatch.");
+    }
+    SubArray compressed_subarray(compressed_data);
+    Byte *signature_ptr = nullptr;
+    SIZE byte_offset = 0;
+    DeserializeArray<Byte>(compressed_subarray, signature_ptr, 7, byte_offset,
+                           true, 0);
+    DeserializeArrayHost<size_t>(host_data, &primary_count, 1, byte_offset);
+    DeserializeArrayHost<int>(host_data, &dict_size, 1, byte_offset);
+    DeserializeArrayHost<int>(host_data, &chunk_size, 1, byte_offset);
+    DeserializeArrayHost<size_t>(host_data, &huffmeta_size, 1, byte_offset);
+    DeserializeArray<size_t>(compressed_subarray, huffmeta, huffmeta_size,
+                             byte_offset, true, 0);
+    DeserializeArrayHost<size_t>(host_data, &decodebook_size, 1, byte_offset);
+    DeserializeArray<uint8_t>(compressed_subarray, decodebook, decodebook_size,
+                              byte_offset, true, 0);
+    DeserializeArrayHost<size_t>(host_data, &ddata_size, 1, byte_offset);
+    DeserializeArray<H>(compressed_subarray, ddata, ddata_size, byte_offset,
+                        true, 0);
+    DeserializeArrayHost<ATOMIC_IDX>(host_data, &outlier_count, 1, byte_offset);
+    DeserializeArray<ATOMIC_IDX>(compressed_subarray, outlier_idx,
+                                 outlier_count, byte_offset, true, 0);
+    DeserializeArray<S>(compressed_subarray, outlier, outlier_count,
+                        byte_offset, true, 0);
+    workspace.outlier_idx_subarray =
+        SubArray<1, ATOMIC_IDX, DeviceType>({(SIZE)outlier_count}, outlier_idx);
+    workspace.outlier_subarray =
+        SubArray<1, S, DeviceType>({(SIZE)outlier_count}, outlier);
+  }
+
   void Deserialize(Array<1, Byte, DeviceType> &compressed_data, int queue_idx) {
     Timer timer;
     if (log::level & log::TIME) {
@@ -579,8 +681,10 @@ public:
     }
   }
 
+  // sync = false leaves the decoding queued on queue_idx.
   void DecompressPrimary(Array<1, Byte, DeviceType> &compressed_data,
-                         Array<1, Q, DeviceType> &primary_data, int queue_idx) {
+                         Array<1, Q, DeviceType> &primary_data, int queue_idx,
+                         bool sync = true) {
 
     // Deserialize(compressed_data, queue_idx);
 
@@ -603,7 +707,9 @@ public:
     Decode<Q, H, DeviceType>(
         ddata_subarray, huffmeta_subarray, primary_subarray, primary_count,
         chunk_size, nchunk, decodebook_subarray, decodebook_size, queue_idx);
-    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    if (sync) {
+      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    }
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer.end();
@@ -709,6 +815,10 @@ public:
   H *ddata;
   Byte signature[7] = {'M', 'G', 'X', 'H', 'U', 'F', 'F'};
   HuffmanWorkspace<Q, S, H, DeviceType> workspace;
+  // The last compression built its codebook on the host (CompressPrimary with
+  // host_freq): Serialize then assembles the header on the host.
+  bool codebook_on_host = false;
+  std::vector<Byte> host_header;
   // Host-built codebook and decodebook (see HostCodebook), kept until the
   // next compression so the asynchronous uploads read valid memory.
   std::vector<H> host_codebook;

@@ -53,6 +53,7 @@ Config::Config() {
   domain_decomposition_dim = 0;
   domain_decomposition_sizes = std::vector<SIZE>();
   mdr_adaptive_resolution = false;
+  mdr_bitplane_group_size = 2;
   adjust_shape = false;
   compress_with_dryrun = false;
   num_local_refactoring_level = 1;

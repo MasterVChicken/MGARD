@@ -111,6 +111,58 @@ public:
     return CRFromRuns(original_length, _total_run_length);
   }
 
+  // Compress when the number of runs is already known (the caller decided
+  // from it that RLE reaches its target): no transfer or synchronization, and
+  // the header is written in one copy.
+  void Compress(Array<1, T_symbol, DeviceType> &original_data,
+                Array<1, Byte, DeviceType> &compressed_data, SIZE runs,
+                int queue_idx) {
+    SIZE length = original_data.shape(0);
+    start_marks.resize({length}, queue_idx);
+    scanned_start_marks.resize({length}, queue_idx);
+    start_positions.resize({length}, queue_idx);
+    DeviceLauncher<DeviceType>::Execute(
+        StartMarksKernel<T_symbol, C_run, C_global, DeviceType>(
+            SubArray(original_data), SubArray(start_marks)),
+        queue_idx);
+    DeviceCollective<DeviceType>::ScanSumInclusive(
+        length, SubArray(start_marks), SubArray(scanned_start_marks),
+        scan_workspace, true, queue_idx);
+    DeviceLauncher<DeviceType>::Execute(
+        StartPositionsKernel<T_symbol, C_run, C_global, DeviceType>(
+            SubArray(scanned_start_marks), SubArray(start_positions)),
+        queue_idx);
+    total_run_length = runs;
+    original_length = length;
+    SIZE byte_offset = 0;
+    host_header.resize(64);
+    SerializeArrayHost<Byte>(host_header.data(), signature, 7, byte_offset);
+    SerializeArrayHost<SIZE>(host_header.data(), &total_run_length, 1,
+                             byte_offset);
+    SerializeArrayHost<SIZE>(host_header.data(), &original_length, 1,
+                             byte_offset);
+    SIZE header_size = byte_offset;
+    align_byte_offset<C_run>(byte_offset);
+    SIZE counts_offset = byte_offset;
+    byte_offset += total_run_length * sizeof(C_run);
+    align_byte_offset<T_symbol>(byte_offset);
+    SIZE symbols_offset = byte_offset;
+    byte_offset += total_run_length * sizeof(T_symbol);
+    compressed_data.resize({byte_offset}, queue_idx);
+    MemoryManager<DeviceType>::Copy1D(
+        compressed_data.data(), host_header.data(), header_size, queue_idx);
+    SubArray<1, C_run, DeviceType> counts(
+        {total_run_length}, (C_run *)(compressed_data.data() + counts_offset));
+    SubArray<1, T_symbol, DeviceType> symbols(
+        {total_run_length},
+        (T_symbol *)(compressed_data.data() + symbols_offset));
+    DeviceLauncher<DeviceType>::Execute(
+        EncodeKernel<T_symbol, C_run, C_global, DeviceType>(
+            total_run_length, SubArray(original_data),
+            SubArray(start_positions), counts, symbols),
+        queue_idx);
+  }
+
   bool Compress(Array<1, T_symbol, DeviceType> &original_data,
                 Array<1, Byte, DeviceType> &compressed_data, float target_cr,
                 int queue_idx) {
@@ -269,6 +321,29 @@ public:
     return true;
   }
 
+  // Verify / Deserialize reading the header from host_data, a host copy of
+  // compressed_data: no device transfer or synchronization.
+  bool Verify(const Byte *host_data) const {
+    return std::memcmp(host_data, signature, 7) == 0;
+  }
+  void Deserialize(Array<1, Byte, DeviceType> &compressed_data,
+                   const Byte *host_data) {
+    if (!Verify(host_data)) {
+      throw std::runtime_error("RLE signature mismatch.");
+    }
+    SubArray<1, Byte, DeviceType> compressed_subarray(compressed_data);
+    Byte *signature_ptr = nullptr;
+    SIZE byte_offset = 0;
+    DeserializeArray<Byte>(compressed_subarray, signature_ptr, 7, byte_offset,
+                           true, 0);
+    DeserializeArrayHost<SIZE>(host_data, &total_run_length, 1, byte_offset);
+    DeserializeArrayHost<SIZE>(host_data, &original_length, 1, byte_offset);
+    DeserializeArray<C_run>(compressed_subarray, counts_ptr, total_run_length,
+                            byte_offset, true, 0);
+    DeserializeArray<T_symbol>(compressed_subarray, symbols_ptr,
+                               total_run_length, byte_offset, true, 0);
+  }
+
   void Deserialize(Array<1, Byte, DeviceType> &compressed_data, int queue_idx) {
     if (!Verify(compressed_data, queue_idx)) {
       throw std::runtime_error("RLE signature mismatch.");
@@ -352,6 +427,7 @@ public:
   C_run *counts_ptr = nullptr;
   T_symbol *symbols_ptr = nullptr;
   Byte signature[7] = {'M', 'G', 'X', 'R', 'L', 'E', 'C'};
+  std::vector<Byte> host_header;
   Byte *signature_verify;
 
   Array<1, C_global, DeviceType> start_marks;

@@ -173,11 +173,12 @@ public:
 
   static std::vector<std::vector<SIZE>>
   EstimateMaxBitplaneSizes(std::vector<SIZE> shape, Config config) {
-    return EstimateMaxBitplaneSizes(build_level_layout(shape, config));
+    return EstimateMaxBitplaneSizes(build_level_layout(shape, config),
+                                    config.mdr_bitplane_group_size);
   }
 
   std::vector<std::vector<SIZE>> EstimateMaxBitplaneSizes() const {
-    return EstimateMaxBitplaneSizes(layout);
+    return EstimateMaxBitplaneSizes(layout, compressor.num_merged_bitplanes);
   }
 
   const std::vector<SIZE> &LevelNumElems() const {
@@ -185,21 +186,22 @@ public:
   }
 
   static std::vector<std::vector<SIZE>>
-  EstimateMaxBitplaneSizes(const MDRLevelLayout &layout) {
+  EstimateMaxBitplaneSizes(const MDRLevelLayout &layout, int group_size) {
     std::vector<std::vector<SIZE>> estimation;
     estimation.resize(layout.num_levels());
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       estimation[level_idx].resize(Encoder::MAX_BITPLANES);
       for (int bitplane_idx = 0; bitplane_idx < Encoder::MAX_BITPLANES;
            bitplane_idx++) {
-        if (bitplane_idx % Compressor::num_merged_bitplanes == 0) {
+        if (bitplane_idx % group_size == 0) {
           estimation[level_idx][bitplane_idx] =
               Encoder::bitplane_length(layout.level_num_elems[level_idx]) *
               sizeof(T_bitplane) *
-              (Compressor::num_merged_bitplanes +
-               (bitplane_idx == 0 ? Encoder::SIGN_ROWS : 0));
-          // For Huffman-only model (metadata storage)
-          estimation[level_idx][bitplane_idx] += 1e6;
+              (group_size + (bitplane_idx == 0 ? Encoder::SIGN_ROWS : 0));
+          // A group is stored compressed only when that at least halves it
+          // (HybridLevelCompressor checks the ratio before writing), so its
+          // size is at most the raw size plus a few KB of headers.
+          estimation[level_idx][bitplane_idx] += 4096;
         } else {
           estimation[level_idx][bitplane_idx] = 1;
         }
@@ -325,12 +327,12 @@ public:
     }
 
     for (uint8_t &n : mdr_metadata.requested_level_num_bitplanes) {
-      // Ensure requested bitplanes is a multiple of num_merged_bitplanes
+      // Ensure requested bitplanes is a multiple of the group size
       // This ensure all each batch of merged bitplanes are used for
       // Reconstruction. Otherwise, unsed bitplanes will not be guaranteed
       // to be in memory in future reconstructions.
       // (a level that needs no bitplanes stays at 0).
-      int m = Compressor::num_merged_bitplanes;
+      int m = mdr_metadata.group_size;
       n = (n + m - 1) / m * m;
     }
     timer.end();
@@ -380,6 +382,7 @@ public:
   void LoadMetadata(MDRMetadata &mdr_metadata, MDRData<DeviceType> &mdr_data,
                     int queue_idx) {
     mdr_metadata.CheckFormatVersion();
+    compressor.SetGroupSize(mdr_metadata.group_size);
     // All levels, not just up to CurrFinalLevel(): levels with no bitplanes
     // must get level_num_bitplanes = 0 rather than keep a value from a
     // previous use of this reconstructor (ProgressiveReconstruct visits all).
@@ -419,7 +422,10 @@ public:
           encoded_bitplanes_subarray[level_idx],
           mdr_metadata.prev_used_level_num_bitplanes[level_idx],
           level_num_bitplanes[level_idx], level_idx, queue_idx,
-          Encoder::SIGN_ROWS);
+          Encoder::SIGN_ROWS,
+          level_idx < (int)mdr_data.host_compressed_bitplanes.size()
+              ? &mdr_data.host_compressed_bitplanes[level_idx]
+              : nullptr);
       decompressed_size += encoded_bitplanes_subarray[level_idx].shape(1) *
                            num_bitplanes * sizeof(T_bitplane);
     }

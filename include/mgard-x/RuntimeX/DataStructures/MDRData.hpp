@@ -18,6 +18,9 @@ public:
   MDRData() {}
   // Data
   std::vector<std::vector<Array<1, Byte, DeviceType>>> compressed_bitplanes;
+  // Host copies of compressed_bitplanes (the refactored data they were
+  // loaded from), so that decompression can read group headers on the host.
+  std::vector<std::vector<Byte *>> host_compressed_bitplanes;
   std::vector<Array<1, bool, DeviceType>> level_signs;
 
   MDRData(SIZE num_levels, SIZE num_bitplanes) {
@@ -84,6 +87,7 @@ public:
   void CopyFromRefactoredData(MDRMetadata &mdr_metadata,
                               std::vector<std::vector<Byte *>> &refactored_data,
                               int queue_idx) {
+    host_compressed_bitplanes = refactored_data;
     for (int level_idx = 0; level_idx < mdr_metadata.num_levels; level_idx++) {
       for (int bitplane_idx =
                mdr_metadata.loaded_level_num_bitplanes[level_idx];
