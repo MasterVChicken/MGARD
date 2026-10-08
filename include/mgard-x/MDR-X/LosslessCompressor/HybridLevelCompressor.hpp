@@ -6,6 +6,7 @@
 #include "../../Lossless/Zstd.hpp"
 // #include "../RefactorUtils.hpp"
 #include "GroupStatistics.hpp"
+#include "ZeroElimination.hpp"
 #include "LevelCompressorInterface.hpp"
 #include "LosslessCompressor.hpp"
 #include <cstring>
@@ -75,7 +76,21 @@ public:
     rle.Resize(max_n * byte_ratio * MAX_GROUP_ROWS, queue_idx);
     zstd.Resize(max_n * sizeof(T_bitplane), config.zstd_compress_level,
                 queue_idx);
+    // Sized up front (all levels at once: up to ZE_MAX_LEVELS levels whose
+    // sizes sum to at most 3 times the largest): growing them while
+    // compressing reallocates, and the frees synchronize the device.
+    SIZE max_rows = max_bitplanes + 1;
+    ze_tasks.resize({max_rows * ZE_MAX_LEVELS}, queue_idx);
+    ze_totals.resize({max_rows * ZE_MAX_LEVELS}, queue_idx);
+    if (config.mdr_zero_elimination) {
+      ze_chunk_counts.resize(
+          {max_rows * zero_elimination::num_chunks(max_n)}, queue_idx);
+      ze_super_counts.resize(
+          {max_rows * (3 * zero_elimination::num_super(max_n) + ZE_MAX_LEVELS)},
+          queue_idx);
+    }
   }
+  static constexpr SIZE ZE_MAX_LEVELS = 64;
   static size_t EstimateMemoryFootprint(SIZE max_n, Config config) {
     size_t size = 0;
     size += Huffman<T_bitplane, T_bitplane, HUFFMAN_CODE, DeviceType>::
@@ -94,7 +109,13 @@ public:
   void
   compress_level(SubArray<2, T_bitplane, DeviceType> &encoded_bitplanes,
                  std::vector<Array<1, Byte, DeviceType>> &compressed_bitplanes,
-                 int level_idx, int queue_idx, int sign_rows) {
+                 int level_idx, int queue_idx, int sign_rows,
+                 SubArray<1, uint32_t, DeviceType> ze_bitmaps = {}) {
+    if (config.mdr_zero_elimination) {
+      compress_level_zero_elimination(encoded_bitplanes, compressed_bitplanes,
+                                      queue_idx, sign_rows, ze_bitmaps);
+      return;
+    }
 
     std::vector<float> cr, time;
     bool huffman_success, rle_success, zstd_success;
@@ -214,6 +235,229 @@ public:
                      num_bitplanes, level_idx, queue_idx, 0);
   }
 
+  // Zero elimination of all groups of a level: one counting pass over all
+  // rows, one transfer of the row totals (to size the groups and choose raw
+  // rows), and one writing pass.
+  void compress_level_zero_elimination(
+      SubArray<2, T_bitplane, DeviceType> &encoded_bitplanes,
+      std::vector<Array<1, Byte, DeviceType>> &compressed_bitplanes,
+      int queue_idx, int sign_rows, SubArray<1, uint32_t, DeviceType> bitmaps) {
+    using namespace zero_elimination;
+    static_assert(sizeof(T_bitplane) == sizeof(uint32_t));
+    SIZE num_rows = encoded_bitplanes.shape(0);
+    SIZE num_words = encoded_bitplanes.shape(1);
+    SIZE num_bitplanes = num_rows - sign_rows;
+    SIZE nchunks = num_chunks(num_words), nsuper = num_super(num_words);
+    ze_totals.resize({num_rows}, queue_idx);
+    ze_super_counts.resize({num_rows * nsuper}, queue_idx);
+    SubArray<1, uint32_t, DeviceType> super_counts(ze_super_counts);
+    // ze_chunk_counts holds the chunk bitmaps with the warp kernels.
+    constexpr bool warp_kernels = std::is_same<DeviceType, CUDA>::value;
+    // Chunk bitmaps given by the encoder (warp kernels only) need only the
+    // super-chunk counts.
+    const bool given = warp_kernels && bitmaps.data() != nullptr;
+    if (given) {
+      if constexpr (warp_kernels) {
+        DeviceLauncher<DeviceType>::Execute(
+            SuperCountKernel<DeviceType>(num_rows, nchunks, bitmaps,
+                                         super_counts),
+            queue_idx);
+      }
+    } else {
+      ze_chunk_counts.resize({num_rows * nchunks}, queue_idx);
+      bitmaps = SubArray(ze_chunk_counts);
+      if constexpr (warp_kernels) {
+        DeviceLauncher<DeviceType>::Execute(
+            BitmapKernel<T_bitplane, DeviceType>(encoded_bitplanes, num_rows,
+                                                 bitmaps, super_counts),
+            queue_idx);
+      } else {
+        DeviceLauncher<DeviceType>::Execute(
+            CountKernel<T_bitplane, DeviceType>(encoded_bitplanes, num_rows,
+                                                bitmaps, super_counts),
+            queue_idx);
+      }
+    }
+    DeviceLauncher<DeviceType>::Execute(
+        ScanKernel<DeviceType>(num_rows, nsuper, super_counts,
+                               SubArray(ze_totals)),
+        queue_idx);
+    std::vector<uint32_t> totals(num_rows);
+    MemoryManager<DeviceType>::Copy1D(totals.data(), ze_totals.data(),
+                                      num_rows, queue_idx);
+    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    ze_tasks_host.clear();
+    add_zero_elimination_write_tasks(totals.data(), num_bitplanes, num_words,
+                                     sign_rows, compressed_bitplanes,
+                                     queue_idx);
+    ze_tasks.resize({(SIZE)ze_tasks_host.size()}, queue_idx);
+    MemoryManager<DeviceType>::Copy1D(ze_tasks.data(), ze_tasks_host.data(),
+                                      ze_tasks_host.size(), queue_idx);
+    if constexpr (warp_kernels) {
+      DeviceLauncher<DeviceType>::Execute(
+          WriteWarpKernel<T_bitplane, DeviceType>(
+              encoded_bitplanes, SubArray(ze_tasks), ze_tasks_host.size(),
+              bitmaps, super_counts),
+          queue_idx);
+    } else {
+      DeviceLauncher<DeviceType>::Execute(
+          WriteKernel<T_bitplane, DeviceType>(
+              encoded_bitplanes, SubArray(ze_tasks), ze_tasks_host.size(),
+              bitmaps, super_counts),
+          queue_idx);
+    }
+  }
+
+  // Sizes the groups of a level from its row totals (choosing raw rows),
+  // resizes compressed_bitplanes and appends the level's write tasks.
+  void add_zero_elimination_write_tasks(
+      const uint32_t *totals, SIZE num_bitplanes, SIZE num_words,
+      int sign_rows,
+      std::vector<Array<1, Byte, DeviceType>> &compressed_bitplanes,
+      int queue_idx) {
+    using namespace zero_elimination;
+    for (SIZE b = 0; b < num_bitplanes; b++) {
+      if (b % num_merged_bitplanes != 0) {
+        compressed_bitplanes[b].resize({0}, queue_idx);
+        continue;
+      }
+      SIZE first = group_first_row(b, sign_rows);
+      SIZE rows = group_num_rows(b, num_bitplanes, sign_rows);
+      std::vector<uint32_t> counts(rows);
+      SIZE size = header_bytes(rows);
+      for (SIZE r = 0; r < rows; r++) {
+        counts[r] = totals[first + r];
+        if (row_bytes(counts[r], num_words) >= row_bytes(RAW_ROW, num_words)) {
+          counts[r] = RAW_ROW;
+        }
+        size += row_bytes(counts[r], num_words);
+      }
+      compressed_bitplanes[b].resize({size}, queue_idx);
+      SIZE section = header_bytes(rows);
+      for (SIZE r = 0; r < rows; r++) {
+        ze_tasks_host.push_back({(uint64_t)compressed_bitplanes[b].data(),
+                                 (uint64_t)section, (uint32_t)(first + r),
+                                 counts[r], (uint32_t)r, (uint32_t)rows});
+        section += row_bytes(counts[r], num_words);
+      }
+    }
+  }
+
+  // Zero elimination of all levels at once, with the chunk bitmaps given by
+  // the encoder (warp kernels): one transfer of every level's row totals
+  // instead of one round trip per level.
+  void compress_levels_zero_elimination(
+      std::vector<SubArray<2, T_bitplane, DeviceType>> &encoded_bitplanes,
+      std::vector<std::vector<Array<1, Byte, DeviceType>>>
+          &compressed_bitplanes,
+      std::vector<SubArray<1, uint32_t, DeviceType>> &bitmaps, int queue_idx,
+      int sign_rows) {
+    using namespace zero_elimination;
+    static_assert(sizeof(T_bitplane) == sizeof(uint32_t));
+    SIZE num_levels = encoded_bitplanes.size();
+    SIZE num_rows = encoded_bitplanes[0].shape(0);
+    SIZE num_bitplanes = num_rows - sign_rows;
+    std::vector<SIZE> super_offset(num_levels + 1, 0);
+    for (SIZE l = 0; l < num_levels; l++) {
+      super_offset[l + 1] =
+          super_offset[l] +
+          num_rows * num_super(encoded_bitplanes[l].shape(1));
+    }
+    ze_super_counts.resize({super_offset[num_levels]}, queue_idx);
+    ze_totals.resize({num_levels * num_rows}, queue_idx);
+    auto super_counts = [&](SIZE l) {
+      return SubArray<1, uint32_t, DeviceType>(
+          {super_offset[l + 1] - super_offset[l]},
+          ze_super_counts.data() + super_offset[l]);
+    };
+    for (SIZE l = 0; l < num_levels; l++) {
+      SIZE num_words = encoded_bitplanes[l].shape(1);
+      DeviceLauncher<DeviceType>::Execute(
+          SuperCountKernel<DeviceType>(num_rows, num_chunks(num_words),
+                                       bitmaps[l], super_counts(l)),
+          queue_idx);
+      DeviceLauncher<DeviceType>::Execute(
+          ScanKernel<DeviceType>(
+              num_rows, num_super(num_words), super_counts(l),
+              SubArray<1, uint32_t, DeviceType>(
+                  {num_rows}, ze_totals.data() + l * num_rows)),
+          queue_idx);
+    }
+    std::vector<uint32_t> totals(num_levels * num_rows);
+    MemoryManager<DeviceType>::Copy1D(totals.data(), ze_totals.data(),
+                                      totals.size(), queue_idx);
+    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    ze_tasks_host.clear();
+    std::vector<SIZE> task_offset(num_levels + 1, 0);
+    for (SIZE l = 0; l < num_levels; l++) {
+      add_zero_elimination_write_tasks(
+          totals.data() + l * num_rows, num_bitplanes,
+          encoded_bitplanes[l].shape(1), sign_rows, compressed_bitplanes[l],
+          queue_idx);
+      task_offset[l + 1] = ze_tasks_host.size();
+    }
+    ze_tasks.resize({(SIZE)ze_tasks_host.size()}, queue_idx);
+    MemoryManager<DeviceType>::Copy1D(ze_tasks.data(), ze_tasks_host.data(),
+                                      ze_tasks_host.size(), queue_idx);
+    for (SIZE l = 0; l < num_levels; l++) {
+      SIZE n = task_offset[l + 1] - task_offset[l];
+      DeviceLauncher<DeviceType>::Execute(
+          WriteWarpKernel<T_bitplane, DeviceType>(
+              encoded_bitplanes[l],
+              SubArray<1, RowTask, DeviceType>(
+                  {n}, ze_tasks.data() + task_offset[l]),
+              n, bitmaps[l], super_counts(l)),
+          queue_idx);
+    }
+  }
+
+  // Decoding tasks of a zero-elimination group, from its header on the host.
+  // Header of a zero-elimination group read from the device; empty if the
+  // group is not zero-eliminated.
+  std::vector<Byte> read_zero_elimination_header(
+      Array<1, Byte, DeviceType> &compressed, int queue_idx) {
+    using namespace zero_elimination;
+    std::vector<Byte> header(header_bytes(0));
+    if (compressed.shape(0) < header.size()) {
+      return {};
+    }
+    MemoryManager<DeviceType>::Copy1D(header.data(), compressed.data(),
+                                      header.size(), queue_idx);
+    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    if (std::memcmp(header.data(), signature(), SIGNATURE_BYTES) != 0) {
+      return {};
+    }
+    uint32_t rows;
+    std::memcpy(&rows, header.data() + SIGNATURE_BYTES, sizeof(uint32_t));
+    header.resize(header_bytes(rows));
+    MemoryManager<DeviceType>::Copy1D(header.data(), compressed.data(),
+                                      header.size(), queue_idx);
+    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+    return header;
+  }
+
+  void add_zero_elimination_tasks(Array<1, Byte, DeviceType> &compressed,
+                                  const Byte *host, SIZE first_row,
+                                  SIZE num_words) {
+    using namespace zero_elimination;
+    uint32_t rows, words;
+    std::memcpy(&rows, host + SIGNATURE_BYTES, sizeof(uint32_t));
+    std::memcpy(&words, host + SIGNATURE_BYTES + sizeof(uint32_t),
+                sizeof(uint32_t));
+    if (words != num_words) {
+      throw std::runtime_error("MDR-X: zero elimination row length mismatch.");
+    }
+    SIZE section = header_bytes(rows);
+    for (uint32_t r = 0; r < rows; r++) {
+      uint32_t count;
+      std::memcpy(&count, host + SIGNATURE_BYTES + (2 + r) * sizeof(uint32_t),
+                  sizeof(uint32_t));
+      ze_tasks_host.push_back({(uint64_t)compressed.data(), (uint64_t)section,
+                               (uint32_t)(first_row + r), count, r, rows});
+      section += row_bytes(count, num_words);
+    }
+  }
+
   // Upper bound on the CR that Huffman::CompressPrimary estimates (and tests
   // against target_cr): with two or more symbols every codeword has >= 1 bit
   // and the total length is >= n * entropy, so the encoded bits are at least
@@ -282,6 +526,7 @@ public:
     std::vector<float> time;
     SIZE total_bitplanes = encoded_bitplanes.shape(0) - sign_rows;
     int huffman_groups = 0;
+    ze_tasks_host.clear();
     for (SIZE bitplane_idx = starting_bitplane;
          bitplane_idx < starting_bitplane + num_bitplanes; bitplane_idx++) {
       if (bitplane_idx % num_merged_bitplanes == 0) {
@@ -302,9 +547,23 @@ public:
             compressed_bitplanes[bitplane_idx];
         const Byte *host =
             host_bitplanes ? (*host_bitplanes)[bitplane_idx] : nullptr;
-        // Huffman
-        if (host ? huffman.Verify(host)
-                 : huffman.Verify(compressed, queue_idx)) {
+        // Zero-elimination group header: from the host copy, or else read
+        // from the device (empty if the group is in another format).
+        std::vector<Byte> ze_header;
+        const Byte *ze = host;
+        if (!host) {
+          ze_header = read_zero_elimination_header(compressed, queue_idx);
+          ze = ze_header.empty() ? nullptr : ze_header.data();
+        }
+        if (ze && std::memcmp(ze, zero_elimination::signature(),
+                              zero_elimination::SIGNATURE_BYTES) == 0) {
+          // Zero elimination: decoded for the whole level below
+          add_zero_elimination_tasks(
+              compressed, ze, group_first_row(bitplane_idx, sign_rows),
+              encoded_bitplanes.shape(1));
+          // Huffman
+        } else if (host ? huffman.Verify(host)
+                        : huffman.Verify(compressed, queue_idx)) {
           if (host) {
             if (huffman_groups == 0) {
               // The compressed groups are uploaded on queue_idx.
@@ -344,6 +603,22 @@ public:
         timer.end();
         time.push_back(timer.get());
         timer.clear();
+      }
+    }
+    if (!ze_tasks_host.empty()) {
+      ze_tasks.resize({(SIZE)ze_tasks_host.size()}, queue_idx);
+      MemoryManager<DeviceType>::Copy1D(ze_tasks.data(), ze_tasks_host.data(),
+                                        ze_tasks_host.size(), queue_idx);
+      if constexpr (std::is_same<DeviceType, CUDA>::value) {
+        DeviceLauncher<DeviceType>::Execute(
+            zero_elimination::DecodeWarpKernel<T_bitplane, DeviceType>(
+                encoded_bitplanes, SubArray(ze_tasks), ze_tasks_host.size()),
+            queue_idx);
+      } else {
+        DeviceLauncher<DeviceType>::Execute(
+            zero_elimination::DecodeKernel<T_bitplane, DeviceType>(
+                encoded_bitplanes, SubArray(ze_tasks), ze_tasks_host.size()),
+            queue_idx);
       }
     }
     for (int q = 0; q < std::min(huffman_groups, DECODE_QUEUES); q++) {
@@ -424,6 +699,10 @@ public:
   // host histogram.
   Array<1, unsigned int, DeviceType> group_runs_array, group_freqs_array;
   std::vector<unsigned int> group_runs, group_freqs;
+  // Zero elimination workspaces and per-row tasks of the current level.
+  Array<1, uint32_t, DeviceType> ze_chunk_counts, ze_super_counts, ze_totals;
+  Array<1, zero_elimination::RowTask, DeviceType> ze_tasks;
+  std::vector<zero_elimination::RowTask> ze_tasks_host;
 };
 
 } // namespace MDR

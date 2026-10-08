@@ -34,6 +34,12 @@ struct Config {
   // MDR-X: bitplanes per merged group (1-4), the unit of compression and of
   // retrieval. Smaller groups retrieve closer to a requested error.
   int mdr_bitplane_group_size;
+  // MDR-X: store bitplane groups with zero elimination instead of
+  // Huffman/RLE (experimental).
+  bool mdr_zero_elimination;
+  // MDR-X: bitplane words of 32 consecutive coefficients (better locality
+  // for the lossless stage) instead of 32 coefficients strided over a level.
+  bool mdr_contiguous_words;
   bool adjust_shape;
   bool compress_with_dryrun;
   int num_local_refactoring_level;

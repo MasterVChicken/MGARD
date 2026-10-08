@@ -94,6 +94,7 @@ public:
       interleaver.Adapt(hierarchy, queue_idx);
     }
     encoder.Adapt(hierarchy, layout.max_level_num_elems(), queue_idx);
+    encoder.SetWordOrder(config.mdr_contiguous_words);
     // batched_encoder.Adapt(hierarchy, queue_idx);
     compressor.Adapt(encoder.bitplane_length(layout.max_level_num_elems()),
                      Encoder::MAX_BITPLANES, config, queue_idx);
@@ -143,6 +144,17 @@ public:
                                            queue_idx);
       level_errors_subarray[level_idx] =
           SubArray<1, T_error, DeviceType>(level_errors_array[level_idx]);
+    }
+    // Zero elimination: chunk bitmaps of each level, written by the encoder
+    // when it can (encode() returns whether it did).
+    use_zero_elimination = config.mdr_zero_elimination;
+    ze_bitmaps_array.resize(use_zero_elimination ? layout.num_levels() : 0);
+    ze_given.assign(layout.num_levels(), false);
+    for (int level_idx = 0;
+         use_zero_elimination && level_idx < layout.num_levels(); level_idx++) {
+      SIZE words = encoder.bitplane_length(layout.level_num_elems[level_idx]);
+      ze_bitmaps_array[level_idx].resize(
+          {Encoder::NUM_ROWS * zero_elimination::num_chunks(words)}, queue_idx);
     }
   }
 
@@ -332,11 +344,15 @@ public:
         DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
         timer_iter.start();
       }
-      encoder.encode(level_data_subarray[level_idx].shape(0),
-                     Encoder::MAX_BITPLANES, SubArray(abs_max_array[level_idx]),
-                     level_data_subarray[level_idx],
-                     encoded_bitplanes_subarray[level_idx],
-                     level_errors_subarray[level_idx], queue_idx);
+      SubArray<1, uint32_t, DeviceType> ze_bitmaps;
+      if (use_zero_elimination) {
+        ze_bitmaps = SubArray(ze_bitmaps_array[level_idx]);
+      }
+      ze_given[level_idx] = encoder.encode(
+          level_data_subarray[level_idx].shape(0), Encoder::MAX_BITPLANES,
+          SubArray(abs_max_array[level_idx]), level_data_subarray[level_idx],
+          encoded_bitplanes_subarray[level_idx],
+          level_errors_subarray[level_idx], queue_idx, ze_bitmaps);
       if constexpr (ProfileBPEncoder) {
         DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
         timer_iter.end();
@@ -413,10 +429,34 @@ public:
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer.start();
     }
-    for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
+    // With every level's chunk bitmaps given by the encoder, all levels are
+    // zero-eliminated at once.
+    bool all_given = use_zero_elimination &&
+                     std::all_of(ze_given.begin(), ze_given.end(),
+                                 [](bool given) { return given; });
+    if constexpr (std::is_same<DeviceType, CUDA>::value) {
+      if (all_given) {
+        std::vector<SubArray<1, uint32_t, DeviceType>> ze_bitmaps;
+        for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
+          ze_bitmaps.push_back(SubArray(ze_bitmaps_array[level_idx]));
+        }
+        compressor.compress_levels_zero_elimination(
+            encoded_bitplanes_subarray, mdr_data.compressed_bitplanes,
+            ze_bitmaps, queue_idx, Encoder::SIGN_ROWS);
+      }
+    } else {
+      all_given = false;
+    }
+    for (int level_idx = 0; !all_given && level_idx < layout.num_levels();
+         level_idx++) {
+      SubArray<1, uint32_t, DeviceType> ze_bitmaps;
+      if (ze_given[level_idx]) {
+        ze_bitmaps = SubArray(ze_bitmaps_array[level_idx]);
+      }
       compressor.compress_level(encoded_bitplanes_subarray[level_idx],
                                 mdr_data.compressed_bitplanes[level_idx],
-                                level_idx, queue_idx, Encoder::SIGN_ROWS);
+                                level_idx, queue_idx, Encoder::SIGN_ROWS,
+                                ze_bitmaps);
     }
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
@@ -429,6 +469,7 @@ public:
   void StoreMetadata(MDRMetadata &mdr_metadata, MDRData<DeviceType> &mdr_data,
                      int queue_idx) {
     mdr_metadata.group_size = compressor.num_merged_bitplanes;
+    mdr_metadata.word_order = encoder.Contiguous() ? 1 : 0;
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       abs_max_array[level_idx].hostCopy(false, queue_idx);
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
@@ -491,6 +532,10 @@ private:
 
   std::vector<SIZE> level_num_elems;
   std::vector<int32_t> exp;
+
+  bool use_zero_elimination = false;
+  std::vector<Array<1, uint32_t, DeviceType>> ze_bitmaps_array;
+  std::vector<bool> ze_given;
 };
 } // namespace MDR
 } // namespace mgard_x

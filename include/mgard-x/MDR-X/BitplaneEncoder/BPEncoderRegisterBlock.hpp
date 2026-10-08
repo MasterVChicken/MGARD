@@ -3,15 +3,20 @@
 
 #include "../../RuntimeX/RuntimeX.h"
 
+#include "BPEncoderWarp.hpp"
 #include "BitplaneEncoderInterface.hpp"
 #include <string.h>
 
 namespace mgard_x {
 namespace MDR {
 
+// Contiguous: word w of a row holds the bits of coefficients
+// [32 w, 32 w + 32), coefficient 32 w + d at bit d. Otherwise (the original
+// layout) word w holds coefficients w, w + n / 32, ..., coefficient
+// d * n / 32 + w at bit 31 - d.
 template <typename T_data, typename T_fp, typename T_sfp, typename T_bitplane,
           typename T_error, int NUM_BITPLANES, bool NegaBinary, bool ControlL2,
-          typename DeviceType>
+          typename DeviceType, bool Contiguous = false>
 class BPEncoderRegisterBlockFunctor : public Functor<DeviceType> {
 public:
   MGARDX_CONT
@@ -35,7 +40,7 @@ public:
       for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
         T_bitplane bit =
             (v[data_idx] >> (NUM_BITPLANES - 1 - bp_idx)) & (T_bitplane)1;
-        buffer |= bit << BATCH_SIZE - 1 - data_idx;
+        buffer |= bit << (Contiguous ? data_idx : BATCH_SIZE - 1 - data_idx);
       }
       encoded[bp_idx] = buffer;
     }
@@ -131,7 +136,8 @@ public:
     if (exp > 0) {
 #pragma unroll
       for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
-        T_data data = *v(data_idx * num_full_batches + batch_idx);
+        T_data data = *v(Contiguous ? batch_idx * BATCH_SIZE + data_idx
+                                    : data_idx * num_full_batches + batch_idx);
         // this can cause overflow
         shifted_data[data_idx] = data * ((T_fp)1 << NUM_BITPLANES - exp);
         // ldexp without constant argument is slow
@@ -145,7 +151,8 @@ public:
     } else {
 #pragma unroll
       for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
-        T_data data = *v(data_idx * num_full_batches + batch_idx);
+        T_data data = *v(Contiguous ? batch_idx * BATCH_SIZE + data_idx
+                                    : data_idx * num_full_batches + batch_idx);
         shifted_data[data_idx] = data * pow(2, NUM_BITPLANES - exp);
         fp_data[data_idx] = (T_fp)fabs(shifted_data[data_idx]);
       }
@@ -158,7 +165,7 @@ public:
     // uint32_t), shifting a T_fp by >= 32 is undefined behavior.
     for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
       encoded_sign += (T_bitplane)(signbit(shifted_data[data_idx]) == 0 ? 0 : 1)
-                      << (BATCH_SIZE - 1 - data_idx);
+                      << (Contiguous ? data_idx : BATCH_SIZE - 1 - data_idx);
     }
     // encode data
     encode_batch(fp_data, encoded_data);
@@ -275,7 +282,7 @@ private:
 
 template <typename T_data, typename T_fp, typename T_sfp, typename T_bitplane,
           typename T_error, int NUM_BITPLANES, bool NegaBinary, bool ControlL2,
-          typename DeviceType>
+          typename DeviceType, bool Contiguous = false>
 class BPEncoderRegisterBlockKernel : public Kernel {
 public:
   constexpr static bool EnableAutoTuning() { return false; }
@@ -293,7 +300,7 @@ public:
   using FunctorType =
       BPEncoderRegisterBlockFunctor<T_data, T_fp, T_sfp, T_bitplane, T_error,
                                     NUM_BITPLANES, NegaBinary, ControlL2,
-                                    DeviceType>;
+                                    DeviceType, Contiguous>;
   using TaskType = Task<FunctorType>;
 
   MGARDX_CONT TaskType GenTask(int queue_idx) {
@@ -321,7 +328,8 @@ private:
 };
 
 template <typename T_data, typename T_fp, typename T_sfp, typename T_bitplane,
-          int NUM_BITPLANES, bool NegaBinary, typename DeviceType>
+          int NUM_BITPLANES, bool NegaBinary, typename DeviceType,
+          bool Contiguous = false>
 class BPDecoderRegisterBlockFunctor : public Functor<DeviceType> {
 public:
   MGARDX_CONT
@@ -341,7 +349,9 @@ public:
     for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
       T_fp buffer = 0;
       for (int bp_idx = 0; bp_idx < NUM_BITPLANES; bp_idx++) {
-        T_fp bit = (encoded[bp_idx] >> (BATCH_SIZE - 1 - data_idx)) & (T_fp)1;
+        T_fp bit = (encoded[bp_idx] >>
+                    (Contiguous ? data_idx : BATCH_SIZE - 1 - data_idx)) &
+                   (T_fp)1;
         buffer += bit << (NUM_BITPLANES - 1 - bp_idx);
         // printf("bit: %llu, buffer: %llu\n", bit, buffer);
       }
@@ -387,13 +397,19 @@ public:
 #pragma unroll
       for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
         fp_sign[data_idx] =
-            (encoded_sign >> (BATCH_SIZE - 1 - data_idx)) & (T_fp)1;
-        *signs(data_idx * num_full_batches + batch_idx) = fp_sign[data_idx];
+            (encoded_sign >>
+             (Contiguous ? data_idx : BATCH_SIZE - 1 - data_idx)) &
+            (T_fp)1;
+        *signs(Contiguous ? batch_idx * BATCH_SIZE + data_idx
+                          : data_idx * num_full_batches + batch_idx) =
+            fp_sign[data_idx];
       }
     } else {
 #pragma unroll
       for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
-        fp_sign[data_idx] = *signs(data_idx * num_full_batches + batch_idx);
+        fp_sign[data_idx] =
+            *signs(Contiguous ? batch_idx * BATCH_SIZE + data_idx
+                              : data_idx * num_full_batches + batch_idx);
       }
     }
 #pragma unroll
@@ -403,7 +419,8 @@ public:
       T_data data = shifted_data[data_idx] * pow(2, -ending_bitplane + exp);
       // T_data data = ldexp(shifted_data[data_idx], -ending_bitplane + exp);
       data = fp_sign[data_idx] ? -data : data;
-      *v(data_idx * num_full_batches + batch_idx) = data;
+      *v(Contiguous ? batch_idx * BATCH_SIZE + data_idx
+                    : data_idx * num_full_batches + batch_idx) = data;
 
       // if (num_full_batches == 1) printf("%llu %f %f\n", fp_data[data_idx],
       // shifted_data[data_idx], data);
@@ -481,7 +498,8 @@ private:
 };
 
 template <typename T_data, typename T_fp, typename T_sfp, typename T_bitplane,
-          int NUM_BITPLANES, bool NegaBinary, typename DeviceType>
+          int NUM_BITPLANES, bool NegaBinary, typename DeviceType,
+          bool Contiguous = false>
 class BPDecoderRegisterBlockKernel : public Kernel {
 public:
   constexpr static bool EnableAutoTuning() { return false; }
@@ -498,7 +516,8 @@ public:
 
   using FunctorType =
       BPDecoderRegisterBlockFunctor<T_data, T_fp, T_sfp, T_bitplane,
-                                    NUM_BITPLANES, NegaBinary, DeviceType>;
+                                    NUM_BITPLANES, NegaBinary, DeviceType,
+                                    Contiguous>;
   using TaskType = Task<FunctorType>;
 
   MGARDX_CONT TaskType GenTask(int queue_idx) {
@@ -621,6 +640,19 @@ public:
               SubArray<1, T_data, DeviceType> v,
               SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
               SubArray<1, T_error, DeviceType> level_errors, int queue_idx) {
+    encode(n, num_bitplanes, abs_max, v, encoded_bitplanes, level_errors,
+           queue_idx, SubArray<1, uint32_t, DeviceType>());
+  }
+
+  // ze_bitmaps (may be empty): zero-elimination chunk bitmaps of every row,
+  // written along with the rows when the encoder supports it. Returns whether
+  // they were written.
+  bool encode(SIZE n, int num_bitplanes,
+              SubArray<1, T_data, DeviceType> abs_max,
+              SubArray<1, T_data, DeviceType> v,
+              SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+              SubArray<1, T_error, DeviceType> level_errors, int queue_idx,
+              SubArray<1, uint32_t, DeviceType> ze_bitmaps) {
 
     if (n % BATCH_SIZE != 0) {
       throw std::runtime_error(
@@ -628,12 +660,38 @@ public:
     }
     SubArray<2, T_error, DeviceType> level_errors_work(level_errors_work_array);
 
-    DeviceLauncher<DeviceType>::Execute(
-        BPEncoderRegisterBlockKernel<T_data, T_fp, T_sfp, T_bitplane, T_error,
-                                     MAX_BITPLANES, NegaBinary, ControlL2,
-                                     DeviceType>(
-            n, abs_max, v, encoded_bitplanes, level_errors_work),
-        queue_idx);
+    if (!contiguous || NegaBinary) {
+      DeviceLauncher<DeviceType>::Execute(
+          BPEncoderRegisterBlockKernel<T_data, T_fp, T_sfp, T_bitplane, T_error,
+                                       MAX_BITPLANES, NegaBinary, ControlL2,
+                                       DeviceType>(
+              n, abs_max, v, encoded_bitplanes, level_errors_work),
+          queue_idx);
+    } else if constexpr (std::is_same<DeviceType, CUDA>::value &&
+                         sizeof(T_bitplane) == 4) {
+      using WarpKernel = BPEncoderWarpKernel<T_data, T_fp, T_bitplane, T_error,
+                                             MAX_BITPLANES, ControlL2,
+                                             DeviceType>;
+      DeviceLauncher<DeviceType>::Execute(
+          WarpKernel(n, abs_max, v, encoded_bitplanes, level_errors_work,
+                     ze_bitmaps),
+          queue_idx);
+      if constexpr (ControlL2) {
+        DeviceLauncher<DeviceType>::Execute(
+            BPErrorSumKernel<T_error, DeviceType>(
+                MAX_BITPLANES + 1, WarpKernel::num_blocks(n), level_errors_work,
+                level_errors),
+            queue_idx);
+      }
+      return ze_bitmaps.data() != nullptr;
+    } else {
+      DeviceLauncher<DeviceType>::Execute(
+          BPEncoderRegisterBlockKernel<T_data, T_fp, T_sfp, T_bitplane, T_error,
+                                       MAX_BITPLANES, NegaBinary, ControlL2,
+                                       DeviceType, true>(
+              n, abs_max, v, encoded_bitplanes, level_errors_work),
+          queue_idx);
+    }
 
     if constexpr (ControlL2) {
       SIZE reduce_size = num_blocks(n);
@@ -646,6 +704,7 @@ public:
                                           queue_idx);
       }
     }
+    return false;
   }
 
   void decode(SIZE n, int num_bitplanes,
@@ -673,11 +732,8 @@ public:
 
 #define V1B_DECODE(NUM_BITPLANES)                                              \
   if (num_bitplanes == NUM_BITPLANES) {                                        \
-    DeviceLauncher<DeviceType>::Execute(                                       \
-        BPDecoderRegisterBlockKernel<T_data, T_fp, T_sfp, T_bitplane,          \
-                                     NUM_BITPLANES, NegaBinary, DeviceType>(   \
-            n, starting_bitplane, abs_max, encoded_bitplanes, level_signs, v), \
-        queue_idx);                                                            \
+    decode_with<NUM_BITPLANES>(n, starting_bitplane, abs_max,                  \
+                               encoded_bitplanes, level_signs, v, queue_idx);  \
   }
     V1B_DECODE(1);
     V1B_DECODE(2);
@@ -747,7 +803,42 @@ public:
 
   void print() const { std::cout << "Grouped bitplane encoder" << std::endl; }
 
+  // Word layout of the rows (see BPEncoderRegisterBlockFunctor): contiguous
+  // words hold 32 consecutive coefficients. NegaBinary is always strided.
+  void SetWordOrder(bool contiguous) { this->contiguous = contiguous; }
+  bool Contiguous() const { return contiguous && !NegaBinary; }
+
 private:
+  template <int NUM_BITPLANES>
+  void decode_with(SIZE n, int starting_bitplane,
+                   SubArray<1, T_data, DeviceType> abs_max,
+                   SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+                   SubArray<1, bool, DeviceType> level_signs,
+                   SubArray<1, T_data, DeviceType> v, int queue_idx) {
+    if (!contiguous || NegaBinary) {
+      DeviceLauncher<DeviceType>::Execute(
+          BPDecoderRegisterBlockKernel<T_data, T_fp, T_sfp, T_bitplane,
+                                       NUM_BITPLANES, NegaBinary, DeviceType>(
+              n, starting_bitplane, abs_max, encoded_bitplanes, level_signs, v),
+          queue_idx);
+    } else if constexpr (std::is_same<DeviceType, CUDA>::value &&
+                         sizeof(T_bitplane) == 4) {
+      DeviceLauncher<DeviceType>::Execute(
+          BPDecoderWarpKernel<T_data, T_fp, T_bitplane, NUM_BITPLANES,
+                              DeviceType>(n, starting_bitplane, abs_max,
+                                          encoded_bitplanes, level_signs, v),
+          queue_idx);
+    } else {
+      DeviceLauncher<DeviceType>::Execute(
+          BPDecoderRegisterBlockKernel<T_data, T_fp, T_sfp, T_bitplane,
+                                       NUM_BITPLANES, NegaBinary, DeviceType,
+                                       true>(n, starting_bitplane, abs_max,
+                                             encoded_bitplanes, level_signs, v),
+          queue_idx);
+    }
+  }
+
+  bool contiguous = false;
   bool initialized;
   Hierarchy<D, T_data, DeviceType> *hierarchy;
   Array<2, T_error, DeviceType> level_errors_work_array;

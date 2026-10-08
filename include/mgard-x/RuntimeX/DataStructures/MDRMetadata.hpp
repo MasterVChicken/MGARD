@@ -37,15 +37,19 @@ public:
   }
 
   using T_error = double;
-  // Layout of the refactored bitplanes. 2: as 1, with the number of
+  // Layout of the refactored bitplanes. 3: as 2, with the word layout
+  // recorded (word_order). 2: as 1, with the number of
   // bitplanes per merged group recorded (group_size). 1: signs in their own
   // row (part of the first bitplane group), groups of 4 bitplanes. 0
   // (absent): signs shared row 0 with bitplane 0 in rows twice as long; no
   // longer readable.
-  static constexpr uint32_t FORMAT_VERSION = 2;
+  static constexpr uint32_t FORMAT_VERSION = 3;
   uint32_t format_version = FORMAT_VERSION;
   // Bitplanes per merged group (Config::mdr_bitplane_group_size).
   uint32_t group_size = 4;
+  // Bitplane words: 0 = 32 coefficients strided over the level (versions
+  // 1-2), 1 = 32 consecutive coefficients (Config::mdr_contiguous_words).
+  uint32_t word_order = 0;
   // Metadata
   SIZE num_levels;
   SIZE num_bitplanes;
@@ -168,7 +172,7 @@ public:
     metadata_size += sizeof(T_error) * num_levels * (num_bitplanes + 1);
     metadata_size += sizeof(SIZE) * num_levels * num_bitplanes;
     metadata_size += sizeof(SIZE) * num_levels;
-    metadata_size += sizeof(uint32_t) * 2;
+    metadata_size += sizeof(uint32_t) * 3;
     return metadata_size;
   }
 
@@ -201,6 +205,7 @@ public:
     uint32_t version = FORMAT_VERSION;
     Serialize(ptr, &version, sizeof(uint32_t));
     Serialize(ptr, &group_size, sizeof(uint32_t));
+    Serialize(ptr, &word_order, sizeof(uint32_t));
     return serialize_metadata;
   }
 
@@ -226,6 +231,10 @@ public:
     group_size = 4;
     if (format_version >= 2 && ptr + sizeof(uint32_t) <= end) {
       Deserialize(ptr, &group_size, sizeof(uint32_t));
+    }
+    word_order = 0;
+    if (format_version >= 3 && ptr + sizeof(uint32_t) <= end) {
+      Deserialize(ptr, &word_order, sizeof(uint32_t));
     }
   }
 

@@ -383,6 +383,7 @@ public:
                     int queue_idx) {
     mdr_metadata.CheckFormatVersion();
     compressor.SetGroupSize(mdr_metadata.group_size);
+    encoder.SetWordOrder(mdr_metadata.word_order == 1);
     // All levels, not just up to CurrFinalLevel(): levels with no bitplanes
     // must get level_num_bitplanes = 0 rather than keep a value from a
     // previous use of this reconstructor (ProgressiveReconstruct visits all).
