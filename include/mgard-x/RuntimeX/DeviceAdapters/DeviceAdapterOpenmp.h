@@ -456,7 +456,10 @@ public:
     log::dbg("Calling MemoryManager<OPENMP>::MemsetND");
     using converted_T =
         typename std::conditional<std::is_same<T, void>::value, Byte, T>::type;
-    memset(ptr, value, n1 * n2 * sizeof(converted_T));
+    // n2 rows of n1 elements, ld elements apart (as cudaMemset2D).
+    for (SIZE i = 0; i < n2; i++) {
+      memset((converted_T *)ptr + i * ld, value, n1 * sizeof(converted_T));
+    }
   }
 
   template <typename T> MGARDX_CONT static bool IsDevicePointer(T *ptr) {

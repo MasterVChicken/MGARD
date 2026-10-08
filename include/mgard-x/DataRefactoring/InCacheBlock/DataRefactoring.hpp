@@ -14,6 +14,7 @@
 #include "Decompose8.hpp"
 #include "Decompose8x8.hpp"
 #include "Decompose8x8x8.hpp"
+#include "HierarchicalBlock.hpp"
 #include "Recompose8.hpp"
 #include "Recompose8x8.hpp"
 #include "Recompose8x8x8.hpp"
@@ -42,15 +43,27 @@ void decompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
                                            orthogonal_projection),
         queue_idx);
   } else if constexpr (D == 2) {
-    DeviceLauncher<DeviceType>::Execute(
-        Decompose8x8Kernel<D, T, DeviceType>(v, coarse, coeff,
-                                             orthogonal_projection),
-        queue_idx);
-  } else if constexpr (D == 3) {
-    DeviceLauncher<DeviceType>::Execute(
-        Decompose8x8x8Kernel<D, T, DeviceType>(v, coarse, coeff,
+    if (!orthogonal_projection) {
+      DeviceLauncher<DeviceType>::Execute(
+          HierarchicalDecompose8x8Kernel<D, T, DeviceType>(v, coarse, coeff),
+          queue_idx);
+    } else {
+      DeviceLauncher<DeviceType>::Execute(
+          Decompose8x8Kernel<D, T, DeviceType>(v, coarse, coeff,
                                                orthogonal_projection),
-        queue_idx);
+          queue_idx);
+    }
+  } else if constexpr (D == 3) {
+    if (!orthogonal_projection) {
+      DeviceLauncher<DeviceType>::Execute(
+          HierarchicalDecompose8x8x8Kernel<D, T, DeviceType>(v, coarse, coeff),
+          queue_idx);
+    } else {
+      DeviceLauncher<DeviceType>::Execute(
+          Decompose8x8x8Kernel<D, T, DeviceType>(v, coarse, coeff,
+                                                 orthogonal_projection),
+          queue_idx);
+    }
   }
 }
 
@@ -96,15 +109,27 @@ void recompose(SubArray<D, T, DeviceType> v, SubArray<D, T, DeviceType> coarse,
                                            orthogonal_projection),
         queue_idx);
   } else if constexpr (D == 2) {
-    DeviceLauncher<DeviceType>::Execute(
-        Recompose8x8Kernel<D, T, DeviceType>(v, coarse, coeff,
-                                             orthogonal_projection),
-        queue_idx);
-  } else if constexpr (D == 3) {
-    DeviceLauncher<DeviceType>::Execute(
-        Recompose8x8x8Kernel<D, T, DeviceType>(v, coarse, coeff,
+    if (!orthogonal_projection) {
+      DeviceLauncher<DeviceType>::Execute(
+          HierarchicalRecompose8x8Kernel<D, T, DeviceType>(v, coarse, coeff),
+          queue_idx);
+    } else {
+      DeviceLauncher<DeviceType>::Execute(
+          Recompose8x8Kernel<D, T, DeviceType>(v, coarse, coeff,
                                                orthogonal_projection),
-        queue_idx);
+          queue_idx);
+    }
+  } else if constexpr (D == 3) {
+    if (!orthogonal_projection) {
+      DeviceLauncher<DeviceType>::Execute(
+          HierarchicalRecompose8x8x8Kernel<D, T, DeviceType>(v, coarse, coeff),
+          queue_idx);
+    } else {
+      DeviceLauncher<DeviceType>::Execute(
+          Recompose8x8x8Kernel<D, T, DeviceType>(v, coarse, coeff,
+                                                 orthogonal_projection),
+          queue_idx);
+    }
   }
 }
 

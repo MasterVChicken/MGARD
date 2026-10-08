@@ -714,7 +714,14 @@ public:
     sycl::queue q = DeviceRuntime<SYCL>::GetQueue(queue_idx);
     using converted_T =
         typename std::conditional<std::is_same<T, void>::value, Byte, T>::type;
-    q.memset((converted_T *)ptr, value, n1 * n2 * sizeof(converted_T));
+    // n2 rows of n1 elements, ld elements apart (as cudaMemset2D).
+    if (ld == n1) {
+      q.memset((converted_T *)ptr, value, n1 * n2 * sizeof(converted_T));
+    } else {
+      for (SIZE i = 0; i < n2; i++) {
+        q.memset((converted_T *)ptr + i * ld, value, n1 * sizeof(converted_T));
+      }
+    }
     if (queue_idx == MGARDX_SYNCHRONIZED_QUEUE) {
       DeviceRuntime<SYCL>::SyncQueue(queue_idx);
     }

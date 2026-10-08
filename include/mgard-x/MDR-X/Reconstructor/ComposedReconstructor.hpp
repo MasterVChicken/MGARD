@@ -477,7 +477,6 @@ public:
     // std::cout << "[";
 
     for (int level_idx = 0; level_idx <= curr_final_level; level_idx++) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       Timer timer_iter;
       if constexpr (ProfileBPEncoder) {
         DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
@@ -521,24 +520,34 @@ public:
       timer.start();
     }
 
+    // The first reconstruction adds to nothing: it recomposes straight into
+    // reconstructed_data, without the partial buffer and AddND.
+    std::vector<SIZE> partial_shape =
+        hierarchy->level_shape(layout.hybrid ? hierarchy->l_target()
+                                             : curr_final_level);
+    bool first = !adaptive_resolution &&
+                 reconstructed_data.shape() == partial_shape;
+    for (int level_idx = 0; first && level_idx < layout.num_levels();
+         level_idx++) {
+      first = mdr_metadata.prev_used_level_num_bitplanes[level_idx] == 0;
+    }
+    Array<D, T_data, DeviceType> &partial =
+        first ? reconstructed_data : partial_reconsctructed_data;
+    if (!first) {
+      partial_reconsctructed_data.resize(partial_shape);
+    }
+
     if (layout.hybrid) {
-      partial_reconsctructed_data.resize(
-          hierarchy->level_shape(hierarchy->l_target()));
       // Reads the decoded level coefficients in place (the global levels are
       // repositioned inside).
-      local_decomposer.recompose(
-          level_data_subarray,
-          SubArray<D, T_data, DeviceType>(partial_reconsctructed_data),
-          queue_idx);
+      local_decomposer.recompose(level_data_subarray,
+                                 SubArray<D, T_data, DeviceType>(partial),
+                                 queue_idx);
     } else {
-      partial_reconsctructed_data.resize(
-          hierarchy->level_shape(curr_final_level));
-
       // Put decoded coefficients back to reordered layout
-      interleaver.reposition(
-          level_data_subarray,
-          SubArray<D, T_data, DeviceType>(partial_reconsctructed_data),
-          curr_final_level, queue_idx);
+      interleaver.reposition(level_data_subarray,
+                             SubArray<D, T_data, DeviceType>(partial),
+                             curr_final_level, queue_idx);
 
       if (log::level & log::TIME) {
         DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
@@ -548,8 +557,7 @@ public:
         timer.clear();
       }
 
-      decomposer.recompose(partial_reconsctructed_data, 0, curr_final_level,
-                           queue_idx);
+      decomposer.recompose(partial, 0, curr_final_level, queue_idx);
     }
 
     if (adaptive_resolution) {
@@ -558,20 +566,22 @@ public:
                          queue_idx);
     }
 
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.start();
-    }
-    SubArray partial_reconstructed_subarray(partial_reconsctructed_data);
-    SubArray reconstructed_subarray(reconstructed_data);
-    data_refactoring::multi_dimension::AddND(partial_reconstructed_subarray,
-                                             reconstructed_subarray, queue_idx);
+    if (!first) {
+      if (log::level & log::TIME) {
+        DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+        timer.start();
+      }
+      SubArray partial_reconstructed_subarray(partial_reconsctructed_data);
+      SubArray reconstructed_subarray(reconstructed_data);
+      data_refactoring::multi_dimension::AddND(
+          partial_reconstructed_subarray, reconstructed_subarray, queue_idx);
 
-    if (log::level & log::TIME) {
-      DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-      timer.end();
-      timer.print("AddND", hierarchy->total_num_elems() * sizeof(T_data));
-      timer.clear();
+      if (log::level & log::TIME) {
+        DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
+        timer.end();
+        timer.print("AddND", hierarchy->total_num_elems() * sizeof(T_data));
+        timer.clear();
+      }
     }
     mdr_metadata.DoneReconstruct();
     if (log::level & log::TIME) {

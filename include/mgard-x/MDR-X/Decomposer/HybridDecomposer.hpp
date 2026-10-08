@@ -10,6 +10,7 @@
 
 #include "../../DataRefactoring/DataRefactor.hpp"
 #include "../../DataRefactoring/InCacheBlock/DataRefactoring.h"
+#include "../../DataRefactoring/InCacheBlock/HierarchicalBlock.hpp"
 #include "../../DataRefactoring/MultiDimension/DataRefactoring.h"
 #include "../../RuntimeX/Utilities/Exceptions.h"
 #include "../Interleaver/DirectInterleaver.hpp"
@@ -234,12 +235,22 @@ public:
     return size;
   }
 
+  // Whether decompose() can also give the max |coefficient| of the
+  // block-local levels (MDR levels mdr_level_of_local(l), l < L).
+  bool fuses_abs_max() const {
+    return !orthogonal_projection && (D == 2 || D == 3);
+  }
+
   // data: the full-resolution input (not modified).
   // level_data[i]: buffer of MDR level i; the first level_num_elems[i] entries
   // are written.
+  // level_abs_max (optional, needs fuses_abs_max()): zeroed max |x| of each
+  // MDR level, set for the block-local levels.
   void decompose(SubArray<D, T, DeviceType> data,
                  std::vector<SubArray<1, T, DeviceType>> &level_data,
-                 int queue_idx) {
+                 int queue_idx,
+                 std::vector<SubArray<1, T, DeviceType>> *level_abs_max =
+                     nullptr) {
     const int L = layout.L;
     Timer timer;
     if (log::level & log::TIME) {
@@ -249,24 +260,57 @@ public:
 
     // Level-0 fine buffer: the input padded up to a multiple of the block
     // size. The padding must be zero, CopyND only writes the input extent.
-    SubArray<D, T, DeviceType> fine =
-        padded_view(layout.local_fine_shapes[0], coarse_buffers[1].data());
-    if (product(layout.local_fine_shapes[0]) != product(shape_of(data))) {
-      coarse_buffers[1].memset(0, queue_idx);
+    // A dense input that needs no padding is read in place.
+    SubArray<D, T, DeviceType> fine;
+    if (is_dense_fine(data)) {
+      fine = padded_view(layout.local_fine_shapes[0], data.data());
+    } else {
+      fine =
+          padded_view(layout.local_fine_shapes[0], coarse_buffers[1].data());
+      zero_padding(coarse_buffers[1].data(), shape_of(data),
+                   layout.local_fine_shapes[0], queue_idx);
+      data_refactoring::multi_dimension::CopyND(data, fine, queue_idx);
     }
-    data_refactoring::multi_dimension::CopyND(data, fine, queue_idx);
 
     for (int l = 0; l < L; l++) {
       int buffer_idx = l % 2;
-      // Zero so that the padding of the next level's fine grid is zero.
-      coarse_buffers[buffer_idx].memset(0, queue_idx);
+      // Zero the padding of the next level's fine grid (the buffer holds
+      // stale values of earlier levels); the kernel writes the rest.
+      if (l < L - 1) {
+        zero_padding(coarse_buffers[buffer_idx].data(),
+                     layout.local_coarse_shapes[l],
+                     layout.local_fine_shapes[l + 1], queue_idx);
+      }
       SubArray<D, T, DeviceType> coarse = padded_view(
           layout.local_coarse_shapes[l], coarse_buffers[buffer_idx].data());
       SubArray<1, T, DeviceType> coeff(
           {layout.local_coeff_size[l]},
           level_data[layout.mdr_level_of_local(l)].data());
-      data_refactoring::in_cache_block::decompose<D, T, DeviceType>(
-          fine, coarse, coeff, orthogonal_projection, queue_idx);
+      if constexpr (D == 2 || D == 3) {
+        if (level_abs_max != nullptr && fuses_abs_max()) {
+          SubArray<1, T, DeviceType> abs_max =
+              (*level_abs_max)[layout.mdr_level_of_local(l)];
+          if constexpr (D == 3) {
+            DeviceLauncher<DeviceType>::Execute(
+                data_refactoring::in_cache_block::
+                    HierarchicalDecompose8x8x8Kernel<D, T, DeviceType>(
+                        fine, coarse, coeff, abs_max),
+                queue_idx);
+          } else {
+            DeviceLauncher<DeviceType>::Execute(
+                data_refactoring::in_cache_block::
+                    HierarchicalDecompose8x8Kernel<D, T, DeviceType>(
+                        fine, coarse, coeff, abs_max),
+                queue_idx);
+          }
+        } else {
+          data_refactoring::in_cache_block::decompose<D, T, DeviceType>(
+              fine, coarse, coeff, orthogonal_projection, queue_idx);
+        }
+      } else {
+        data_refactoring::in_cache_block::decompose<D, T, DeviceType>(
+            fine, coarse, coeff, orthogonal_projection, queue_idx);
+      }
       if (l < L - 1) {
         fine = padded_view(layout.local_fine_shapes[l + 1],
                            coarse_buffers[buffer_idx].data());
@@ -318,12 +362,16 @@ public:
     }
     // Every block writes all of its 8^D fine nodes, so the ping-pong buffers
     // need no zeroing: each value read at level l was written at level l + 1.
+    // A dense output that needs no padding takes the finest level directly.
+    const bool in_place = is_dense_fine(output);
     SubArray<D, T, DeviceType> fine;
     for (int i = 0; i < L; i++) {
       int l = L - 1 - i;
       int buffer_idx = i % 2;
       fine = padded_view(layout.local_fine_shapes[l],
-                         coarse_buffers[buffer_idx].data());
+                         l == 0 && in_place
+                             ? output.data()
+                             : coarse_buffers[buffer_idx].data());
       SubArray<1, T, DeviceType> coeff(
           {layout.local_coeff_size[l]},
           level_data[layout.mdr_level_of_local(l)].data());
@@ -335,9 +383,11 @@ public:
       }
     }
     // Drop the block padding
-    SubArray<D, T, DeviceType> result =
-        padded_view(shape_of(output), fine.data());
-    data_refactoring::multi_dimension::CopyND(result, output, queue_idx);
+    if (!in_place) {
+      SubArray<D, T, DeviceType> result =
+          padded_view(shape_of(output), fine.data());
+      data_refactoring::multi_dimension::CopyND(result, output, queue_idx);
+    }
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer.end();
@@ -360,6 +410,50 @@ private:
     }
     view.project(D - 3, D - 2, D - 1);
     return view;
+  }
+
+  // Zeroes the nodes of a `fine` view (laid out like padded_view) that lie
+  // outside `inner`: per dimension d, the slab inner[d] <= i_d < fine[d] over
+  // the slower dimensions' inner extent (one strided memset each; the faster
+  // dimensions are cleared over their whole leading dimension, which only
+  // touches padding or memory outside the view).
+  void zero_padding(T *ptr, const std::vector<SIZE> &inner,
+                    const std::vector<SIZE> &fine, int queue_idx) {
+    const std::vector<SIZE> &ld = layout.local_fine_shapes[0];
+    std::vector<SIZE> stride(D, 1);
+    for (int d = (int)D - 2; d >= 0; d--) {
+      stride[d] = stride[d + 1] * ld[d + 1];
+    }
+    for (DIM d = 0; d < D; d++) {
+      if (fine[d] <= inner[d]) {
+        continue;
+      }
+      SIZE width = (fine[d] - inner[d]) * stride[d];
+      if (d == 0) {
+        MemoryManager<DeviceType>::Memset1D(ptr + inner[0] * stride[0], width,
+                                            0, queue_idx);
+      } else {
+        SIZE rows = inner[0];
+        for (DIM s = 1; s < d; s++) {
+          rows *= ld[s];
+        }
+        MemoryManager<DeviceType>::MemsetND(ptr + inner[d] * stride[d],
+                                            stride[d - 1], width, rows, 0,
+                                            queue_idx);
+      }
+    }
+  }
+
+  // Whether v already has the level-0 fine shape and is laid out densely, so
+  // that it can stand in for the padded level-0 buffer.
+  bool is_dense_fine(const SubArray<D, T, DeviceType> &v) const {
+    for (DIM d = 0; d < D; d++) {
+      if (v.shape(d) != layout.local_fine_shapes[0][d] ||
+          (d > 0 && v.ld(d) != v.shape(d))) {
+        return false;
+      }
+    }
+    return true;
   }
 
   bool initialized;

@@ -247,10 +247,29 @@ public:
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
       timer_all.start();
     }
+    // Levels whose abs max the decomposition gives (block-local levels of the
+    // hybrid decomposition, CUDA); the others are reduced below.
+    std::vector<bool> abs_max_given(layout.num_levels(), false);
     if (layout.hybrid) {
       // Writes every level's coefficients directly into level_data_subarray
       // (no separate interleave pass for the block-local levels).
-      local_decomposer.decompose(data, level_data_subarray, queue_idx);
+      if (std::is_same<DeviceType, CUDA>::value &&
+          local_decomposer.fuses_abs_max()) {
+        std::vector<SubArray<1, T_data, DeviceType>> level_abs_max;
+        for (int level_idx = 0; level_idx < layout.num_levels();
+             level_idx++) {
+          level_abs_max.push_back(SubArray(abs_max_array[level_idx]));
+        }
+        for (int l = 0; l < layout.L; l++) {
+          int level_idx = layout.mdr_level_of_local(l);
+          abs_max_array[level_idx].memset(0, queue_idx);
+          abs_max_given[level_idx] = true;
+        }
+        local_decomposer.decompose(data, level_data_subarray, queue_idx,
+                                   &level_abs_max);
+      } else {
+        local_decomposer.decompose(data, level_data_subarray, queue_idx);
+      }
     } else {
       decomposer.decompose(data_array, hierarchy->l_target(), 0, queue_idx);
 
@@ -275,10 +294,12 @@ public:
     }
 
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
-      DeviceCollective<DeviceType>::AbsMax(
-          level_data_subarray[level_idx].shape(0),
-          level_data_subarray[level_idx], SubArray(abs_max_array[level_idx]),
-          abs_max_workspace, true, queue_idx);
+      if (!abs_max_given[level_idx]) {
+        DeviceCollective<DeviceType>::AbsMax(
+            level_data_subarray[level_idx].shape(0),
+            level_data_subarray[level_idx], SubArray(abs_max_array[level_idx]),
+            abs_max_workspace, true, queue_idx);
+      }
 
       {
         // DumpSubArray("level_"+std::to_string(level_idx),
