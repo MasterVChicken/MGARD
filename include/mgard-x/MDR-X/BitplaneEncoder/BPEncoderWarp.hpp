@@ -34,110 +34,44 @@ MGARDX_EXEC uint32_t warp_transpose32(SubGroup<DeviceType> &sg, int lane,
   return x;
 }
 
+// One stage of warp_transpose_reduce32: v[0..S) += the other half's v[S..2S)
+// of lane ^ S. S is a template parameter so that the loops unroll and v stays
+// in registers (the compiler kept the loop over s rolled, indexing v).
+template <int S, typename T, typename DeviceType>
+MGARDX_EXEC void transpose_reduce_stage(SubGroup<DeviceType> &sg, int lane,
+                                        T *v) {
+  const bool upper = lane & S;
+#pragma unroll
+  for (int i = 0; i < S; i++) {
+    // Selects of values, not of v[i] / v[i + S] (address selects put v in
+    // local memory).
+    const T lo = v[i], hi = v[i + S];
+    T send = upper ? lo : hi;
+    T keep = upper ? hi : lo;
+    v[i] = keep + sg.shfl(send, lane ^ S);
+  }
+  if constexpr (S > 1) {
+    transpose_reduce_stage<S / 2>(sg, lane, v);
+  }
+}
+
 // Sums v[0..32) over the 32 lanes: lane l returns the sum of v[l]
 // (31 exchanges instead of 32 butterfly reductions).
 template <typename T, typename DeviceType>
 MGARDX_EXEC T warp_transpose_reduce32(SubGroup<DeviceType> &sg, int lane,
                                       T *v) {
-#pragma unroll
-  for (int s = 16; s >= 1; s /= 2) {
-    const bool upper = lane & s;
-#pragma unroll
-    for (int i = 0; i < s; i++) {
-      T send = upper ? v[i] : v[i + s];
-      T keep = upper ? v[i + s] : v[i];
-      v[i] = keep + sg.shfl(send, lane ^ s);
-    }
-  }
+  transpose_reduce_stage<16>(sg, lane, v);
   return v[0];
 }
 
-// d += bit ? 2^E : 0. On CUDA a predicated add with an immediate operand
-// (the compiler otherwise adds unconditionally and selects).
-template <int E> MGARDX_EXEC void add_pow2_if(double &d, uint32_t bit);
-#if defined(__CUDA_ARCH__)
-#define MGARDX_BP_ADD_POW2(E, HEX)                                             \
-  template <>                                                                  \
-  MGARDX_EXEC void add_pow2_if<E>(double &d, uint32_t bit) {                   \
-    asm("{\n\t.reg .pred p;\n\tsetp.ne.b32 p, %1, 0;\n\t"                      \
-        "@p add.rn.f64 %0, %0, 0d" HEX "0000000000000;\n\t}"                   \
-        : "+d"(d)                                                              \
-        : "r"(bit));                                                           \
-  }
-#else
-#define MGARDX_BP_ADD_POW2(E, HEX)                                             \
-  template <>                                                                  \
-  MGARDX_EXEC void add_pow2_if<E>(double &d, uint32_t bit) {                   \
-    if (bit) {                                                                 \
-      d += (double)((uint64_t)1 << E);                                         \
-    }                                                                          \
-  }
-#endif
-MGARDX_BP_ADD_POW2(0, "3FF")
-MGARDX_BP_ADD_POW2(1, "400")
-MGARDX_BP_ADD_POW2(2, "401")
-MGARDX_BP_ADD_POW2(3, "402")
-MGARDX_BP_ADD_POW2(4, "403")
-MGARDX_BP_ADD_POW2(5, "404")
-MGARDX_BP_ADD_POW2(6, "405")
-MGARDX_BP_ADD_POW2(7, "406")
-MGARDX_BP_ADD_POW2(8, "407")
-MGARDX_BP_ADD_POW2(9, "408")
-MGARDX_BP_ADD_POW2(10, "409")
-MGARDX_BP_ADD_POW2(11, "40A")
-MGARDX_BP_ADD_POW2(12, "40B")
-MGARDX_BP_ADD_POW2(13, "40C")
-MGARDX_BP_ADD_POW2(14, "40D")
-MGARDX_BP_ADD_POW2(15, "40E")
-MGARDX_BP_ADD_POW2(16, "40F")
-MGARDX_BP_ADD_POW2(17, "410")
-MGARDX_BP_ADD_POW2(18, "411")
-MGARDX_BP_ADD_POW2(19, "412")
-MGARDX_BP_ADD_POW2(20, "413")
-MGARDX_BP_ADD_POW2(21, "414")
-MGARDX_BP_ADD_POW2(22, "415")
-MGARDX_BP_ADD_POW2(23, "416")
-MGARDX_BP_ADD_POW2(24, "417")
-MGARDX_BP_ADD_POW2(25, "418")
-MGARDX_BP_ADD_POW2(26, "419")
-MGARDX_BP_ADD_POW2(27, "41A")
-MGARDX_BP_ADD_POW2(28, "41B")
-MGARDX_BP_ADD_POW2(29, "41C")
-MGARDX_BP_ADD_POW2(30, "41D")
-MGARDX_BP_ADD_POW2(31, "41E")
-MGARDX_BP_ADD_POW2(32, "41F")
-MGARDX_BP_ADD_POW2(33, "420")
-MGARDX_BP_ADD_POW2(34, "421")
-MGARDX_BP_ADD_POW2(35, "422")
-MGARDX_BP_ADD_POW2(36, "423")
-MGARDX_BP_ADD_POW2(37, "424")
-MGARDX_BP_ADD_POW2(38, "425")
-MGARDX_BP_ADD_POW2(39, "426")
-MGARDX_BP_ADD_POW2(40, "427")
-MGARDX_BP_ADD_POW2(41, "428")
-MGARDX_BP_ADD_POW2(42, "429")
-MGARDX_BP_ADD_POW2(43, "42A")
-MGARDX_BP_ADD_POW2(44, "42B")
-MGARDX_BP_ADD_POW2(45, "42C")
-MGARDX_BP_ADD_POW2(46, "42D")
-MGARDX_BP_ADD_POW2(47, "42E")
-MGARDX_BP_ADD_POW2(48, "42F")
-MGARDX_BP_ADD_POW2(49, "430")
-MGARDX_BP_ADD_POW2(50, "431")
-MGARDX_BP_ADD_POW2(51, "432")
-MGARDX_BP_ADD_POW2(52, "433")
-MGARDX_BP_ADD_POW2(53, "434")
-MGARDX_BP_ADD_POW2(54, "435")
-MGARDX_BP_ADD_POW2(55, "436")
-MGARDX_BP_ADD_POW2(56, "437")
-MGARDX_BP_ADD_POW2(57, "438")
-MGARDX_BP_ADD_POW2(58, "439")
-MGARDX_BP_ADD_POW2(59, "43A")
-MGARDX_BP_ADD_POW2(60, "43B")
-MGARDX_BP_ADD_POW2(61, "43C")
-MGARDX_BP_ADD_POW2(62, "43D")
-MGARDX_BP_ADD_POW2(63, "43E")
-#undef MGARDX_BP_ADD_POW2
+// Squared errors of the single-precision sums of BPEncoderWarpFunctor
+// (ControlL2) are within a relative 2^-17 of exact: each lane adds at most 32
+// terms, the warp the lanes' sums in 5 more steps, and the remainders are
+// exact for float data and within 17 roundings for double data (leaving out
+// underflow, far below the last bitplane).
+// ComposedRefactor::StoreMetadata scales the collected errors by this, so
+// that they bound the exact ones.
+constexpr double L2_ERROR_MARGIN = 1 + 0x1p-16;
 
 // Lanes of the warp holding the same value (CUDA, sm_70+).
 MGARDX_EXEC uint32_t warp_match_any(uint32_t x) {
@@ -196,9 +130,11 @@ MGARDX_EXEC uint32_t gather_byte_bits(uint32_t x) {
 // handled by NUM_BITPLANES / 32 sub-groups, sub-group h taking bits
 // [32 h, 32 h + 32) (the top one also the signs); the words are staged in
 // shared memory so that rows are stored coalesced. The per-bitplane squared
-// errors are reduced per thread block into level_errors_workspace(b, block);
-// BPErrorSumKernel adds the blocks up. Same rows, signs and errors (up to
-// summation order) as BPEncoderRegisterBlockFunctor<..., Contiguous = true>.
+// errors are summed per lane in single precision (collect_errors), then
+// reduced per thread block into level_errors_workspace(b, block);
+// BPErrorSumKernel adds the blocks up. Same rows and signs as
+// BPEncoderRegisterBlockFunctor<..., Contiguous = true>, and the same errors
+// up to rounding (L2_ERROR_MARGIN).
 // With ze_bitmaps given, a tile being a zero-elimination chunk, it also
 // writes the chunk bitmaps of every row (zero_elimination::SuperCountKernel
 // then gives the super-chunk counts), and with ze_bits the chunks' sparse-word
@@ -335,41 +271,45 @@ public:
     sg.sync();
   }
 
-  // Squared errors of sub-group H: e[32 - k] += (|shifted| mod 2^(32 H + k))^2
-  // for k in [0, 32), with |shifted| mod 2^b built bit by bit (exact) in two
-  // independent chains.
+  // Squared errors of sub-group H in single precision (a = |shifted|, fp its
+  // integer part): e[32 - k] += (a mod 2^(32 H + k))^2 / 2^(64 H) for k in
+  // [0, 32), with a mod 2^b built bit by bit in two independent chains (the
+  // 2^-32 scaling keeps the upper sub-group of doubles in float range). For
+  // float data the remainders are exact: they are parts of a's significand.
   template <int H>
-  MGARDX_EXEC void collect_errors(T_error *e, T_fp fp, T_error mantissa) {
+  MGARDX_EXEC void collect_errors(float *e, T_fp fp, T_data a) {
     const uint32_t x = (uint32_t)(fp >> (32 * H));
-    T_error d0 = H == 0 ? mantissa
-                        : (T_error)(fp & (((T_fp)1 << (32 * H)) - 1)) +
-                              mantissa;
-    T_error d1 = (T_error)(fp & (((T_fp)1 << (32 * H + 16)) - 1)) + mantissa;
-    collect_steps<H>(e, x, d0, d1, std::make_integer_sequence<int, 16>{});
-  }
-
-  template <int H, int... K>
-  MGARDX_EXEC void collect_steps(T_error *e, uint32_t x, T_error &d0,
-                                 T_error &d1, std::integer_sequence<int, K...>) {
-    (collect_step<H, K>(e, x, d0, d1), ...);
-  }
-
-  template <int H, int K>
-  MGARDX_EXEC void collect_step(T_error *e, uint32_t x, T_error &d0,
-                                T_error &d1) {
-    // Fused (the compiler does not contract these for double data).
-    e[32 - K] = fma(d0, d0, e[32 - K]);
-    e[16 - K] = fma(d1, d1, e[16 - K]);
-    if constexpr (std::is_same<T_error, double>::value) {
-      add_pow2_if<32 * H + K>(d0, x & (1u << K));
-      add_pow2_if<32 * H + 16 + K>(d1, x & (1u << (16 + K)));
+    float d0, d1;
+    if constexpr (std::is_same<T_data, float>::value) {
+      d0 = a - (float)fp;
+      d1 = a - (float)(fp & ~(T_fp)0xffff);
     } else {
-      if (x & (1u << K)) {
-        d0 += (T_error)((T_fp)1 << (32 * H + K));
-      }
-      if (x & (1u << (16 + K))) {
-        d1 += (T_error)((T_fp)1 << (32 * H + 16 + K));
-      }
+      constexpr T_error UNIT = H == 0 ? 1.0 : 0x1p-32;
+      const T_error mantissa = a - (T_error)fp;
+      d0 = (float)(((T_error)(fp & (((T_fp)1 << (32 * H)) - 1)) + mantissa) *
+                   UNIT);
+      d1 = (float)(((T_error)(fp & (((T_fp)1 << (32 * H + 16)) - 1)) +
+                    mantissa) *
+                   UNIT);
+    }
+    collect_steps(e, x, d0, d1, std::make_integer_sequence<int, 16>{});
+  }
+
+  template <int... K>
+  MGARDX_EXEC void collect_steps(float *e, uint32_t x, float &d0, float &d1,
+                                 std::integer_sequence<int, K...>) {
+    (collect_step<K>(e, x, d0, d1), ...);
+  }
+
+  template <int K>
+  MGARDX_EXEC void collect_step(float *e, uint32_t x, float &d0, float &d1) {
+    e[32 - K] = fmaf(d0, d0, e[32 - K]);
+    e[16 - K] = fmaf(d1, d1, e[16 - K]);
+    if (x & (1u << K)) {
+      d0 += (float)(1u << K);
+    }
+    if (x & (1u << (16 + K))) {
+      d1 += (float)(1u << (16 + K));
     }
   }
 
@@ -382,12 +322,13 @@ public:
     uint32_t *staging =
         (uint32_t *)FunctorBase<DeviceType>::GetSharedMemory() +
         warp * ROWS * PITCH;
-    block_errors = (T_error *)((uint32_t *)FunctorBase<
-                                   DeviceType>::GetSharedMemory() +
-                               WARPS * ROWS * PITCH);
-    frexp(*abs_max((IDX)0), &exp);
+    T_error *block_errors = staged_errors();
+    const int exp = abs_max_exponent();
 
-    T_error errors[ROWS];
+    // Squared errors: row 0's (no bitplane) in T_error, the others per
+    // sub-group in float (collect_errors).
+    T_error error0 = 0;
+    float errors[ROWS];
     if constexpr (ControlL2) {
 #pragma unroll
       for (int b = 0; b < (int)ROWS; b++) {
@@ -452,18 +393,17 @@ public:
         row_bitmap |= (uint32_t)(x != 0) << j;
         row_bits += zero_elimination::sparse_bits(x);
         if constexpr (ControlL2) {
-          T_error mantissa = fabs(shifted) - fp;
           if constexpr (HALVES == 1) {
-            collect_errors<0>(errors, fp, mantissa);
+            collect_errors<0>(errors, fp, fabs(shifted));
           } else {
             if (h == 0) {
-              collect_errors<0>(errors, fp, mantissa);
+              collect_errors<0>(errors, fp, fabs(shifted));
             } else {
-              collect_errors<HALVES - 1>(errors, fp, mantissa);
+              collect_errors<HALVES - 1>(errors, fp, fabs(shifted));
             }
           }
           if (top) {
-            errors[0] += shifted * shifted;
+            error0 += shifted * shifted;
           }
         }
       }
@@ -496,20 +436,27 @@ public:
       }
     }
     if constexpr (ControlL2) {
-      block_errors[warp * ROWS + lane] =
-          warp_transpose_reduce32(sg, lane, errors);
-      T_error e = errors[32];
+      // The sub-group's sums (lane l: row l), back in T_error without the
+      // 2^-64 scaling of the upper sub-group.
+      const T_error unit = HALVES > 1 && top ? 0x1p64 : 1.0;
+      float sum = warp_transpose_reduce32(sg, lane, errors);
+      float sum32 = errors[32];
       for (int offset = 16; offset > 0; offset /= 2) {
-        e += sg.shfl(e, lane ^ offset);
+        sum32 += sg.shfl(sum32, lane ^ offset);
+        error0 += sg.shfl(error0, lane ^ offset);
       }
+      block_errors[warp * ROWS + lane] =
+          lane == 0 ? error0 : (T_error)sum * unit;
       if (lane == 0) {
-        block_errors[warp * ROWS + 32] = e;
+        block_errors[warp * ROWS + 32] = (T_error)sum32 * unit;
       }
     }
   }
 
   MGARDX_EXEC void Operation2() {
     if constexpr (ControlL2) {
+      const T_error *block_errors = staged_errors();
+      const int exp = abs_max_exponent();
       for (SIZE b = FunctorBase<DeviceType>::GetThreadIdX();
            b < NUM_BITPLANES + 1; b += FunctorBase<DeviceType>::GetBlockDimX()) {
         // Error b is staged entry b - 32 (HALVES - 1 - h) of sub-group h.
@@ -530,6 +477,19 @@ public:
   }
 
 private:
+  // Recomputed in each Operation instead of kept in members between them
+  // (functor members written in device code can put the functor in local
+  // memory).
+  MGARDX_EXEC T_error *staged_errors() {
+    return (T_error *)((uint32_t *)FunctorBase<DeviceType>::GetSharedMemory() +
+                       WARPS * ROWS * PITCH);
+  }
+  MGARDX_EXEC int abs_max_exponent() {
+    int e;
+    frexp(*abs_max((IDX)0), &e);
+    return e;
+  }
+
   SIZE n;
   SubArray<1, T_data, DeviceType> abs_max;
   SubArray<1, T_data, DeviceType> v;
@@ -538,8 +498,6 @@ private:
   SubArray<1, uint32_t, DeviceType> ze_bitmaps, ze_bits;
   int sign_group_size;
   SubArray<1, uint32_t, DeviceType> sign_counts, sign_segment_bits;
-  T_error *block_errors;
-  int exp;
 };
 
 template <typename T_data, typename T_fp, typename T_bitplane, typename T_error,

@@ -574,6 +574,10 @@ public:
       MemoryManager<DeviceType>::Copy1D(squared_error.data(),
                                         level_errors_array[level_idx].data(),
                                         Encoder::MAX_BITPLANES + 1, queue_idx);
+      // Bounds of the exact errors despite the encoder's rounding.
+      for (T_error &e : squared_error) {
+        e *= L2_ERROR_MARGIN;
+      }
       mdr_metadata.level_squared_errors[level_idx] = squared_error;
       for (int bitplane_idx = 0; bitplane_idx < Encoder::MAX_BITPLANES;
            bitplane_idx++) {
