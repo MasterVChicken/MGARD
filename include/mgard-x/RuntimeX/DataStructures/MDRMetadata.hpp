@@ -37,19 +37,26 @@ public:
   }
 
   using T_error = double;
-  // Layout of the refactored bitplanes. 3: as 2, with the word layout
+  // Layout of the refactored bitplanes. 5: as 4; zero-elimination groups may
+  // have sparse-word rows (Config::mdr_sparse_words, identified by the group
+  // signature). 4: as 3, with the sign coding
+  // recorded (sign_coding). 3: as 2, with the word layout
   // recorded (word_order). 2: as 1, with the number of
   // bitplanes per merged group recorded (group_size). 1: signs in their own
   // row (part of the first bitplane group), groups of 4 bitplanes. 0
   // (absent): signs shared row 0 with bitplane 0 in rows twice as long; no
   // longer readable.
-  static constexpr uint32_t FORMAT_VERSION = 3;
+  static constexpr uint32_t FORMAT_VERSION = 5;
   uint32_t format_version = FORMAT_VERSION;
   // Bitplanes per merged group (Config::mdr_bitplane_group_size).
   uint32_t group_size = 4;
   // Bitplane words: 0 = 32 coefficients strided over the level (versions
   // 1-2), 1 = 32 consecutive coefficients (Config::mdr_contiguous_words).
   uint32_t word_order = 0;
+  // Signs: 0 = a sign row in the first bitplane group (versions 1-3), 1 =
+  // significance-coded: stored with the group in which each coefficient
+  // becomes nonzero (Config::mdr_significance_signs, zero elimination only).
+  uint32_t sign_coding = 0;
   // Metadata
   SIZE num_levels;
   SIZE num_bitplanes;
@@ -172,7 +179,7 @@ public:
     metadata_size += sizeof(T_error) * num_levels * (num_bitplanes + 1);
     metadata_size += sizeof(SIZE) * num_levels * num_bitplanes;
     metadata_size += sizeof(SIZE) * num_levels;
-    metadata_size += sizeof(uint32_t) * 3;
+    metadata_size += sizeof(uint32_t) * 4;
     return metadata_size;
   }
 
@@ -206,6 +213,7 @@ public:
     Serialize(ptr, &version, sizeof(uint32_t));
     Serialize(ptr, &group_size, sizeof(uint32_t));
     Serialize(ptr, &word_order, sizeof(uint32_t));
+    Serialize(ptr, &sign_coding, sizeof(uint32_t));
     return serialize_metadata;
   }
 
@@ -235,6 +243,10 @@ public:
     word_order = 0;
     if (format_version >= 3 && ptr + sizeof(uint32_t) <= end) {
       Deserialize(ptr, &word_order, sizeof(uint32_t));
+    }
+    sign_coding = 0;
+    if (format_version >= 4 && ptr + sizeof(uint32_t) <= end) {
+      Deserialize(ptr, &sign_coding, sizeof(uint32_t));
     }
   }
 

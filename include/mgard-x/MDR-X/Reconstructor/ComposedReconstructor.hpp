@@ -114,6 +114,8 @@ public:
     encoded_bitplanes_subarray.resize(layout.num_levels());
     level_num_bitplanes.resize(layout.num_levels());
     level_signs_subarray.resize(layout.num_levels());
+    sign_sections.resize(layout.num_levels());
+    sign_sections_host.resize(layout.num_levels());
     abs_max_array.resize(layout.num_levels());
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       encoded_bitplanes_array[level_idx].resize(
@@ -125,6 +127,9 @@ public:
               encoded_bitplanes_array[level_idx]);
       abs_max_array[level_idx].resize({1}, queue_idx);
       abs_max_array[level_idx].hostAllocate(false, queue_idx);
+      // Sign section addresses of up to one group per bitplane (allocated
+      // here rather than in the first decompression of the level).
+      sign_sections[level_idx].resize({MAX_BITPLANES}, queue_idx);
     }
   }
 
@@ -384,6 +389,13 @@ public:
     mdr_metadata.CheckFormatVersion();
     compressor.SetGroupSize(mdr_metadata.group_size);
     encoder.SetWordOrder(mdr_metadata.word_order == 1);
+    sign_coding = mdr_metadata.sign_coding == 1;
+    compressor.SetSignCoding(sign_coding);
+    encoder.SetSignCoding(sign_coding ? mdr_metadata.group_size : 0);
+    if (sign_coding && !encoder.SignCoding()) {
+      throw std::runtime_error("MDR-X: significance-coded signs need the "
+                               "binary encoding and contiguous words.");
+    }
     // All levels, not just up to CurrFinalLevel(): levels with no bitplanes
     // must get level_num_bitplanes = 0 rather than keep a value from a
     // previous use of this reconstructor (ProgressiveReconstruct visits all).
@@ -426,7 +438,17 @@ public:
           Encoder::SIGN_ROWS,
           level_idx < (int)mdr_data.host_compressed_bitplanes.size()
               ? &mdr_data.host_compressed_bitplanes[level_idx]
-              : nullptr);
+              : nullptr,
+          sign_coding ? &sign_sections_host[level_idx] : nullptr);
+      if (sign_coding && !sign_sections_host[level_idx].empty()) {
+        // Device addresses of the sign sections of the groups decoded.
+        sign_sections[level_idx].resize(
+            {(SIZE)sign_sections_host[level_idx].size()}, queue_idx);
+        MemoryManager<DeviceType>::Copy1D(
+            sign_sections[level_idx].data(),
+            sign_sections_host[level_idx].data(),
+            sign_sections_host[level_idx].size(), queue_idx);
+      }
       decompressed_size += encoded_bitplanes_subarray[level_idx].shape(1) *
                            num_bitplanes * sizeof(T_bitplane);
     }
@@ -488,7 +510,10 @@ public:
           level_num_bitplanes[level_idx], SubArray(abs_max_array[level_idx]),
           encoded_bitplanes_subarray[level_idx],
           level_signs_subarray[level_idx], level_idx,
-          level_data_subarray[level_idx], queue_idx);
+          level_data_subarray[level_idx], queue_idx,
+          sign_coding && level_num_bitplanes[level_idx] > 0
+              ? SubArray(sign_sections[level_idx])
+              : SubArray<1, uint64_t, DeviceType>());
       if constexpr (ProfileBPEncoder) {
         DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
         timer_iter.end();
@@ -630,6 +655,11 @@ private:
   std::vector<SubArray<2, T_bitplane, DeviceType>> encoded_bitplanes_subarray;
   std::vector<SubArray<1, bool, DeviceType>> level_signs_subarray;
   std::vector<Array<1, T_data, DeviceType>> abs_max_array;
+  // Significance-coded signs: device addresses of the sign sections of the
+  // groups being decoded, per level.
+  bool sign_coding = false;
+  std::vector<Array<1, uint64_t, DeviceType>> sign_sections;
+  std::vector<std::vector<uint64_t>> sign_sections_host;
 
   bool prev_reconstructed;
 

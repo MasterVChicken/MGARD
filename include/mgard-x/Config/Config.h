@@ -40,6 +40,14 @@ struct Config {
   // MDR-X: bitplane words of 32 consecutive coefficients (better locality
   // for the lossless stage) instead of 32 coefficients strided over a level.
   bool mdr_contiguous_words;
+  // MDR-X, with zero elimination and contiguous words: store the sign of a
+  // coefficient with the bitplane group in which it becomes nonzero instead
+  // of in a sign row of the first group, so that retrievals read only the
+  // signs of the coefficients they reconstruct as nonzero.
+  bool mdr_significance_signs;
+  // MDR-X, with zero elimination: rows may store their nonzero words as a
+  // 3-bit code and the positions of their one bits (when that is smaller).
+  bool mdr_sparse_words;
   bool adjust_shape;
   bool compress_with_dryrun;
   int num_local_refactoring_level;

@@ -10,6 +10,7 @@
 
 #include "../../RuntimeX/RuntimeX.h"
 #include "../LosslessCompressor/ZeroElimination.hpp"
+#include "SignificanceCoding.hpp"
 #include <type_traits>
 #include <utility>
 
@@ -138,6 +139,55 @@ MGARDX_BP_ADD_POW2(62, "43D")
 MGARDX_BP_ADD_POW2(63, "43E")
 #undef MGARDX_BP_ADD_POW2
 
+// Lanes of the warp holding the same value (CUDA, sm_70+).
+MGARDX_EXEC uint32_t warp_match_any(uint32_t x) {
+#if defined(__CUDA_ARCH__)
+  return __match_any_sync(0xffffffffu, x);
+#else
+  return 1u;
+#endif
+}
+
+// Sum of x over the warp.
+MGARDX_EXEC uint32_t warp_reduce_add(uint32_t x) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+  return __reduce_add_sync(0xffffffffu, x);
+#elif defined(__CUDA_ARCH__)
+  for (int offset = 16; offset > 0; offset /= 2) {
+    x += __shfl_xor_sync(0xffffffffu, x, offset);
+  }
+  return x;
+#else
+  return x;
+#endif
+}
+
+MGARDX_EXEC int count_leading_zeros(uint32_t x) {
+#if defined(__CUDA_ARCH__)
+  return __clz(x);
+#else
+  return x ? __builtin_clz(x) : 32;
+#endif
+}
+MGARDX_EXEC int count_leading_zeros(uint64_t x) {
+#if defined(__CUDA_ARCH__)
+  return __clzll(x);
+#else
+  return x ? __builtin_clzll(x) : 64;
+#endif
+}
+
+MGARDX_EXEC void sync_block() {
+#if defined(__CUDA_ARCH__)
+  __syncthreads();
+#endif
+}
+
+// Bits 0, 8, 16, 24 of x as bits 0-3.
+MGARDX_EXEC uint32_t gather_byte_bits(uint32_t x) {
+  return ((x & 0x01010101u) * 0x01020408u) >> 24 & 0xfu;
+}
+
 // Binary bitplane encoding in the contiguous word layout (word w of a row
 // holds the bits of coefficients [32 w, 32 w + 32), coefficient 32 w + d at
 // bit d) with one lane per coefficient: a 32-lane sub-group loads 32
@@ -151,7 +201,11 @@ MGARDX_BP_ADD_POW2(63, "43E")
 // summation order) as BPEncoderRegisterBlockFunctor<..., Contiguous = true>.
 // With ze_bitmaps given, a tile being a zero-elimination chunk, it also
 // writes the chunk bitmaps of every row (zero_elimination::SuperCountKernel
-// then gives the super-chunk counts).
+// then gives the super-chunk counts), and with ze_bits the chunks' sparse-word
+// payload bits. With sign_group_size > 0
+// (significance-coded signs, SignificanceCoding.hpp), row 0 gets the tile's
+// packed signs instead of the sign row, and sign_counts, sign_segment_bits
+// (zero on entry) their counts: the same as SignPackKernel.
 template <typename T_data, typename T_fp, typename T_bitplane, typename T_error,
           int NUM_BITPLANES, bool ControlL2, typename DeviceType>
 class BPEncoderWarpFunctor : public Functor<DeviceType> {
@@ -161,6 +215,12 @@ public:
   static constexpr SIZE ROWS = 33;  // rows staged per sub-group (+ sign)
   static constexpr SIZE PITCH = WORDS + 1; // conflict-free transposed stores
   static constexpr SIZE WARPS = 4;
+  static constexpr uint32_t NO_GROUP = 0xffu;
+  // Per warp, significance-coded signs: the count of each group, the nonzero
+  // coefficients of each word, the slot of each nonzero coefficient
+  // (group << 10 | position in the group), and a byte per packed sign.
+  static constexpr SIZE SIGN_WORDS = significance::MAX_GROUPS + WORDS +
+                                     WORDS * WORDS / 2 + WORDS * WORDS / 4;
   static_assert(NUM_BITPLANES % 32 == 0 && WARPS % HALVES == 0);
   MGARDX_CONT BPEncoderWarpFunctor() {}
   MGARDX_CONT
@@ -168,15 +228,111 @@ public:
                        SubArray<1, T_data, DeviceType> v,
                        SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
                        SubArray<2, T_error, DeviceType> level_errors_workspace,
-                       SubArray<1, uint32_t, DeviceType> ze_bitmaps)
+                       SubArray<1, uint32_t, DeviceType> ze_bitmaps,
+                       SubArray<1, uint32_t, DeviceType> ze_bits,
+                       int sign_group_size,
+                       SubArray<1, uint32_t, DeviceType> sign_counts,
+                       SubArray<1, uint32_t, DeviceType> sign_segment_bits)
       : n(n), abs_max(abs_max), v(v), encoded_bitplanes(encoded_bitplanes),
-        level_errors_workspace(level_errors_workspace), ze_bitmaps(ze_bitmaps) {
+        level_errors_workspace(level_errors_workspace), ze_bitmaps(ze_bitmaps),
+        ze_bits(ze_bits), sign_group_size(sign_group_size),
+        sign_counts(sign_counts),
+        sign_segment_bits(sign_segment_bits) {
     Functor<DeviceType>();
   }
 
-  static MGARDX_CONT_EXEC size_t shared_memory_bytes() {
+  static MGARDX_CONT_EXEC size_t shared_memory_bytes(bool signs = false) {
     return WARPS * ROWS * PITCH * sizeof(uint32_t) +
-           (ControlL2 ? WARPS * ROWS * sizeof(T_error) : 0);
+           (ControlL2 ? WARPS * ROWS * sizeof(T_error) : 0) +
+           (signs ? WARPS * SIGN_WORDS * sizeof(uint32_t) : 0);
+  }
+
+  // Slot of the coefficient of word j (top sub-group): its group g (the
+  // group of its first nonzero bit) and its position among the tile's
+  // coefficients of group g.
+  MGARDX_EXEC void add_slot(SubGroup<DeviceType> &sg, int lane, int j,
+                            uint32_t g, uint32_t *count, uint32_t *nonzero,
+                            uint16_t *slot) {
+    uint32_t mask = sg.ballot(g != NO_GROUP);
+    if (lane == 0) {
+      nonzero[j] = mask;
+    }
+    if (mask == 0) {
+      return;
+    }
+    uint32_t same = warp_match_any(g);
+    uint32_t base = g != NO_GROUP ? count[g] : 0;
+    sg.sync();
+    if (g != NO_GROUP) {
+      if (lane == sg.ffs(same) - 1) {
+        count[g] = base + zero_elimination::popcount32(same);
+      }
+      slot[j * WORDS + lane] =
+          (uint16_t)(g << 10 |
+                     (base + zero_elimination::popcount32(
+                                 same & ((1u << lane) - 1))));
+    }
+    sg.sync();
+  }
+
+  // Packs the signs of the tile into staging row 0 (top sub-group; staging
+  // row 0 holds the sign words) and records the counts: each sign goes to the
+  // byte of its packed position, and the bytes are then gathered into words.
+  MGARDX_EXEC void pack_signs(SubGroup<DeviceType> &sg, int lane,
+                              uint32_t *staging, uint32_t *count,
+                              uint32_t *nonzero, uint16_t *slot,
+                              uint8_t *packed, SIZE tile,
+                              SIZE words_in_tile) {
+    const SIZE num_words = n / WORDS;
+    const SIZE ntiles = significance::num_tiles(num_words);
+    const SIZE nseg = significance::num_segments(num_words);
+    const int G = (int)significance::num_groups(NUM_BITPLANES,
+                                                sign_group_size);
+    // Group ends: inclusive scan of the counts (two per lane).
+    uint32_t c0 = count[lane], c1 = count[lane + 32];
+    uint32_t s0 = zero_elimination::warp_inclusive_scan(sg, lane, c0);
+    uint32_t s1 = zero_elimination::warp_inclusive_scan(sg, lane, c1) +
+                  sg.shfl(s0, 31);
+    for (int k = 0; k < 2; k++) {
+      int g = lane + 32 * k;
+      uint32_t c = k == 0 ? c0 : c1;
+      if (g < G) {
+        // Where group g's signs end in the tile.
+        *sign_counts(g * ntiles + tile) = k == 0 ? s0 : s1;
+        if (c) {
+          Atomic<uint32_t, AtomicGlobalMemory, AtomicDeviceScope,
+                 DeviceType>::Add(sign_segment_bits(g * nseg +
+                                                    tile / significance::SEGMENT),
+                                  c);
+        }
+      }
+    }
+    // Group starts.
+    uint32_t total = sg.shfl(s1, 31);
+    sg.sync();
+    count[lane] = s0 - c0;
+    count[lane + 32] = s1 - c1;
+    sg.sync();
+    for (int j = 0; j < (int)words_in_tile; j++) {
+      if ((nonzero[j] >> lane) & 1u) {
+        uint32_t s = slot[j * WORDS + lane];
+        packed[count[s >> 10] + (s & 1023u)] = (staging[j] >> lane) & 1u;
+      }
+    }
+    sg.sync();
+    const uint32_t *bytes = (const uint32_t *)packed + 8 * lane;
+    uint32_t x = 0;
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+      x |= gather_byte_bits(bytes[i]) << (4 * i);
+    }
+    // Bytes past the signs were not written.
+    uint32_t first = 32 * lane;
+    if (total < first + 32) {
+      x = total > first ? x & ((1u << (total - first)) - 1) : 0;
+    }
+    staging[lane] = x;
+    sg.sync();
   }
 
   // Squared errors of sub-group H: e[32 - k] += (|shifted| mod 2^(32 H + k))^2
@@ -242,14 +398,32 @@ public:
                 HALVES;
     SIZE num_words = n / WORDS;
     SIZE first = tile * WORDS;
+    // Significance-coded signs (top sub-group).
+    const bool signs = top && sign_group_size > 0;
+    uint32_t *group_count =
+        (uint32_t *)((Byte *)FunctorBase<DeviceType>::GetSharedMemory() +
+                     shared_memory_bytes(false)) +
+        warp * SIGN_WORDS;
+    uint32_t *nonzero = group_count + significance::MAX_GROUPS;
+    uint16_t *slot = (uint16_t *)(nonzero + WORDS);
+    uint8_t *packed = (uint8_t *)(slot + WORDS * WORDS);
+    // Group of bitplane b: b * inverse >> 16 (exact for b <= 64).
+    const uint32_t inverse =
+        signs ? (65536u + sign_group_size - 1) / sign_group_size : 0;
+    if (signs) {
+      group_count[lane] = 0;
+      group_count[lane + 32] = 0;
+      sg.sync();
+    }
     if (first < num_words) {
       SIZE words_in_tile =
           num_words - first < WORDS ? num_words - first : WORDS;
       T_data scale = exp > 0 ? (T_data)((T_fp)1 << (NUM_BITPLANES - exp))
                              : (T_data)pow(2, NUM_BITPLANES - exp);
-      // Zero-elimination bitmaps: lane l builds the one of staged row
-      // 32 - l, and the sign row's (top sub-group) in sign_bitmap.
-      uint32_t row_bitmap = 0, sign_bitmap = 0;
+      // Zero-elimination bitmaps and payload bits: lane l builds those of
+      // staged row 32 - l, and the sign row's (top sub-group) in
+      // sign_bitmap, sign_bits.
+      uint32_t row_bitmap = 0, sign_bitmap = 0, row_bits = 0, sign_bits = 0;
       T_data next = *v(first * WORDS + lane);
       for (int j = 0; j < (int)words_in_tile; j++) {
         T_data shifted = next * scale;
@@ -263,11 +437,20 @@ public:
             staging[j] = s;
           }
           sign_bitmap |= (uint32_t)(s != 0) << j;
+          sign_bits += zero_elimination::sparse_bits(s);
+        }
+        if (signs) {
+          // The group of the coefficient's first nonzero bit.
+          uint32_t g = fp != 0 ? (uint32_t)count_leading_zeros(fp) * inverse >>
+                                     16
+                               : NO_GROUP;
+          add_slot(sg, lane, j, g, group_count, nonzero, slot);
         }
         // Bit 32 h + l of fp goes to staged row 32 - l.
         uint32_t x = warp_transpose32(sg, lane, (uint32_t)(fp >> (32 * h)));
         staging[(32 - lane) * PITCH + j] = x;
         row_bitmap |= (uint32_t)(x != 0) << j;
+        row_bits += zero_elimination::sparse_bits(x);
         if constexpr (ControlL2) {
           T_error mantissa = fabs(shifted) - fp;
           if constexpr (HALVES == 1) {
@@ -285,6 +468,10 @@ public:
         }
       }
       sg.sync();
+      if (signs) {
+        pack_signs(sg, lane, staging, group_count, nonzero, slot, packed,
+                   tile, words_in_tile);
+      }
       // Staged row r is row r + 32 (HALVES - 1 - h) of the encoded bitplanes.
       const SIZE row_offset = 32 * (HALVES - 1 - h);
       if (lane < (int)words_in_tile) {
@@ -299,6 +486,12 @@ public:
         *ze_bitmaps((32 - lane + row_offset) * nchunks + tile) = row_bitmap;
         if (top && lane == 0) {
           *ze_bitmaps(row_offset * nchunks + tile) = sign_bitmap;
+        }
+        if (ze_bits.data() != nullptr) {
+          *ze_bits((32 - lane + row_offset) * nchunks + tile) = row_bits;
+          if (top && lane == 0) {
+            *ze_bits(row_offset * nchunks + tile) = sign_bits;
+          }
         }
       }
     }
@@ -332,7 +525,9 @@ public:
     }
   }
 
-  MGARDX_CONT size_t shared_memory_size() { return shared_memory_bytes(); }
+  MGARDX_CONT size_t shared_memory_size() {
+    return shared_memory_bytes(sign_group_size > 0);
+  }
 
 private:
   SIZE n;
@@ -340,7 +535,9 @@ private:
   SubArray<1, T_data, DeviceType> v;
   SubArray<2, T_bitplane, DeviceType> encoded_bitplanes;
   SubArray<2, T_error, DeviceType> level_errors_workspace;
-  SubArray<1, uint32_t, DeviceType> ze_bitmaps;
+  SubArray<1, uint32_t, DeviceType> ze_bitmaps, ze_bits;
+  int sign_group_size;
+  SubArray<1, uint32_t, DeviceType> sign_counts, sign_segment_bits;
   T_error *block_errors;
   int exp;
 };
@@ -365,12 +562,19 @@ public:
                       SubArray<1, T_data, DeviceType> v,
                       SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
                       SubArray<2, T_error, DeviceType> level_errors_workspace,
-                      SubArray<1, uint32_t, DeviceType> ze_bitmaps = {})
+                      SubArray<1, uint32_t, DeviceType> ze_bitmaps = {},
+                      SubArray<1, uint32_t, DeviceType> ze_bits = {},
+                      int sign_group_size = 0,
+                      SubArray<1, uint32_t, DeviceType> sign_counts = {},
+                      SubArray<1, uint32_t, DeviceType> sign_segment_bits = {})
       : n(n), abs_max(abs_max), v(v), encoded_bitplanes(encoded_bitplanes),
-        level_errors_workspace(level_errors_workspace), ze_bitmaps(ze_bitmaps) {}
+        level_errors_workspace(level_errors_workspace), ze_bitmaps(ze_bitmaps),
+        ze_bits(ze_bits), sign_group_size(sign_group_size),
+        sign_counts(sign_counts), sign_segment_bits(sign_segment_bits) {}
   MGARDX_CONT Task<FunctorType> GenTask(int queue_idx) {
     FunctorType functor(n, abs_max, v, encoded_bitplanes,
-                        level_errors_workspace, ze_bitmaps);
+                        level_errors_workspace, ze_bitmaps, ze_bits,
+                        sign_group_size, sign_counts, sign_segment_bits);
     return Task(functor, 1, 1, num_blocks(n), 1, 1, FunctorType::WARPS * 32,
                 functor.shared_memory_size(), queue_idx, std::string(Name));
   }
@@ -381,7 +585,9 @@ private:
   SubArray<1, T_data, DeviceType> v;
   SubArray<2, T_bitplane, DeviceType> encoded_bitplanes;
   SubArray<2, T_error, DeviceType> level_errors_workspace;
-  SubArray<1, uint32_t, DeviceType> ze_bitmaps;
+  SubArray<1, uint32_t, DeviceType> ze_bitmaps, ze_bits;
+  int sign_group_size;
+  SubArray<1, uint32_t, DeviceType> sign_counts, sign_segment_bits;
 };
 
 // level_errors(b) = sum of workspace(b, 0 .. num_partials), one block per
@@ -456,8 +662,60 @@ private:
   SubArray<1, T_error, DeviceType> level_errors;
 };
 
-// Decoding counterpart: lane j loads word j of a tile for each row, and every
-// word is broadcast (shfl) so that each lane assembles its own coefficient.
+// In-register transpose of a 32 x 32 bit matrix: on return, bit c of m[r] is
+// bit r of m[c] on entry.
+MGARDX_EXEC void transpose32(uint32_t *m) {
+  const uint32_t masks[5] = {0x0000ffffu, 0x00ff00ffu, 0x0f0f0f0fu,
+                             0x33333333u, 0x55555555u};
+#pragma unroll
+  for (int i = 0; i < 5; i++) {
+    const int s = 16 >> i;
+#pragma unroll
+    for (int k = 0; k < 32; k++) {
+      if ((k & s) == 0) {
+        uint32_t t = ((m[k] >> s) ^ m[k + s]) & masks[i];
+        m[k + s] ^= t;
+        m[k] ^= t << s;
+      }
+    }
+  }
+}
+
+// Decoders use tile_values from this many bitplanes on (fewer: a broadcast
+// of every word per bitplane is cheaper).
+static constexpr int TRANSPOSED_DECODE = 4;
+
+// The fixed-point values of a tile's coefficients from their bitplane words
+// (lane j holds words[b], word j of bitplane row b): on return lo[j] (and
+// hi[j], with more than 32 bitplanes) holds the low (high) 32 bits of the
+// value of coefficient (j, lane), bit NUM_BITPLANES - 1 - b from row b. A
+// cross-lane transpose of each row, then an in-register transpose, instead
+// of NUM_BITPLANES broadcasts per word.
+template <int NUM_BITPLANES, typename DeviceType>
+MGARDX_EXEC void tile_values(SubGroup<DeviceType> &sg, int lane,
+                             uint32_t *words, uint32_t *lo, uint32_t *hi) {
+#pragma unroll
+  for (int b = 0; b < NUM_BITPLANES; b++) {
+    // Bit j: bit b of coefficient (j, lane).
+    words[b] = warp_transpose32(sg, lane, words[b]);
+  }
+#pragma unroll
+  for (int r = 0; r < 32; r++) {
+    lo[r] = r < NUM_BITPLANES ? words[NUM_BITPLANES - 1 - r] : 0;
+  }
+  transpose32(lo);
+  if constexpr (NUM_BITPLANES > 32) {
+#pragma unroll
+    for (int r = 0; r < 32; r++) {
+      hi[r] = 32 + r < NUM_BITPLANES ? words[NUM_BITPLANES - 33 - r] : 0;
+    }
+    transpose32(hi);
+  }
+}
+
+// Decoding counterpart: lane j loads word j of a tile for each row; lane l
+// then assembles coefficient l of every word (tile_values, or a broadcast of
+// every word for few bitplanes).
 template <typename T_data, typename T_fp, typename T_bitplane,
           int NUM_BITPLANES, typename DeviceType>
 class BPDecoderWarpFunctor : public Functor<DeviceType> {
@@ -505,23 +763,44 @@ public:
     T_bitplane sign_word =
         starting_bitplane == 0 && valid ? *encoded_bitplanes(0, first + lane)
                                         : 0;
-    for (int j = 0; j < (int)words_in_tile; j++) {
-      T_fp fp = 0;
-#pragma unroll
-      for (int b = 0; b < NUM_BITPLANES; b++) {
-        T_bitplane w = sg.shfl(words[b], j);
-        fp |= (T_fp)((w >> lane) & 1) << (NUM_BITPLANES - 1 - b);
-      }
+    auto put = [&](int j, T_fp fp, bool row_sign) {
       SIZE idx = (first + j) * WORDS + lane;
       bool sign;
       if (starting_bitplane == 0) {
-        sign = (sg.shfl(sign_word, j) >> lane) & 1;
+        sign = row_sign;
         *signs(idx) = sign;
       } else {
         sign = *signs(idx);
       }
       T_data data = (T_data)fp * scale;
       *v(idx) = sign ? -data : data;
+    };
+    if constexpr (NUM_BITPLANES >= TRANSPOSED_DECODE &&
+                  sizeof(T_bitplane) == 4) {
+      uint32_t lo[32], hi[NUM_BITPLANES > 32 ? 32 : 1];
+      tile_values<NUM_BITPLANES>(sg, lane, words, lo, hi);
+      // Bit j: the sign of coefficient (j, lane).
+      uint32_t sign_bits = warp_transpose32(sg, lane, sign_word);
+#pragma unroll
+      for (int j = 0; j < (int)WORDS; j++) {
+        if (j < (int)words_in_tile) {
+          T_fp fp = lo[j];
+          if constexpr (NUM_BITPLANES > 32) {
+            fp |= (T_fp)hi[j] << 32;
+          }
+          put(j, fp, (sign_bits >> j) & 1u);
+        }
+      }
+    } else {
+      for (int j = 0; j < (int)words_in_tile; j++) {
+        T_fp fp = 0;
+#pragma unroll
+        for (int b = 0; b < NUM_BITPLANES; b++) {
+          T_bitplane w = sg.shfl(words[b], j);
+          fp |= (T_fp)((w >> lane) & 1) << (NUM_BITPLANES - 1 - b);
+        }
+        put(j, fp, (sg.shfl(sign_word, j) >> lane) & 1);
+      }
     }
   }
 
@@ -568,6 +847,308 @@ private:
   SubArray<1, T_data, DeviceType> abs_max;
   SubArray<2, T_bitplane, DeviceType> encoded_bitplanes;
   SubArray<1, bool, DeviceType> signs;
+  SubArray<1, T_data, DeviceType> v;
+};
+
+// Publication of a value with an epoch (one 64-bit word), for the chained
+// scan of BPDecoderSignWarpFunctor (CUDA).
+MGARDX_EXEC void publish_epoch(uint64_t *p, uint32_t epoch, uint32_t value) {
+#if defined(__CUDA_ARCH__)
+  *(volatile unsigned long long *)p =
+      ((unsigned long long)epoch << 32) | value;
+#endif
+}
+MGARDX_EXEC uint32_t wait_epoch(const uint64_t *p, uint32_t epoch) {
+#if defined(__CUDA_ARCH__)
+  unsigned long long x;
+  while (((x = *(volatile const unsigned long long *)p) >> 32) != epoch) {
+    __nanosleep(32);
+  }
+  return (uint32_t)x;
+#else
+  return 0;
+#endif
+}
+// Prefetch of the cache line holding *p into L1 (CUDA).
+MGARDX_EXEC void prefetch_l1(const void *p) {
+#if defined(__CUDA_ARCH__)
+  asm volatile("prefetch.L1 [%0];" ::"l"(p));
+#endif
+}
+
+// Decoding with significance-coded signs (SignificanceCoding.hpp; same
+// results as SignResolveKernel followed by the decoder): warp per tile as
+// BPDecoderWarpFunctor, WARPS tiles per thread block. Each warp counts the
+// coefficients of its tile that become nonzero in each group, from the words
+// it holds; the position of the tile's signs in a group's section is the
+// segment's offset plus the counts of the tiles before it in the segment:
+// those of the block (shared memory) and those of the blocks before it in the
+// segment, which every block publishes (status(block, group), with this
+// launch's epoch) before waiting for its predecessors' (a thread per group and
+// predecessor). sections(i): the sign section of the i-th group decoded.
+template <typename T_data, typename T_fp, typename T_bitplane,
+          int NUM_BITPLANES, typename DeviceType>
+class BPDecoderSignWarpFunctor : public Functor<DeviceType> {
+public:
+  static constexpr SIZE WORDS = 32;
+  static constexpr SIZE WARPS = 8;
+  static constexpr SIZE BLOCKS_PER_SEGMENT = significance::SEGMENT / WARPS;
+  static constexpr SIZE MAX_GROUPS = NUM_BITPLANES;
+  // Threads per group in the block's scan: one per warp and per block of the
+  // segment.
+  static constexpr SIZE LANES =
+      WARPS > BLOCKS_PER_SEGMENT ? WARPS : BLOCKS_PER_SEGMENT;
+  static_assert(significance::SEGMENT % WARPS == 0);
+  MGARDX_CONT BPDecoderSignWarpFunctor() {}
+  MGARDX_CONT
+  BPDecoderSignWarpFunctor(SIZE n, int starting_bitplane, int group_size,
+                           SubArray<1, T_data, DeviceType> abs_max,
+                           SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+                           SubArray<1, bool, DeviceType> signs,
+                           SubArray<1, uint64_t, DeviceType> sections,
+                           SubArray<1, uint64_t, DeviceType> status,
+                           uint32_t epoch, SubArray<1, T_data, DeviceType> v)
+      : n(n), starting_bitplane(starting_bitplane), group_size(group_size),
+        abs_max(abs_max), encoded_bitplanes(encoded_bitplanes), signs(signs),
+        sections(sections), status(status), epoch(epoch), v(v) {
+    Functor<DeviceType>();
+    // Bitplanes that end a group (requests start at a group boundary).
+    ends = 0;
+    for (int b = 0; b < NUM_BITPLANES; b++) {
+      if ((b + 1) % group_size == 0 || b == NUM_BITPLANES - 1) {
+        ends |= (uint64_t)1 << b;
+      }
+    }
+    num_groups = (NUM_BITPLANES + group_size - 1) / group_size;
+  }
+
+  MGARDX_EXEC void Operation1() {
+    SubGroup<DeviceType> sg;
+    const int lane = sg.lane();
+    const SIZE tid = FunctorBase<DeviceType>::GetThreadIdX();
+    const SIZE warp = tid / WORDS;
+    const SIZE block = FunctorBase<DeviceType>::GetBlockIdX();
+    // counts[WARPS][MAX_GROUPS], before[WARPS][MAX_GROUPS] (the warps'
+    // exclusive prefixes in the block), then the position of the block's first
+    // tile in each group's section.
+    uint32_t *counts = (uint32_t *)FunctorBase<DeviceType>::GetSharedMemory();
+    uint32_t *before = counts + WARPS * MAX_GROUPS;
+    uint32_t *position = before + WARPS * MAX_GROUPS;
+    const SIZE num_words = n / WORDS;
+    const SIZE nseg = significance::num_segments(num_words);
+    const SIZE G = num_groups;
+    const SIZE in_segment = block % BLOCKS_PER_SEGMENT;
+    int exp;
+    frexp(*abs_max((IDX)0), &exp);
+    T_data scale = pow(2, -(starting_bitplane + NUM_BITPLANES) + exp);
+    {
+      SIZE tile = block * WARPS + warp;
+      SIZE first = tile * WORDS;
+      SIZE words_in_tile =
+          first >= num_words ? 0
+                             : (num_words - first < WORDS ? num_words - first
+                                                          : WORDS);
+      bool valid = lane < (int)words_in_tile;
+      T_bitplane words[NUM_BITPLANES];
+#pragma unroll
+      for (int b = 0; b < NUM_BITPLANES; b++) {
+        words[b] =
+            valid ? *encoded_bitplanes(starting_bitplane + b + 1, first + lane)
+                  : 0;
+      }
+      // The segment's offset in each group's section (independent of the
+      // words).
+      if (tid < G) {
+        position[tid] =
+            ((const uint32_t *)*sections(tid))[block / BLOCKS_PER_SEGMENT] * 32;
+      }
+      // State of the word's 32 coefficients: nonzero ones and their signs.
+      uint32_t *state = (uint32_t *)signs.data() +
+                        (first + lane) * significance::STATE_STRIDE;
+      uint32_t sig0 = 0, sgn0 = 0;
+      if (valid && starting_bitplane > 0) {
+        sig0 = state[0];
+        sgn0 = state[1];
+      }
+      {
+        uint32_t sig = sig0, orr = 0;
+        int g = 0;
+#pragma unroll
+        for (int b = 0; b < NUM_BITPLANES; b++) {
+          orr |= words[b];
+          if ((ends >> b) & 1) {
+            uint32_t c =
+                warp_reduce_add(zero_elimination::popcount32(orr & ~sig));
+            sig |= orr;
+            orr = 0;
+            if (lane == 0) {
+              counts[warp * MAX_GROUPS + g] = c;
+            }
+            g++;
+          }
+        }
+      }
+      sync_block();
+      // Thread (g, p): the prefix of warp p in the block, the block's count
+      // (published by p = 0, as soon as counted), and the count of the p-th
+      // block of the segment if it is before this one.
+      for (SIZE t = tid; t < G * LANES; t += WARPS * WORDS) {
+        const SIZE g = t / LANES, p = t % LANES;
+        uint32_t prefix = 0, aggregate = 0;
+        for (SIZE w = 0; w < WARPS; w++) {
+          uint32_t c = counts[w * MAX_GROUPS + g];
+          prefix += w < p ? c : 0;
+          aggregate += c;
+        }
+        if (p < WARPS) {
+          before[p * MAX_GROUPS + g] = prefix;
+        }
+        if (p == 0 && in_segment + 1 < BLOCKS_PER_SEGMENT) {
+          publish_epoch(status(block * G + g), epoch, aggregate);
+        }
+        if (p < in_segment) {
+          uint32_t c =
+              wait_epoch(status((block - in_segment + p) * G + g), epoch);
+          if (c) {
+            Atomic<uint32_t, AtomicSharedMemory, AtomicDeviceScope,
+                   DeviceType>::Add(position + g, c);
+          }
+        }
+      }
+      sync_block();
+      // The warp's signs of a group are at most 1024 bits (two cache lines):
+      // prefetched for the reads below.
+      for (SIZE g = lane; g < G; g += WORDS) {
+        const uint32_t c = counts[warp * MAX_GROUPS + g];
+        if (c) {
+          const uint32_t start = position[g] + before[warp * MAX_GROUPS + g];
+          const uint32_t *section = (const uint32_t *)*sections(g) + nseg;
+          prefetch_l1(section + start / 32);
+          prefetch_l1(section + (start + c - 1) / 32);
+        }
+      }
+      uint32_t sig = sig0, sgn = sgn0, orr = 0;
+      int g = 0;
+#pragma unroll
+      for (int b = 0; b < NUM_BITPLANES; b++) {
+        orr |= words[b];
+        if ((ends >> b) & 1) {
+          uint32_t fresh = orr & ~sig;
+          sig |= orr;
+          orr = 0;
+          if (sg.ballot(fresh != 0) == 0) {
+            g++;
+            continue;
+          }
+          uint32_t k = zero_elimination::popcount32(fresh);
+          uint32_t inclusive = zero_elimination::warp_inclusive_scan(sg, lane, k);
+          SIZE pos =
+              position[g] + before[warp * MAX_GROUPS + g] + inclusive - k;
+          if (k) {
+            const uint32_t *section = (const uint32_t *)*sections(g) + nseg;
+            uint32_t bits = significance::read_bits(section, pos, (int)k);
+            for (uint32_t m = fresh; m; m &= m - 1) {
+              sgn |= (bits & 1u) << (sg.ffs(m) - 1);
+              bits >>= 1;
+            }
+          }
+          g++;
+        }
+      }
+      if constexpr (NUM_BITPLANES >= TRANSPOSED_DECODE &&
+                    sizeof(T_bitplane) == 4) {
+        uint32_t lo[32], hi[NUM_BITPLANES > 32 ? 32 : 1];
+        tile_values<NUM_BITPLANES>(sg, lane, words, lo, hi);
+        // Bit j: the sign of coefficient (j, lane).
+        uint32_t sign_bits = warp_transpose32(sg, lane, sgn);
+#pragma unroll
+        for (int j = 0; j < (int)WORDS; j++) {
+          if (j < (int)words_in_tile) {
+            T_fp fp = lo[j];
+            if constexpr (NUM_BITPLANES > 32) {
+              fp |= (T_fp)hi[j] << 32;
+            }
+            T_data data = (T_data)fp * scale;
+            *v((first + j) * WORDS + lane) =
+                (sign_bits >> j) & 1u ? -data : data;
+          }
+        }
+      } else {
+        for (int j = 0; j < (int)words_in_tile; j++) {
+          T_fp fp = 0;
+#pragma unroll
+          for (int b = 0; b < NUM_BITPLANES; b++) {
+            T_bitplane w = sg.shfl(words[b], j);
+            fp |= (T_fp)((w >> lane) & 1) << (NUM_BITPLANES - 1 - b);
+          }
+          bool sign = (sg.shfl(sgn, j) >> lane) & 1u;
+          T_data data = (T_data)fp * scale;
+          *v((first + j) * WORDS + lane) = sign ? -data : data;
+        }
+      }
+      if (valid && (starting_bitplane == 0 || sig != sig0)) {
+        state[0] = sig;
+        state[1] = sgn;
+      }
+    }
+  }
+
+  MGARDX_CONT size_t shared_memory_size() {
+    return (2 * WARPS + 1) * MAX_GROUPS * sizeof(uint32_t);
+  }
+
+private:
+  SIZE n;
+  int starting_bitplane, group_size;
+  SubArray<1, T_data, DeviceType> abs_max;
+  SubArray<2, T_bitplane, DeviceType> encoded_bitplanes;
+  SubArray<1, bool, DeviceType> signs;
+  SubArray<1, uint64_t, DeviceType> sections, status;
+  uint32_t epoch;
+  SubArray<1, T_data, DeviceType> v;
+  uint64_t ends;
+  SIZE num_groups;
+};
+
+template <typename T_data, typename T_fp, typename T_bitplane,
+          int NUM_BITPLANES, typename DeviceType>
+class BPDecoderSignWarpKernel : public Kernel {
+public:
+  constexpr static bool EnableAutoTuning() { return false; }
+  constexpr static std::string_view Name = "warp bp decoder (signs)";
+  using FunctorType = BPDecoderSignWarpFunctor<T_data, T_fp, T_bitplane,
+                                               NUM_BITPLANES, DeviceType>;
+  // Thread blocks, and status words per group (one per block).
+  static SIZE num_blocks(SIZE n) {
+    return (significance::num_tiles(n / 32) + FunctorType::WARPS - 1) /
+           FunctorType::WARPS;
+  }
+  MGARDX_CONT
+  BPDecoderSignWarpKernel(SIZE n, int starting_bitplane, int group_size,
+                          SubArray<1, T_data, DeviceType> abs_max,
+                          SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+                          SubArray<1, bool, DeviceType> signs,
+                          SubArray<1, uint64_t, DeviceType> sections,
+                          SubArray<1, uint64_t, DeviceType> status,
+                          uint32_t epoch, SubArray<1, T_data, DeviceType> v)
+      : n(n), starting_bitplane(starting_bitplane), group_size(group_size),
+        abs_max(abs_max), encoded_bitplanes(encoded_bitplanes), signs(signs),
+        sections(sections), status(status), epoch(epoch), v(v) {}
+  MGARDX_CONT Task<FunctorType> GenTask(int queue_idx) {
+    FunctorType functor(n, starting_bitplane, group_size, abs_max,
+                        encoded_bitplanes, signs, sections, status, epoch, v);
+    return Task(functor, 1, 1, num_blocks(n), 1, 1, FunctorType::WARPS * 32,
+                functor.shared_memory_size(), queue_idx, std::string(Name));
+  }
+
+private:
+  SIZE n;
+  int starting_bitplane, group_size;
+  SubArray<1, T_data, DeviceType> abs_max;
+  SubArray<2, T_bitplane, DeviceType> encoded_bitplanes;
+  SubArray<1, bool, DeviceType> signs;
+  SubArray<1, uint64_t, DeviceType> sections, status;
+  uint32_t epoch;
   SubArray<1, T_data, DeviceType> v;
 };
 

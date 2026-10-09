@@ -68,8 +68,11 @@ public:
     level_signs.resize(mdr_metadata.num_levels);
     for (int level_idx = 0; level_idx < mdr_metadata.num_levels; level_idx++) {
       compressed_bitplanes[level_idx].resize(mdr_metadata.num_bitplanes);
-      level_signs[level_idx].resize({mdr_metadata.level_num_elems[level_idx]},
-                                    queue_idx);
+      // The decoders write the signs of whole bitplane words (as in Resize
+      // above).
+      level_signs[level_idx].resize(
+          {round_up(mdr_metadata.level_num_elems[level_idx], (SIZE)64)},
+          queue_idx);
       for (int bitplane_idx = 0; bitplane_idx < mdr_metadata.num_bitplanes;
            bitplane_idx++) {
         compressed_bitplanes[level_idx][bitplane_idx].resize(

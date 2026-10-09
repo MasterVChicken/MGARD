@@ -51,6 +51,8 @@ void print_usage_message(std::string error) {
 \t\t (optional) -gs / --group-size <1-4>: bitplanes per merged group, the unit of compression and retrieval (default: 2)\n\
 \t\t (optional) -ze / --zero-elimination: store bitplane groups with zero elimination (experimental)\n\
 \t\t (optional) -sw / --strided-words: bitplane words of strided coefficients (the version 1-2 layout)\n\
+\t\t (optional) -rs / --row-signs: with -ze, keep the signs in a row of the first bitplane group (the version 3 layout) instead of with the group where each coefficient becomes nonzero\n\
+\t\t (optional) -dw / --dense-words: with -ze, store nonzero words whole (the version 4 layout) instead of choosing per row the sparse-word coding of their one bits\n\
 \n\
 \t -x / --reconstruct: reconstruct data\n\
 \t\t -i / --input <path to refactored data dir>\n\
@@ -318,12 +320,14 @@ int launch_refactor(mgard_x::DIM D, enum mgard_x::data_type dtype,
                     enum mgard_x::lossless_type lossless, bool use_hybrid,
                     int num_local_levels, int num_global_levels,
                     int group_size, bool zero_elimination,
-                    bool strided_words) {
+                    bool strided_words, bool row_signs, bool dense_words) {
 
   mgard_x::Config config;
   config.mdr_bitplane_group_size = group_size;
   config.mdr_zero_elimination = zero_elimination;
   config.mdr_contiguous_words = !strided_words;
+  config.mdr_significance_signs = !row_signs;
+  config.mdr_sparse_words = !dense_words;
   config.normalize_coordinates = false;
   config.lossless = lossless;
   config.log_level = verbose_to_log_level(verbose);
@@ -504,6 +508,12 @@ int launch_reconstruct(std::string input_file, std::string output_file,
       }
     }
   }
+  // The last reconstruction (its size is known with the original data).
+  if (original_file.compare("none") != 0 && !config.mdr_adaptive_resolution &&
+      !tols.empty()) {
+    writefile(output_file, (T *)reconstructed_data.data[0],
+              original_size * sizeof(T));
+  }
   return 0;
 }
 
@@ -563,20 +573,22 @@ bool try_refactoring(int argc, char *argv[]) {
   }
   bool zero_elimination = has_arg(argc, argv, "-ze", "--zero-elimination");
   bool strided_words = has_arg(argc, argv, "-sw", "--strided-words");
+  bool row_signs = has_arg(argc, argv, "-rs", "--row-signs");
+  bool dense_words = has_arg(argc, argv, "-dw", "--dense-words");
   if (dtype == mgard_x::data_type::Double) {
     launch_refactor<double>(shape.size(), dtype, input_file.c_str(),
                             output_file.c_str(), shape, domain_decomposition,
                             block_size, dev_type, verbose, max_memory_footprint,
                             lossless, use_hybrid, num_local_levels,
                             num_global_levels, group_size, zero_elimination,
-                            strided_words);
+                            strided_words, row_signs, dense_words);
   } else if (dtype == mgard_x::data_type::Float) {
     launch_refactor<float>(shape.size(), dtype, input_file.c_str(),
                            output_file.c_str(), shape, domain_decomposition,
                            block_size, dev_type, verbose, max_memory_footprint,
                            lossless, use_hybrid, num_local_levels,
                            num_global_levels, group_size, zero_elimination,
-                           strided_words);
+                           strided_words, row_signs, dense_words);
   }
   return true;
 }

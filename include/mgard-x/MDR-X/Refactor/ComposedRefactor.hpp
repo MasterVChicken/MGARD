@@ -98,6 +98,9 @@ public:
     // batched_encoder.Adapt(hierarchy, queue_idx);
     compressor.Adapt(encoder.bitplane_length(layout.max_level_num_elems()),
                      Encoder::MAX_BITPLANES, config, queue_idx);
+    sign_coding = SignificanceSigns(config);
+    encoder.SetSignCoding(sign_coding ? compressor.num_merged_bitplanes : 0);
+    compressor.SetSignCoding(sign_coding);
 
     level_data_array.resize(layout.num_levels());
     level_data_subarray.resize(layout.num_levels());
@@ -145,17 +148,46 @@ public:
       level_errors_subarray[level_idx] =
           SubArray<1, T_error, DeviceType>(level_errors_array[level_idx]);
     }
-    // Zero elimination: chunk bitmaps of each level, written by the encoder
-    // when it can (encode() returns whether it did).
+    // Zero elimination: chunk bitmaps (and sparse-word payload bits) of each
+    // level, written by the encoder when it can (encode() returns whether it
+    // did).
     use_zero_elimination = config.mdr_zero_elimination;
+    sparse_words = use_zero_elimination && config.mdr_sparse_words;
     ze_bitmaps_array.resize(use_zero_elimination ? layout.num_levels() : 0);
+    ze_bits_array.resize(sparse_words ? layout.num_levels() : 0);
     ze_given.assign(layout.num_levels(), false);
     for (int level_idx = 0;
          use_zero_elimination && level_idx < layout.num_levels(); level_idx++) {
       SIZE words = encoder.bitplane_length(layout.level_num_elems[level_idx]);
       ze_bitmaps_array[level_idx].resize(
           {Encoder::NUM_ROWS * zero_elimination::num_chunks(words)}, queue_idx);
+      if (sparse_words) {
+        ze_bits_array[level_idx].resize(
+            {Encoder::NUM_ROWS * zero_elimination::num_chunks(words)},
+            queue_idx);
+      }
     }
+    // Significance-coded signs: per-tile and per-segment sign counts of each
+    // group (SignificanceCoding.hpp).
+    SIZE num_groups = significance::num_groups(Encoder::MAX_BITPLANES,
+                                               compressor.num_merged_bitplanes);
+    sign_counts_array.resize(sign_coding ? layout.num_levels() : 0);
+    sign_segment_bits_array.resize(sign_coding ? layout.num_levels() : 0);
+    for (int level_idx = 0; sign_coding && level_idx < layout.num_levels();
+         level_idx++) {
+      SIZE words = encoder.bitplane_length(layout.level_num_elems[level_idx]);
+      sign_counts_array[level_idx].resize(
+          {num_groups * significance::num_tiles(words)}, queue_idx);
+      sign_segment_bits_array[level_idx].resize(
+          {num_groups * significance::num_segments(words)}, queue_idx);
+    }
+  }
+
+  // Significance-coded signs (Config::mdr_significance_signs): binary
+  // encoding, contiguous words and zero elimination.
+  static bool SignificanceSigns(const Config &config) {
+    return config.mdr_significance_signs && config.mdr_zero_elimination &&
+           config.mdr_contiguous_words && !NegaBinary;
   }
 
   static size_t EstimateMemoryFootprint(std::vector<SIZE> shape,
@@ -198,11 +230,13 @@ public:
   static std::vector<std::vector<SIZE>>
   EstimateMaxBitplaneSizes(std::vector<SIZE> shape, Config config) {
     return EstimateMaxBitplaneSizes(build_level_layout(shape, config),
-                                    config.mdr_bitplane_group_size);
+                                    config.mdr_bitplane_group_size,
+                                    SignificanceSigns(config));
   }
 
   std::vector<std::vector<SIZE>> EstimateMaxBitplaneSizes() const {
-    return EstimateMaxBitplaneSizes(layout, compressor.num_merged_bitplanes);
+    return EstimateMaxBitplaneSizes(layout, compressor.num_merged_bitplanes,
+                                    sign_coding);
   }
 
   const std::vector<SIZE> &LevelNumElems() const {
@@ -210,18 +244,27 @@ public:
   }
 
   static std::vector<std::vector<SIZE>>
-  EstimateMaxBitplaneSizes(const MDRLevelLayout &layout, int group_size) {
+  EstimateMaxBitplaneSizes(const MDRLevelLayout &layout, int group_size,
+                           bool sign_coding) {
     std::vector<std::vector<SIZE>> estimation;
     estimation.resize(layout.num_levels());
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       estimation[level_idx].resize(Encoder::MAX_BITPLANES);
+      SIZE words = Encoder::bitplane_length(layout.level_num_elems[level_idx]);
       for (int bitplane_idx = 0; bitplane_idx < Encoder::MAX_BITPLANES;
            bitplane_idx++) {
         if (bitplane_idx % group_size == 0) {
+          // With significance-coded signs, the signs of any group take up to
+          // a row (plus segment offsets).
+          int sign_rows = sign_coding         ? 1
+                          : bitplane_idx == 0 ? Encoder::SIGN_ROWS
+                                              : 0;
           estimation[level_idx][bitplane_idx] =
-              Encoder::bitplane_length(layout.level_num_elems[level_idx]) *
-              sizeof(T_bitplane) *
-              (group_size + (bitplane_idx == 0 ? Encoder::SIGN_ROWS : 0));
+              words * sizeof(T_bitplane) * (group_size + sign_rows);
+          if (sign_coding) {
+            estimation[level_idx][bitplane_idx] +=
+                significance::num_segments(words) * sizeof(uint32_t);
+          }
           // A group is stored compressed only when that at least halves it
           // (HybridLevelCompressor checks the ratio before writing), so its
           // size is at most the raw size plus a few KB of headers.
@@ -365,15 +408,24 @@ public:
         DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
         timer_iter.start();
       }
-      SubArray<1, uint32_t, DeviceType> ze_bitmaps;
+      SubArray<1, uint32_t, DeviceType> ze_bitmaps, ze_bits, sign_counts,
+          sign_segment_bits;
       if (use_zero_elimination) {
         ze_bitmaps = SubArray(ze_bitmaps_array[level_idx]);
+      }
+      if (sparse_words) {
+        ze_bits = SubArray(ze_bits_array[level_idx]);
+      }
+      if (sign_coding) {
+        sign_counts = SubArray(sign_counts_array[level_idx]);
+        sign_segment_bits = SubArray(sign_segment_bits_array[level_idx]);
       }
       ze_given[level_idx] = encoder.encode(
           level_data_subarray[level_idx].shape(0), Encoder::MAX_BITPLANES,
           SubArray(abs_max_array[level_idx]), level_data_subarray[level_idx],
           encoded_bitplanes_subarray[level_idx],
-          level_errors_subarray[level_idx], queue_idx, ze_bitmaps);
+          level_errors_subarray[level_idx], queue_idx, ze_bitmaps, ze_bits,
+          sign_counts, sign_segment_bits);
       if constexpr (ProfileBPEncoder) {
         DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
         timer_iter.end();
@@ -451,33 +503,52 @@ public:
       timer.start();
     }
     // With every level's chunk bitmaps given by the encoder, all levels are
-    // zero-eliminated at once.
-    bool all_given = use_zero_elimination &&
+    // zero-eliminated at once (warp kernels).
+    bool all_given = use_zero_elimination && !portable_kernels() &&
                      std::all_of(ze_given.begin(), ze_given.end(),
                                  [](bool given) { return given; });
     if constexpr (std::is_same<DeviceType, CUDA>::value) {
       if (all_given) {
-        std::vector<SubArray<1, uint32_t, DeviceType>> ze_bitmaps;
+        std::vector<SubArray<1, uint32_t, DeviceType>> ze_bitmaps, ze_bits,
+            sign_counts, sign_segment_bits;
         for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
           ze_bitmaps.push_back(SubArray(ze_bitmaps_array[level_idx]));
+          ze_bits.push_back(sparse_words
+                                ? SubArray(ze_bits_array[level_idx])
+                                : SubArray<1, uint32_t, DeviceType>());
+          if (sign_coding) {
+            sign_counts.push_back(SubArray(sign_counts_array[level_idx]));
+            sign_segment_bits.push_back(
+                SubArray(sign_segment_bits_array[level_idx]));
+          }
         }
         compressor.compress_levels_zero_elimination(
             encoded_bitplanes_subarray, mdr_data.compressed_bitplanes,
-            ze_bitmaps, queue_idx, Encoder::SIGN_ROWS);
+            ze_bitmaps, ze_bits, queue_idx, Encoder::SIGN_ROWS, &sign_counts,
+            &sign_segment_bits);
       }
     } else {
       all_given = false;
     }
     for (int level_idx = 0; !all_given && level_idx < layout.num_levels();
          level_idx++) {
-      SubArray<1, uint32_t, DeviceType> ze_bitmaps;
+      SubArray<1, uint32_t, DeviceType> ze_bitmaps, ze_bits, sign_counts,
+          sign_segment_bits;
       if (ze_given[level_idx]) {
         ze_bitmaps = SubArray(ze_bitmaps_array[level_idx]);
+        if (sparse_words) {
+          ze_bits = SubArray(ze_bits_array[level_idx]);
+        }
+      }
+      if (sign_coding) {
+        sign_counts = SubArray(sign_counts_array[level_idx]);
+        sign_segment_bits = SubArray(sign_segment_bits_array[level_idx]);
       }
       compressor.compress_level(encoded_bitplanes_subarray[level_idx],
                                 mdr_data.compressed_bitplanes[level_idx],
                                 level_idx, queue_idx, Encoder::SIGN_ROWS,
-                                ze_bitmaps);
+                                ze_bitmaps, ze_bits, sign_counts,
+                                sign_segment_bits);
     }
     if (log::level & log::TIME) {
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
@@ -491,6 +562,7 @@ public:
                      int queue_idx) {
     mdr_metadata.group_size = compressor.num_merged_bitplanes;
     mdr_metadata.word_order = encoder.Contiguous() ? 1 : 0;
+    mdr_metadata.sign_coding = sign_coding ? 1 : 0;
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       abs_max_array[level_idx].hostCopy(false, queue_idx);
       DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
@@ -554,9 +626,12 @@ private:
   std::vector<SIZE> level_num_elems;
   std::vector<int32_t> exp;
 
-  bool use_zero_elimination = false;
-  std::vector<Array<1, uint32_t, DeviceType>> ze_bitmaps_array;
+  bool use_zero_elimination = false, sparse_words = false;
+  std::vector<Array<1, uint32_t, DeviceType>> ze_bitmaps_array, ze_bits_array;
   std::vector<bool> ze_given;
+  bool sign_coding = false;
+  std::vector<Array<1, uint32_t, DeviceType>> sign_counts_array,
+      sign_segment_bits_array;
 };
 } // namespace MDR
 } // namespace mgard_x
