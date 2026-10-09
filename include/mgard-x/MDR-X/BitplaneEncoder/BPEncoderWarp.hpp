@@ -869,10 +869,23 @@ MGARDX_EXEC uint32_t wait_epoch(const uint64_t *p, uint32_t epoch) {
   return 0;
 #endif
 }
-// Prefetch of the cache line holding *p into L1 (CUDA).
+// A status word as published, without waiting (CUDA).
+MGARDX_EXEC uint64_t peek_epoch(const uint64_t *p) {
+#if defined(__CUDA_ARCH__)
+  return *(volatile const unsigned long long *)p;
+#else
+  return 0;
+#endif
+}
+// Prefetch of the cache line holding *p into L1 or L2 (CUDA).
 MGARDX_EXEC void prefetch_l1(const void *p) {
 #if defined(__CUDA_ARCH__)
   asm volatile("prefetch.L1 [%0];" ::"l"(p));
+#endif
+}
+MGARDX_EXEC void prefetch_l2(const void *p) {
+#if defined(__CUDA_ARCH__)
+  asm volatile("prefetch.L2 [%0];" ::"l"(p));
 #endif
 }
 
@@ -962,6 +975,27 @@ public:
         position[tid] =
             ((const uint32_t *)*sections(tid))[block / BLOCKS_PER_SEGMENT] * 32;
       }
+      // The predecessors' counts of the look-back below (thread tid's first
+      // pair), loaded now: mostly published already past the first wave.
+      uint64_t early = 0;
+      if (tid < G * LANES && tid % LANES < in_segment) {
+        early = peek_epoch(
+            status((block - in_segment + tid % LANES) * G + tid / LANES));
+      }
+      // The segment's signs into L2: a tile's signs take at most one line
+      // (32 words), and the block prefetches the lines at its tiles' indices
+      // in the segment, about where its own signs are (not in the last
+      // segment, whose end is not known here).
+      const SIZE segment = block / BLOCKS_PER_SEGMENT;
+      for (SIZE t = tid; segment + 1 < nseg && t < G * WARPS;
+           t += WARPS * WORDS) {
+        const uint32_t *offsets = (const uint32_t *)*sections(t / WARPS);
+        const uint32_t word =
+            offsets[segment] + (uint32_t)(in_segment * WARPS + t % WARPS) * 32;
+        if (word < offsets[segment + 1]) {
+          prefetch_l2(offsets + nseg + word);
+        }
+      }
       // State of the word's 32 coefficients: nonzero ones and their signs.
       uint32_t *state = (uint32_t *)signs.data() +
                         (first + lane) * significance::STATE_STRIDE;
@@ -1007,8 +1041,11 @@ public:
           publish_epoch(status(block * G + g), epoch, aggregate);
         }
         if (p < in_segment) {
+          const uint64_t x = t == tid ? early : 0;
           uint32_t c =
-              wait_epoch(status((block - in_segment + p) * G + g), epoch);
+              x >> 32 == epoch
+                  ? (uint32_t)x
+                  : wait_epoch(status((block - in_segment + p) * G + g), epoch);
           if (c) {
             Atomic<uint32_t, AtomicSharedMemory, AtomicDeviceScope,
                    DeviceType>::Add(position + g, c);
@@ -1047,9 +1084,14 @@ public:
           if (k) {
             const uint32_t *section = (const uint32_t *)*sections(g) + nseg;
             uint32_t bits = significance::read_bits(section, pos, (int)k);
-            for (uint32_t m = fresh; m; m &= m - 1) {
-              sgn |= (bits & 1u) << (sg.ffs(m) - 1);
-              bits >>= 1;
+            // Bit i of bits to the i-th coefficient of fresh, four at a time.
+            for (uint32_t m = fresh; m; bits >>= 4) {
+#pragma unroll
+              for (int i = 0; i < 4; i++) {
+                const uint32_t low = m & (0u - m);
+                m ^= low;
+                sgn |= low & (0u - ((bits >> i) & 1u));
+              }
             }
           }
           g++;
