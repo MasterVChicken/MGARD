@@ -159,9 +159,11 @@ MGARDX_CONT_EXEC uint32_t lowest_bit(uint32_t x) {
   return popcount32((x & (0u - x)) - 1);
 #endif
 }
-// Bits [pos, pos + k) of a little-endian bit stream of words (k <= 32).
-MGARDX_CONT_EXEC uint32_t get_bits(const uint32_t *words, SIZE pos, int k) {
-  SIZE w = pos / 32;
+// Bits [pos, pos + k) of a little-endian bit stream of words (k <= 32); P:
+// an unsigned position type (32 bits within a region).
+template <typename P>
+MGARDX_CONT_EXEC uint32_t get_bits(const uint32_t *words, P pos, int k) {
+  P w = pos / 32;
   int s = (int)(pos % 32);
   uint32_t x = words[w] >> s;
   if (s > 0 && s + k > 32) {
@@ -272,15 +274,19 @@ MGARDX_EXEC void put_sparse_word(uint32_t *region, uint32_t index, SIZE pos,
 }
 
 // Decodes a stored word of a region: code given, payload at bit pos.
-MGARDX_EXEC uint32_t get_sparse_word(const uint32_t *region, SIZE pos,
+template <typename P>
+MGARDX_EXEC uint32_t get_sparse_word(const uint32_t *region, P pos,
                                      uint32_t code) {
   uint32_t payload = get_bits(region, pos, (int)code_bits(code));
   if (code == RAW_CODE) {
     return payload;
   }
   uint32_t x = 0;
-  for (uint32_t i = 0; i < code; i++, payload >>= 5) {
-    x |= 1u << (payload & 31u);
+#pragma unroll
+  for (uint32_t i = 0; i < SPARSE_MAX_ONES; i++) {
+    if (i < code) {
+      x |= 1u << ((payload >> (5 * i)) & 31u);
+    }
   }
   return x;
 }
@@ -1359,6 +1365,19 @@ public:
                   first < nchunks
                       ? section[offset_words(task, nsuper) + first / CHUNK]
                       : 0);
+      if (task.payload) {
+        // The region into shared memory (independent of the marks).
+        const uint32_t *src =
+            section + 3 * nsuper + num_level2(num_words) + task.chunks;
+        uint32_t offset = section[2 * nsuper + s];
+        uint32_t end =
+            s + 1 < nsuper ? section[2 * nsuper + s + 1] : task.payload;
+        for (uint32_t i = (uint32_t)tid; i < end - offset;
+             i += (uint32_t)SUPER) {
+          region[i] = src[offset + i];
+        }
+        payload_start = CODE_BITS * super_count(section, task, nsuper, s);
+      }
     } else {
       scan.begin(sg, lane, warp, chunk < nchunks ? section[nsuper + chunk] : 0);
     }
@@ -1374,25 +1393,36 @@ public:
     uint32_t first_bitmap = section[nsuper + s];
     scan.begin(sg, lane, warp,
                marks.marked(lane) ? bitmaps[first_bitmap + marks.index] : 0);
-    if (task.payload) {
-      // The region into shared memory.
-      SIZE base = 3 * nsuper + num_level2(num_words) + task.chunks;
-      uint32_t offset = section[2 * nsuper + s];
-      uint32_t end = s + 1 < nsuper ? section[2 * nsuper + s + 1] : task.payload;
-      for (SIZE i = tid; i < end - offset; i += SUPER) {
-        region[i] = section[base + offset + i];
-      }
-      payload_start = CODE_BITS * super_count(section, task, nsuper, s);
-    }
+  }
+  // The warp's chunks first + k, k < warp_chunks(first), have their word lane
+  // at out[k * CHUNK] (warp_out), valid while k * CHUNK + lane is below
+  // warp_limit(first); loops use these 32-bit indices.
+  MGARDX_EXEC int warp_chunks(SIZE first) const {
+    return first < nchunks ? (int)(nchunks - first < CHUNK ? nchunks - first
+                                                           : CHUNK)
+                           : 0;
+  }
+  MGARDX_EXEC uint32_t warp_limit(SIZE first) const {
+    SIZE begin = first * CHUNK;
+    return begin < num_words ? (uint32_t)(num_words - begin < CHUNK * CHUNK
+                                              ? num_words - begin
+                                              : CHUNK * CHUNK)
+                             : 0;
+  }
+  MGARDX_EXEC T_bitplane *warp_out(SIZE first) {
+    return rows(task.row, 0) + first * CHUNK + lane;
   }
   MGARDX_EXEC void Operation3() {
     SubGroup<DeviceType> sg;
-    SIZE first = s * SUPER + warp * CHUNK;
+    const SIZE first = s * SUPER + warp * CHUNK;
+    const int chunks = warp_chunks(first);
+    const uint32_t limit = warp_limit(first);
+    T_bitplane *out = warp_out(first);
     if (task.count == RAW_ROW) {
-      for (SIZE k = 0; k < CHUNK && first + k < nchunks; k++) {
-        SIZE idx = (first + k) * CHUNK + lane;
-        if (idx < num_words) {
-          *rows(task.row, idx) = section[idx];
+      const uint32_t *in = section + first * CHUNK + lane;
+      for (int k = 0; k < chunks; k++) {
+        if ((uint32_t)k * 32u + lane < limit) {
+          out[k * 32] = in[k * 32];
         }
       }
       return;
@@ -1404,7 +1434,7 @@ public:
       uint32_t base = sg.shfl(scan.offset, 0);
       uint32_t count = warp_sum(sg, lane, popcount32(scan.bitmap));
       uint32_t bits = 0;
-      for (uint32_t i = lane; i < count; i += CHUNK) {
+      for (uint32_t i = lane; i < count; i += 32u) {
         bits += code_bits(get_bits(region, CODE_BITS * (base + i), CODE_BITS));
       }
       bits = warp_sum(sg, lane, bits);
@@ -1418,14 +1448,13 @@ public:
             ? section + 2 * nsuper + num_level2(num_words) + task.chunks
             : section + nsuper + nchunks;
     words += section[s];
-    for (SIZE k = 0; k < CHUNK && first + k < nchunks; k++) {
-      uint32_t bitmap = sg.shfl(scan.bitmap, (int)k);
-      uint32_t offset = sg.shfl(scan.offset, (int)k);
-      SIZE idx = (first + k) * CHUNK + lane;
-      if (idx < num_words) {
-        *rows(task.row, idx) = (bitmap >> lane) & 1u
-                                   ? words[offset + popcount32(bitmap & below)]
-                                   : 0;
+    for (int k = 0; k < chunks; k++) {
+      uint32_t bitmap = sg.shfl(scan.bitmap, k);
+      uint32_t offset = sg.shfl(scan.offset, k);
+      if ((uint32_t)k * 32u + lane < limit) {
+        out[k * 32] = (bitmap >> lane) & 1u
+                          ? words[offset + popcount32(bitmap & below)]
+                          : 0;
       }
     }
   }
@@ -1434,18 +1463,21 @@ public:
       return;
     }
     SubGroup<DeviceType> sg;
-    SIZE first = s * SUPER + warp * CHUNK;
+    const SIZE first = s * SUPER + warp * CHUNK;
+    const int chunks = warp_chunks(first);
+    const uint32_t limit = warp_limit(first);
+    T_bitplane *out = warp_out(first);
     const uint32_t below = (1u << lane) - 1;
-    SIZE pos = payload_start;
+    // Bit positions in the region (32 bits suffice).
+    uint32_t pos = (uint32_t)payload_start;
     for (SIZE w = 0; w < warp; w++) {
       pos += warp_bits[w];
     }
-    for (SIZE k = 0; k < CHUNK && first + k < nchunks; k++) {
-      uint32_t bitmap = sg.shfl(scan.bitmap, (int)k);
-      SIZE idx = (first + k) * CHUNK + lane;
+    for (int k = 0; k < chunks; k++) {
+      uint32_t bitmap = sg.shfl(scan.bitmap, k);
       uint32_t x = 0;
       if (bitmap != 0) {
-        uint32_t offset = sg.shfl(scan.offset, (int)k);
+        uint32_t offset = sg.shfl(scan.offset, k);
         bool stored = (bitmap >> lane) & 1u;
         uint32_t code =
             stored ? get_bits(region,
@@ -1459,8 +1491,8 @@ public:
         }
         pos += total;
       }
-      if (idx < num_words) {
-        *rows(task.row, idx) = x;
+      if ((uint32_t)k * 32u + lane < limit) {
+        out[k * 32] = x;
       }
     }
   }
