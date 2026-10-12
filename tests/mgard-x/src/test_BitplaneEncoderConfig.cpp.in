@@ -5,7 +5,7 @@
  */
 
 // One (encoder, T_data, T_bitplane, NegaBinary, ControlL2) configuration per
-// generated file -- see tests/mgard-x/CMakeLists.txt. BPEncoderRegisterBlock's
+// generated file -- see tests/mgard-x/CMakeLists.txt. The encoders'
 // progressive_decode() unconditionally macro-unrolls 64 kernel variants per
 // compile-time configuration it is instantiated with; cramming more than a
 // couple of configurations into one translation unit exhausts the CUDA/HIP
@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <type_traits>
 #include <vector>
 
 #include "mgard-x/Hierarchy/Hierarchy.hpp"
@@ -59,6 +60,16 @@ static std::vector<T_data> make_bitplane_test_data(SIZE n) {
   data[n / 2] = (T_data)15.0;  // pins abs-max to an exactly representable value
   return data;
 }
+
+// Rows of the encoded bitplanes: NUM_ROWS where the encoder has it, else
+// MAX_BITPLANES (BPEncoderLocalityBlock).
+template <typename Encoder, typename = void> struct encoded_rows {
+  static constexpr int value = Encoder::MAX_BITPLANES;
+};
+template <typename Encoder>
+struct encoded_rows<Encoder, std::void_t<decltype(Encoder::NUM_ROWS)>> {
+  static constexpr int value = Encoder::NUM_ROWS;
+};
 
 // Encodes `original` at full precision (MAX_BITPLANES bitplanes), then
 // decodes it back twice: once from all the bitplanes (round trip should be
@@ -115,8 +126,10 @@ static void run_bitplane_encoder_roundtrip(SIZE n) {
   // the round trip below.
   REQUIRE((double)abs_max == 15.0);
 
+  // BPEncoderRegisterBlock and BPEncoderWarpTranspose add a sign row
+  // (NUM_ROWS) with the binary encoding.
   Array<2, T_bitplane, TestDevice> encoded_bitplanes_array(
-      {(SIZE)MAX_BITPLANES, Encoder::bitplane_length(n)});
+      {(SIZE)encoded_rows<Encoder>::value, Encoder::bitplane_length(n)});
   Array<1, T_error, TestDevice> level_errors_array({(SIZE)MAX_BITPLANES + 1});
 
   encoder.encode(n, MAX_BITPLANES, SubArray(abs_max_array), SubArray(v_array),

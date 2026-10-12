@@ -35,10 +35,7 @@ public:
   constexpr static bool ProfileBPEncoder = false;
   // using Encoder = GroupedBPEncoder<D, T_data, T_bitplane, T_error,
   //                                ControlL2, DeviceType>;
-  // using Encoder = BPEncoderLocalityBlock<D, T_data, T_bitplane, T_error,
-  // NegaBinary,
-  //                                ControlL2, DeviceType>;
-  using Encoder = BPEncoderRegisterBlock<D, T_data, T_bitplane, T_error,
+  using Encoder = BPEncoderWarpTranspose<D, T_data, T_bitplane, T_error,
                                          NegaBinary, ControlL2, DeviceType>;
   // using Encoder = BPEncoderRegisterShift<D, T_data, T_bitplane, T_error,
   // NegaBinary,
@@ -94,7 +91,7 @@ public:
       interleaver.Adapt(hierarchy, queue_idx);
     }
     encoder.Adapt(hierarchy, layout.max_level_num_elems(), queue_idx);
-    encoder.SetWordOrder(config.mdr_contiguous_words);
+    encoder.SetLayout(config.mdr_bitplane_layout);
     // batched_encoder.Adapt(hierarchy, queue_idx);
     compressor.Adapt(encoder.bitplane_length(layout.max_level_num_elems()),
                      Encoder::MAX_BITPLANES, config, queue_idx);
@@ -184,10 +181,11 @@ public:
   }
 
   // Significance-coded signs (Config::mdr_significance_signs): binary
-  // encoding, contiguous words and zero elimination.
+  // encoding, the Locality Block layout and zero elimination.
   static bool SignificanceSigns(const Config &config) {
     return config.mdr_significance_signs && config.mdr_zero_elimination &&
-           config.mdr_contiguous_words && !NegaBinary;
+           config.mdr_bitplane_layout == bitplane_layout_type::LocalityBlock &&
+           !NegaBinary;
   }
 
   static size_t EstimateMemoryFootprint(std::vector<SIZE> shape,
@@ -561,7 +559,7 @@ public:
   void StoreMetadata(MDRMetadata &mdr_metadata, MDRData<DeviceType> &mdr_data,
                      int queue_idx) {
     mdr_metadata.group_size = compressor.num_merged_bitplanes;
-    mdr_metadata.word_order = encoder.Contiguous() ? 1 : 0;
+    mdr_metadata.bitplane_layout = (uint32_t)encoder.Layout();
     mdr_metadata.sign_coding = sign_coding ? 1 : 0;
     for (int level_idx = 0; level_idx < layout.num_levels(); level_idx++) {
       abs_max_array[level_idx].hostCopy(false, queue_idx);

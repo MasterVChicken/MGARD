@@ -4,5 +4,6 @@
 #include "BPEncoderBaseline.hpp"
 #include "BPEncoderLocalityBlock.hpp"
 #include "BPEncoderRegisterBlock.hpp"
+#include "BPEncoderWarpTranspose.hpp"
 
 #endif

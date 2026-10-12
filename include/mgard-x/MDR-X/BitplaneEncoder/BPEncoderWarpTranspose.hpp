@@ -5,17 +5,32 @@
  * Date: October 8, 2026
  */
 
-#ifndef MGARD_X_MDR_BP_ENCODER_WARP_HPP
-#define MGARD_X_MDR_BP_ENCODER_WARP_HPP
+#ifndef MGARD_X_MDR_BP_ENCODER_WARP_TRANSPOSE_HPP
+#define MGARD_X_MDR_BP_ENCODER_WARP_TRANSPOSE_HPP
 
 #include "../../RuntimeX/RuntimeX.h"
 #include "../LosslessCompressor/ZeroElimination.hpp"
+#include "BPEncoderRegisterBlock.hpp"
+#include "BitplaneEncoderInterface.hpp"
 #include "SignificanceCoding.hpp"
 #include <type_traits>
 #include <utility>
 
 namespace mgard_x {
 namespace MDR {
+
+// The MDR-X bitplane encoder (BPEncoderWarpTranspose, at the end of this
+// file). It writes the Locality Block layout of HP-MDR: word w of a bitplane
+// row holds the bits of the 32 consecutive coefficients [32 w, 32 w + 32),
+// here coefficient 32 w + d at bit d, so that the leading bitplanes of smooth
+// blocks are zero words. On CUDA a warp encodes a tile of 32 words: each lane
+// loads one coefficient (coalesced, the thread mapping of HP-MDR's Register
+// Shuffle encoder) and a 32 x 32 bit transpose in five shuffle stages gives
+// each lane one word, which shared memory then stores coalesced. Other
+// backends, and 64-bit words, use portable kernels with one thread per word.
+// The Register Block layout of HP-MDR (words of strided coefficients; mdr-x
+// -sw, version 1-2 data, and always with the negabinary encoding) is written
+// with the kernels of BPEncoderRegisterBlock.hpp.
 
 // Transposes a 32 x 32 bit matrix held one row per lane: on return, bit c of
 // lane l is bit l of lane c on entry.
@@ -64,7 +79,7 @@ MGARDX_EXEC T warp_transpose_reduce32(SubGroup<DeviceType> &sg, int lane,
   return v[0];
 }
 
-// Squared errors of the single-precision sums of BPEncoderWarpFunctor
+// Squared errors of the single-precision sums of BPEncoderWarpTransposeFunctor
 // (ControlL2) are within a relative 2^-17 of exact: each lane adds at most 32
 // terms, the warp the lanes' sums in 5 more steps, and the remainders are
 // exact for float data and within 17 roundings for double data (leaving out
@@ -122,7 +137,7 @@ MGARDX_EXEC uint32_t gather_byte_bits(uint32_t x) {
   return ((x & 0x01010101u) * 0x01020408u) >> 24 & 0xfu;
 }
 
-// Binary bitplane encoding in the contiguous word layout (word w of a row
+// Binary bitplane encoding in the Locality Block layout (word w of a row
 // holds the bits of coefficients [32 w, 32 w + 32), coefficient 32 w + d at
 // bit d) with one lane per coefficient: a 32-lane sub-group loads 32
 // consecutive coefficients (coalesced) and a bit transpose turns their
@@ -133,8 +148,8 @@ MGARDX_EXEC uint32_t gather_byte_bits(uint32_t x) {
 // errors are summed per lane in single precision (collect_errors), then
 // reduced per thread block into level_errors_workspace(b, block);
 // BPErrorSumKernel adds the blocks up. Same rows and signs as
-// BPEncoderRegisterBlockFunctor<..., Contiguous = true>, and the same errors
-// up to rounding (L2_ERROR_MARGIN).
+// BPEncoderWarpTransposePortableFunctor, and the same errors up to rounding
+// (L2_ERROR_MARGIN).
 // With ze_bitmaps given, a tile being a zero-elimination chunk, it also
 // writes the chunk bitmaps of every row (zero_elimination::SuperCountKernel
 // then gives the super-chunk counts), and with ze_bits the chunks' sparse-word
@@ -144,7 +159,7 @@ MGARDX_EXEC uint32_t gather_byte_bits(uint32_t x) {
 // (zero on entry) their counts: the same as SignPackKernel.
 template <typename T_data, typename T_fp, typename T_bitplane, typename T_error,
           int NUM_BITPLANES, bool ControlL2, typename DeviceType>
-class BPEncoderWarpFunctor : public Functor<DeviceType> {
+class BPEncoderWarpTransposeFunctor : public Functor<DeviceType> {
 public:
   static constexpr SIZE WORDS = 32;
   static constexpr int HALVES = NUM_BITPLANES / 32; // sub-groups per tile
@@ -158,22 +173,21 @@ public:
   static constexpr SIZE SIGN_WORDS = significance::MAX_GROUPS + WORDS +
                                      WORDS * WORDS / 2 + WORDS * WORDS / 4;
   static_assert(NUM_BITPLANES % 32 == 0 && WARPS % HALVES == 0);
-  MGARDX_CONT BPEncoderWarpFunctor() {}
+  MGARDX_CONT BPEncoderWarpTransposeFunctor() {}
   MGARDX_CONT
-  BPEncoderWarpFunctor(SIZE n, SubArray<1, T_data, DeviceType> abs_max,
-                       SubArray<1, T_data, DeviceType> v,
-                       SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
-                       SubArray<2, T_error, DeviceType> level_errors_workspace,
-                       SubArray<1, uint32_t, DeviceType> ze_bitmaps,
-                       SubArray<1, uint32_t, DeviceType> ze_bits,
-                       int sign_group_size,
-                       SubArray<1, uint32_t, DeviceType> sign_counts,
-                       SubArray<1, uint32_t, DeviceType> sign_segment_bits)
+  BPEncoderWarpTransposeFunctor(
+      SIZE n, SubArray<1, T_data, DeviceType> abs_max,
+      SubArray<1, T_data, DeviceType> v,
+      SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+      SubArray<2, T_error, DeviceType> level_errors_workspace,
+      SubArray<1, uint32_t, DeviceType> ze_bitmaps,
+      SubArray<1, uint32_t, DeviceType> ze_bits, int sign_group_size,
+      SubArray<1, uint32_t, DeviceType> sign_counts,
+      SubArray<1, uint32_t, DeviceType> sign_segment_bits)
       : n(n), abs_max(abs_max), v(v), encoded_bitplanes(encoded_bitplanes),
         level_errors_workspace(level_errors_workspace), ze_bitmaps(ze_bitmaps),
         ze_bits(ze_bits), sign_group_size(sign_group_size),
-        sign_counts(sign_counts),
-        sign_segment_bits(sign_segment_bits) {
+        sign_counts(sign_counts), sign_segment_bits(sign_segment_bits) {
     Functor<DeviceType>();
   }
 
@@ -502,13 +516,13 @@ private:
 
 template <typename T_data, typename T_fp, typename T_bitplane, typename T_error,
           int NUM_BITPLANES, bool ControlL2, typename DeviceType>
-class BPEncoderWarpKernel : public Kernel {
+class BPEncoderWarpTransposeKernel : public Kernel {
 public:
   constexpr static bool EnableAutoTuning() { return false; }
-  constexpr static std::string_view Name = "warp bp encoder";
+  constexpr static std::string_view Name = "warp transpose bp encoder";
   using FunctorType =
-      BPEncoderWarpFunctor<T_data, T_fp, T_bitplane, T_error, NUM_BITPLANES,
-                           ControlL2, DeviceType>;
+      BPEncoderWarpTransposeFunctor<T_data, T_fp, T_bitplane, T_error,
+                                    NUM_BITPLANES, ControlL2, DeviceType>;
   // Thread blocks (= partial error sums) for n coefficients.
   static SIZE num_blocks(SIZE n) {
     constexpr SIZE tiles_per_block = FunctorType::WARPS / FunctorType::HALVES;
@@ -516,15 +530,15 @@ public:
     return std::max((SIZE)1, (tiles + tiles_per_block - 1) / tiles_per_block);
   }
   MGARDX_CONT
-  BPEncoderWarpKernel(SIZE n, SubArray<1, T_data, DeviceType> abs_max,
-                      SubArray<1, T_data, DeviceType> v,
-                      SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
-                      SubArray<2, T_error, DeviceType> level_errors_workspace,
-                      SubArray<1, uint32_t, DeviceType> ze_bitmaps = {},
-                      SubArray<1, uint32_t, DeviceType> ze_bits = {},
-                      int sign_group_size = 0,
-                      SubArray<1, uint32_t, DeviceType> sign_counts = {},
-                      SubArray<1, uint32_t, DeviceType> sign_segment_bits = {})
+  BPEncoderWarpTransposeKernel(
+      SIZE n, SubArray<1, T_data, DeviceType> abs_max,
+      SubArray<1, T_data, DeviceType> v,
+      SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+      SubArray<2, T_error, DeviceType> level_errors_workspace,
+      SubArray<1, uint32_t, DeviceType> ze_bitmaps = {},
+      SubArray<1, uint32_t, DeviceType> ze_bits = {}, int sign_group_size = 0,
+      SubArray<1, uint32_t, DeviceType> sign_counts = {},
+      SubArray<1, uint32_t, DeviceType> sign_segment_bits = {})
       : n(n), abs_max(abs_max), v(v), encoded_bitplanes(encoded_bitplanes),
         level_errors_workspace(level_errors_workspace), ze_bitmaps(ze_bitmaps),
         ze_bits(ze_bits), sign_group_size(sign_group_size),
@@ -676,16 +690,15 @@ MGARDX_EXEC void tile_values(SubGroup<DeviceType> &sg, int lane,
 // every word for few bitplanes).
 template <typename T_data, typename T_fp, typename T_bitplane,
           int NUM_BITPLANES, typename DeviceType>
-class BPDecoderWarpFunctor : public Functor<DeviceType> {
+class BPDecoderWarpTransposeFunctor : public Functor<DeviceType> {
 public:
   static constexpr SIZE WORDS = 32;
-  MGARDX_CONT BPDecoderWarpFunctor() {}
+  MGARDX_CONT BPDecoderWarpTransposeFunctor() {}
   MGARDX_CONT
-  BPDecoderWarpFunctor(SIZE n, int starting_bitplane,
-                       SubArray<1, T_data, DeviceType> abs_max,
-                       SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
-                       SubArray<1, bool, DeviceType> signs,
-                       SubArray<1, T_data, DeviceType> v)
+  BPDecoderWarpTransposeFunctor(
+      SIZE n, int starting_bitplane, SubArray<1, T_data, DeviceType> abs_max,
+      SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+      SubArray<1, bool, DeviceType> signs, SubArray<1, T_data, DeviceType> v)
       : n(n), starting_bitplane(starting_bitplane), abs_max(abs_max),
         encoded_bitplanes(encoded_bitplanes), signs(signs), v(v) {
     Functor<DeviceType>();
@@ -775,18 +788,17 @@ private:
 
 template <typename T_data, typename T_fp, typename T_bitplane,
           int NUM_BITPLANES, typename DeviceType>
-class BPDecoderWarpKernel : public Kernel {
+class BPDecoderWarpTransposeKernel : public Kernel {
 public:
   constexpr static bool EnableAutoTuning() { return false; }
-  constexpr static std::string_view Name = "warp bp decoder";
-  using FunctorType = BPDecoderWarpFunctor<T_data, T_fp, T_bitplane,
-                                           NUM_BITPLANES, DeviceType>;
+  constexpr static std::string_view Name = "warp transpose bp decoder";
+  using FunctorType = BPDecoderWarpTransposeFunctor<T_data, T_fp, T_bitplane,
+                                                    NUM_BITPLANES, DeviceType>;
   MGARDX_CONT
-  BPDecoderWarpKernel(SIZE n, int starting_bitplane,
-                      SubArray<1, T_data, DeviceType> abs_max,
-                      SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
-                      SubArray<1, bool, DeviceType> signs,
-                      SubArray<1, T_data, DeviceType> v)
+  BPDecoderWarpTransposeKernel(
+      SIZE n, int starting_bitplane, SubArray<1, T_data, DeviceType> abs_max,
+      SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+      SubArray<1, bool, DeviceType> signs, SubArray<1, T_data, DeviceType> v)
       : n(n), starting_bitplane(starting_bitplane), abs_max(abs_max),
         encoded_bitplanes(encoded_bitplanes), signs(signs), v(v) {}
   MGARDX_CONT Task<FunctorType> GenTask(int queue_idx) {
@@ -809,7 +821,7 @@ private:
 };
 
 // Publication of a value with an epoch (one 64-bit word), for the chained
-// scan of BPDecoderSignWarpFunctor (CUDA).
+// scan of BPDecoderWarpTransposeSignFunctor (CUDA).
 MGARDX_EXEC void publish_epoch(uint64_t *p, uint32_t epoch, uint32_t value) {
 #if defined(__CUDA_ARCH__)
   *(volatile unsigned long long *)p =
@@ -849,9 +861,9 @@ MGARDX_EXEC void prefetch_l2(const void *p) {
 
 // Decoding with significance-coded signs (SignificanceCoding.hpp; same
 // results as SignResolveKernel followed by the decoder): warp per tile as
-// BPDecoderWarpFunctor, WARPS tiles per thread block. Each warp counts the
-// coefficients of its tile that become nonzero in each group, from the words
-// it holds; the position of the tile's signs in a group's section is the
+// BPDecoderWarpTransposeFunctor, WARPS tiles per thread block. Each warp counts
+// the coefficients of its tile that become nonzero in each group, from the
+// words it holds; the position of the tile's signs in a group's section is the
 // segment's offset plus the counts of the tiles before it in the segment:
 // those of the block (shared memory) and those of the blocks before it in the
 // segment, which every block publishes (status(block, group), with this
@@ -859,7 +871,7 @@ MGARDX_EXEC void prefetch_l2(const void *p) {
 // predecessor). sections(i): the sign section of the i-th group decoded.
 template <typename T_data, typename T_fp, typename T_bitplane,
           int NUM_BITPLANES, typename DeviceType>
-class BPDecoderSignWarpFunctor : public Functor<DeviceType> {
+class BPDecoderWarpTransposeSignFunctor : public Functor<DeviceType> {
 public:
   static constexpr SIZE WORDS = 32;
   static constexpr SIZE WARPS = 8;
@@ -870,15 +882,16 @@ public:
   static constexpr SIZE LANES =
       WARPS > BLOCKS_PER_SEGMENT ? WARPS : BLOCKS_PER_SEGMENT;
   static_assert(significance::SEGMENT % WARPS == 0);
-  MGARDX_CONT BPDecoderSignWarpFunctor() {}
+  MGARDX_CONT BPDecoderWarpTransposeSignFunctor() {}
   MGARDX_CONT
-  BPDecoderSignWarpFunctor(SIZE n, int starting_bitplane, int group_size,
-                           SubArray<1, T_data, DeviceType> abs_max,
-                           SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
-                           SubArray<1, bool, DeviceType> signs,
-                           SubArray<1, uint64_t, DeviceType> sections,
-                           SubArray<1, uint64_t, DeviceType> status,
-                           uint32_t epoch, SubArray<1, T_data, DeviceType> v)
+  BPDecoderWarpTransposeSignFunctor(
+      SIZE n, int starting_bitplane, int group_size,
+      SubArray<1, T_data, DeviceType> abs_max,
+      SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+      SubArray<1, bool, DeviceType> signs,
+      SubArray<1, uint64_t, DeviceType> sections,
+      SubArray<1, uint64_t, DeviceType> status, uint32_t epoch,
+      SubArray<1, T_data, DeviceType> v)
       : n(n), starting_bitplane(starting_bitplane), group_size(group_size),
         abs_max(abs_max), encoded_bitplanes(encoded_bitplanes), signs(signs),
         sections(sections), status(status), epoch(epoch), v(v) {
@@ -1112,25 +1125,27 @@ private:
 
 template <typename T_data, typename T_fp, typename T_bitplane,
           int NUM_BITPLANES, typename DeviceType>
-class BPDecoderSignWarpKernel : public Kernel {
+class BPDecoderWarpTransposeSignKernel : public Kernel {
 public:
   constexpr static bool EnableAutoTuning() { return false; }
-  constexpr static std::string_view Name = "warp bp decoder (signs)";
-  using FunctorType = BPDecoderSignWarpFunctor<T_data, T_fp, T_bitplane,
-                                               NUM_BITPLANES, DeviceType>;
+  constexpr static std::string_view Name = "warp transpose bp decoder (signs)";
+  using FunctorType =
+      BPDecoderWarpTransposeSignFunctor<T_data, T_fp, T_bitplane, NUM_BITPLANES,
+                                        DeviceType>;
   // Thread blocks, and status words per group (one per block).
   static SIZE num_blocks(SIZE n) {
     return (significance::num_tiles(n / 32) + FunctorType::WARPS - 1) /
            FunctorType::WARPS;
   }
   MGARDX_CONT
-  BPDecoderSignWarpKernel(SIZE n, int starting_bitplane, int group_size,
-                          SubArray<1, T_data, DeviceType> abs_max,
-                          SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
-                          SubArray<1, bool, DeviceType> signs,
-                          SubArray<1, uint64_t, DeviceType> sections,
-                          SubArray<1, uint64_t, DeviceType> status,
-                          uint32_t epoch, SubArray<1, T_data, DeviceType> v)
+  BPDecoderWarpTransposeSignKernel(
+      SIZE n, int starting_bitplane, int group_size,
+      SubArray<1, T_data, DeviceType> abs_max,
+      SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+      SubArray<1, bool, DeviceType> signs,
+      SubArray<1, uint64_t, DeviceType> sections,
+      SubArray<1, uint64_t, DeviceType> status, uint32_t epoch,
+      SubArray<1, T_data, DeviceType> v)
       : n(n), starting_bitplane(starting_bitplane), group_size(group_size),
         abs_max(abs_max), encoded_bitplanes(encoded_bitplanes), signs(signs),
         sections(sections), status(status), epoch(epoch), v(v) {}
@@ -1150,6 +1165,739 @@ private:
   SubArray<1, uint64_t, DeviceType> sections, status;
   uint32_t epoch;
   SubArray<1, T_data, DeviceType> v;
+};
+
+// Portable kernels of BPEncoderWarpTranspose (backends other than CUDA, and
+// 64-bit words): one thread per word, which loads the 32 consecutive
+// coefficients of its word (the thread mapping of HP-MDR's Locality Block
+// encoder). Same rows and signs as BPEncoderWarpTransposeFunctor.
+template <typename T_data, typename T_fp, typename T_bitplane, typename T_error,
+          int NUM_BITPLANES, bool ControlL2, typename DeviceType>
+class BPEncoderWarpTransposePortableFunctor : public Functor<DeviceType> {
+public:
+  MGARDX_CONT
+  BPEncoderWarpTransposePortableFunctor() {}
+  MGARDX_CONT
+  BPEncoderWarpTransposePortableFunctor(
+      SIZE n, SubArray<1, T_data, DeviceType> abs_max,
+      SubArray<1, T_data, DeviceType> v,
+      SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+      SubArray<2, T_error, DeviceType> level_errors_workspace)
+      : n(n), abs_max(abs_max), encoded_bitplanes(encoded_bitplanes), v(v),
+        level_errors_workspace(level_errors_workspace) {
+    Functor<DeviceType>();
+  }
+
+  MGARDX_EXEC void encode_batch(T_fp *v, T_bitplane *encoded) {
+
+#pragma unroll
+    for (int bp_idx = 0; bp_idx < NUM_BITPLANES; bp_idx++) {
+      T_bitplane buffer = 0;
+      for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
+        T_bitplane bit =
+            (v[data_idx] >> (NUM_BITPLANES - 1 - bp_idx)) & (T_bitplane)1;
+        buffer |= bit << data_idx;
+      }
+      encoded[bp_idx] = buffer;
+    }
+  }
+
+  MGARDX_EXEC void error_collect(T_data *shifted_data, T_error *errors,
+                                 int exp) {
+    for (int bp_idx = 0; bp_idx < NUM_BITPLANES; bp_idx++) {
+      for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
+        T_data data = shifted_data[data_idx];
+        T_fp fp_data = (T_fp)fabs(data);
+        T_error mantissa = fabs(data) - fp_data;
+        T_fp mask = ((T_fp)1 << bp_idx) - 1;
+        T_error diff = (T_error)(fp_data & mask) + mantissa;
+        errors[NUM_BITPLANES - bp_idx] += diff * diff;
+      }
+    }
+    for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
+      T_data data = shifted_data[data_idx];
+      errors[0] += data * data;
+    }
+
+    for (int bp_idx = 0; bp_idx < NUM_BITPLANES + 1; bp_idx++) {
+      errors[bp_idx] = ldexp(errors[bp_idx], 2 * (-NUM_BITPLANES + exp));
+    }
+  }
+
+  MGARDX_EXEC void Operation1() {
+    SIZE batch_idx = FunctorBase<DeviceType>::GetBlockIdX() *
+                         FunctorBase<DeviceType>::GetBlockDimX() +
+                     FunctorBase<DeviceType>::GetThreadIdX();
+
+    SIZE num_full_batches = n / BATCH_SIZE;
+
+    T_data shifted_data[BATCH_SIZE];
+    T_fp fp_data[BATCH_SIZE];
+    T_bitplane encoded_data[NUM_BITPLANES];
+    T_bitplane encoded_sign = 0;
+    T_error errors[NUM_BITPLANES + 1];
+
+    int exp;
+    frexp(*abs_max((IDX)0), &exp);
+
+    if (batch_idx >= num_full_batches) {
+      return;
+    }
+
+    if (exp > 0) {
+#pragma unroll
+      for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
+        T_data data = *v(batch_idx * BATCH_SIZE + data_idx);
+        // this can cause overflow
+        shifted_data[data_idx] = data * ((T_fp)1 << NUM_BITPLANES - exp);
+        // ldexp without constant argument is slow
+        fp_data[data_idx] = (T_fp)fabs(shifted_data[data_idx]);
+      }
+    } else {
+#pragma unroll
+      for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
+        T_data data = *v(batch_idx * BATCH_SIZE + data_idx);
+        shifted_data[data_idx] = data * pow(2, NUM_BITPLANES - exp);
+        fp_data[data_idx] = (T_fp)fabs(shifted_data[data_idx]);
+      }
+    }
+
+    // encode sign
+    // Shift amount runs up to BATCH_SIZE - 1 (bits of T_bitplane), so the
+    // value being shifted must be T_bitplane, not T_fp: when T_bitplane is
+    // wider than T_fp (e.g. uint64_t bitplanes with float data, T_fp =
+    // uint32_t), shifting a T_fp by >= 32 is undefined behavior.
+    for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
+      encoded_sign += (T_bitplane)(signbit(shifted_data[data_idx]) == 0 ? 0 : 1)
+                      << data_idx;
+    }
+    // encode data
+    encode_batch(fp_data, encoded_data);
+// store data: row 0 holds the signs, bitplane b is row b + 1
+#pragma unroll
+    for (int bp_idx = 0; bp_idx < NUM_BITPLANES; bp_idx++) {
+      *encoded_bitplanes(bp_idx + 1, batch_idx) = encoded_data[bp_idx];
+    }
+    // store sign
+    *encoded_bitplanes(0, batch_idx) = encoded_sign;
+    if constexpr (ControlL2) {
+      for (int bp_idx = 0; bp_idx < NUM_BITPLANES + 1; bp_idx++) {
+        errors[bp_idx] = 0;
+      }
+      error_collect(shifted_data, errors, exp);
+      for (int bp_idx = 0; bp_idx < NUM_BITPLANES + 1; bp_idx++) {
+        *level_errors_workspace(bp_idx, batch_idx) = errors[bp_idx];
+      }
+    }
+  }
+
+  MGARDX_CONT size_t shared_memory_size() { return 0; }
+
+private:
+  SIZE n;
+  SubArray<1, T_data, DeviceType> abs_max;
+  SubArray<1, T_data, DeviceType> v;
+  SubArray<2, T_bitplane, DeviceType> encoded_bitplanes;
+  SubArray<2, T_error, DeviceType> level_errors_workspace;
+  static constexpr int BATCH_SIZE = sizeof(T_bitplane) * 8;
+};
+
+template <typename T_data, typename T_fp, typename T_bitplane, typename T_error,
+          int NUM_BITPLANES, bool ControlL2, typename DeviceType>
+class BPEncoderWarpTransposePortableKernel : public Kernel {
+public:
+  constexpr static bool EnableAutoTuning() { return false; }
+  constexpr static std::string_view Name =
+      "warp transpose bp encoder (portable)";
+  static constexpr int BATCH_SIZE = sizeof(T_bitplane) * 8;
+  MGARDX_CONT
+  BPEncoderWarpTransposePortableKernel(
+      SIZE n, SubArray<1, T_data, DeviceType> abs_max,
+      SubArray<1, T_data, DeviceType> v,
+      SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+      SubArray<2, T_error, DeviceType> level_errors_workspace)
+      : n(n), abs_max(abs_max), encoded_bitplanes(encoded_bitplanes), v(v),
+        level_errors_workspace(level_errors_workspace) {}
+
+  using FunctorType = BPEncoderWarpTransposePortableFunctor<
+      T_data, T_fp, T_bitplane, T_error, NUM_BITPLANES, ControlL2, DeviceType>;
+  using TaskType = Task<FunctorType>;
+
+  MGARDX_CONT TaskType GenTask(int queue_idx) {
+    FunctorType functor(n, abs_max, v, encoded_bitplanes,
+                        level_errors_workspace);
+    SIZE total_thread = std::max((SIZE)1, n / BATCH_SIZE);
+    return Task(functor, 1, 1, (total_thread - 1) / 256 + 1, 1, 1, 256,
+                functor.shared_memory_size(), queue_idx, std::string(Name));
+  }
+
+private:
+  SIZE n;
+  SubArray<1, T_data, DeviceType> abs_max;
+  SubArray<1, T_data, DeviceType> v;
+  SubArray<2, T_bitplane, DeviceType> encoded_bitplanes;
+  SubArray<2, T_error, DeviceType> level_errors_workspace;
+};
+
+// Decoding counterpart of BPEncoderWarpTransposePortableFunctor. SignMasks:
+// every sign is in the sign masks of the significance-coded state
+// (SignificanceCoding.hpp); there is no sign row.
+template <typename T_data, typename T_fp, typename T_bitplane,
+          int NUM_BITPLANES, typename DeviceType, bool SignMasks = false>
+class BPDecoderWarpTransposePortableFunctor : public Functor<DeviceType> {
+public:
+  MGARDX_CONT
+  BPDecoderWarpTransposePortableFunctor() {}
+  MGARDX_CONT
+  BPDecoderWarpTransposePortableFunctor(
+      SIZE n, int starting_bitplane, SubArray<1, T_data, DeviceType> abs_max,
+      SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+      SubArray<1, bool, DeviceType> signs, SubArray<1, T_data, DeviceType> v)
+      : n(n), starting_bitplane(starting_bitplane), abs_max(abs_max),
+        encoded_bitplanes(encoded_bitplanes), signs(signs), v(v) {
+    Functor<DeviceType>();
+  }
+
+  MGARDX_EXEC void decode_batch(T_fp *v, T_bitplane *encoded) {
+#pragma unroll
+    for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
+      T_fp buffer = 0;
+      for (int bp_idx = 0; bp_idx < NUM_BITPLANES; bp_idx++) {
+        T_fp bit = (encoded[bp_idx] >> data_idx) & (T_fp)1;
+        buffer += bit << (NUM_BITPLANES - 1 - bp_idx);
+      }
+      v[data_idx] = buffer;
+    }
+  }
+
+  MGARDX_EXEC void Operation1() {
+    SIZE batch_idx = FunctorBase<DeviceType>::GetBlockIdX() *
+                         FunctorBase<DeviceType>::GetBlockDimX() +
+                     FunctorBase<DeviceType>::GetThreadIdX();
+
+    SIZE num_full_batches = n / BATCH_SIZE;
+
+    T_data shifted_data[BATCH_SIZE];
+    T_fp fp_data[BATCH_SIZE];
+    T_fp fp_sign[BATCH_SIZE];
+    T_bitplane encoded_data[NUM_BITPLANES];
+    T_bitplane encoded_sign;
+
+    int exp;
+    frexp(*abs_max((IDX)0), &exp);
+
+    if (batch_idx >= num_full_batches) {
+      return;
+    }
+
+    int ending_bitplane = starting_bitplane + NUM_BITPLANES;
+
+#pragma unroll
+    for (int bp_idx = 0; bp_idx < NUM_BITPLANES; bp_idx++) {
+      encoded_data[bp_idx] =
+          *encoded_bitplanes(starting_bitplane + bp_idx + 1, batch_idx);
+    }
+    // decode data
+    decode_batch(fp_data, encoded_data);
+
+    if constexpr (SignMasks) {
+      const uint32_t *state = (const uint32_t *)signs.data();
+#pragma unroll
+      for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
+        SIZE i = batch_idx * BATCH_SIZE + data_idx;
+        fp_sign[data_idx] =
+            (state[significance::STATE_STRIDE * (i / 32) + 1] >> (i % 32)) & 1u;
+      }
+    } else if (starting_bitplane == 0) {
+      // decode sign
+      encoded_sign = *encoded_bitplanes(0, batch_idx);
+#pragma unroll
+      for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
+        fp_sign[data_idx] = (encoded_sign >> data_idx) & (T_fp)1;
+        *signs(batch_idx * BATCH_SIZE + data_idx) = fp_sign[data_idx];
+      }
+    } else {
+#pragma unroll
+      for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
+        fp_sign[data_idx] = *signs(batch_idx * BATCH_SIZE + data_idx);
+      }
+    }
+#pragma unroll
+    for (int data_idx = 0; data_idx < BATCH_SIZE; data_idx++) {
+      shifted_data[data_idx] = (T_data)fp_data[data_idx];
+      // It is beneficial to use pow instead of ldexp
+      T_data data = shifted_data[data_idx] * pow(2, -ending_bitplane + exp);
+      data = fp_sign[data_idx] ? -data : data;
+      *v(batch_idx * BATCH_SIZE + data_idx) = data;
+    }
+  }
+
+  MGARDX_CONT size_t shared_memory_size() { return 0; }
+
+private:
+  SIZE n;
+  int starting_bitplane;
+  SubArray<1, T_data, DeviceType> abs_max;
+  SubArray<2, T_bitplane, DeviceType> encoded_bitplanes;
+  SubArray<1, bool, DeviceType> signs;
+  SubArray<1, T_data, DeviceType> v;
+  static constexpr int BATCH_SIZE = sizeof(T_bitplane) * 8;
+};
+
+template <typename T_data, typename T_fp, typename T_bitplane,
+          int NUM_BITPLANES, typename DeviceType, bool SignMasks = false>
+class BPDecoderWarpTransposePortableKernel : public Kernel {
+public:
+  constexpr static bool EnableAutoTuning() { return false; }
+  constexpr static std::string_view Name =
+      "warp transpose bp decoder (portable)";
+  static constexpr SIZE BATCH_SIZE = sizeof(T_bitplane) * 8;
+  MGARDX_CONT
+  BPDecoderWarpTransposePortableKernel(
+      SIZE n, int starting_bitplane, SubArray<1, T_data, DeviceType> abs_max,
+      SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+      SubArray<1, bool, DeviceType> signs, SubArray<1, T_data, DeviceType> v)
+      : n(n), starting_bitplane(starting_bitplane), abs_max(abs_max),
+        encoded_bitplanes(encoded_bitplanes), signs(signs), v(v) {}
+
+  using FunctorType = BPDecoderWarpTransposePortableFunctor<
+      T_data, T_fp, T_bitplane, NUM_BITPLANES, DeviceType, SignMasks>;
+  using TaskType = Task<FunctorType>;
+
+  MGARDX_CONT TaskType GenTask(int queue_idx) {
+    FunctorType functor(n, starting_bitplane, abs_max, encoded_bitplanes, signs,
+                        v);
+    SIZE total_thread = std::max((SIZE)1, n / BATCH_SIZE);
+    return Task(functor, 1, 1, (total_thread - 1) / 256 + 1, 1, 1, 256,
+                functor.shared_memory_size(), queue_idx, std::string(Name));
+  }
+
+private:
+  SIZE n;
+  int starting_bitplane;
+  SubArray<1, T_data, DeviceType> abs_max;
+  SubArray<2, T_bitplane, DeviceType> encoded_bitplanes;
+  SubArray<1, bool, DeviceType> signs;
+  SubArray<1, T_data, DeviceType> v;
+};
+
+// The MDR-X bitplane encoder (see the top of this file). Kernels by layout
+// (SetLayout) and backend:
+//   Locality Block, CUDA with 32-bit words: BPEncoderWarpTransposeKernel,
+//     BPDecoderWarpTransposeKernel / BPDecoderWarpTransposeSignKernel;
+//   Locality Block, otherwise: BPEncoderWarpTransposePortableKernel,
+//     BPDecoderWarpTransposePortableKernel (after SignResolveKernel with
+//     significance-coded signs);
+//   Register Block (always with NegaBinary): BPEncoderRegisterBlockKernel,
+//     BPDecoderRegisterBlockKernel.
+template <DIM D, typename T_data, typename T_bitplane, typename T_error,
+          bool NegaBinary, bool ControlL2, typename DeviceType>
+class BPEncoderWarpTranspose
+    : public concepts::BitplaneEncoderInterface<D, T_data, T_bitplane, T_error,
+                                                ControlL2, DeviceType> {
+public:
+  static constexpr SIZE BATCH_SIZE = sizeof(T_bitplane) * 8;
+  static constexpr int MAX_BITPLANES = sizeof(T_data) * 8;
+  using T_sfp = typename std::conditional<std::is_same<T_data, double>::value,
+                                          int64_t, int32_t>::type;
+  using T_fp = typename std::conditional<std::is_same<T_data, double>::value,
+                                         uint64_t, uint32_t>::type;
+
+  BPEncoderWarpTranspose() : initialized(false) {
+    static_assert(
+        std::is_floating_point<T_data>::value,
+        "BPEncoderWarpTranspose: input data must be floating points.");
+    static_assert(!std::is_same<T_data, long double>::value,
+                  "BPEncoderWarpTranspose: long double is not supported.");
+    static_assert(std::is_unsigned<T_bitplane>::value,
+                  "BPEncoderWarpTranspose: streams must be unsigned integers.");
+    static_assert(std::is_integral<T_bitplane>::value,
+                  "BPEncoderWarpTranspose: streams must be unsigned integers.");
+  }
+  BPEncoderWarpTranspose(Hierarchy<D, T_data, DeviceType> &hierarchy)
+      : BPEncoderWarpTranspose() {
+    Adapt(hierarchy, 0);
+    DeviceRuntime<DeviceType>::SyncQueue(0);
+  }
+
+  // Layout of the encoded bitplanes: NUM_ROWS rows of bitplane_length(n)
+  // words. With the binary (sign-magnitude) encoding row 0 holds the signs
+  // (or, with significance-coded signs, the packed signs) and bitplane b is
+  // row b + 1; the negabinary encoding has no sign row.
+  static constexpr int SIGN_ROWS = NegaBinary ? 0 : 1;
+  static constexpr int NUM_ROWS = MAX_BITPLANES + SIGN_ROWS;
+
+  static SIZE bitplane_length(SIZE n) { return num_blocks(n); }
+
+  static SIZE num_blocks(SIZE n) {
+    const SIZE batch_size = sizeof(T_bitplane) * 8;
+    SIZE num_blocks = (n - 1) / batch_size + 1;
+    return num_blocks;
+  }
+
+  void Adapt(Hierarchy<D, T_data, DeviceType> &hierarchy, int queue_idx) {
+    Adapt(hierarchy, hierarchy.level_num_elems(hierarchy.l_target()),
+          queue_idx);
+  }
+
+  // max_level_num_elems: element count of the largest level to be encoded
+  // (with the hybrid decomposition the levels do not follow the hierarchy).
+  void Adapt(Hierarchy<D, T_data, DeviceType> &hierarchy,
+             SIZE max_level_num_elems, int queue_idx) {
+    this->initialized = true;
+    this->hierarchy = &hierarchy;
+    max_level_num_elems = round_up(max_level_num_elems, BATCH_SIZE);
+
+    level_errors_work_array.resize(
+        {MAX_BITPLANES + 1, num_blocks(max_level_num_elems)}, queue_idx);
+    DeviceCollective<DeviceType>::Sum(
+        num_blocks(max_level_num_elems), SubArray<1, T_error, DeviceType>(),
+        SubArray<1, T_error, DeviceType>(), level_error_sum_work_array, false,
+        queue_idx);
+    if constexpr (std::is_same<DeviceType, CUDA>::value &&
+                  sizeof(T_bitplane) == 4) {
+      // Status words of the sign decoder's chained scan for the largest
+      // level and any group size (allocating them at first use would put the
+      // allocation in the decoding of each level).
+      using SignKernel =
+          BPDecoderWarpTransposeSignKernel<T_data, T_fp, T_bitplane, 1,
+                                           DeviceType>;
+      SIZE status_size = SignKernel::num_blocks(max_level_num_elems) *
+                         significance::num_groups(MAX_BITPLANES, 1);
+      if (status_size > sign_status_size) {
+        sign_status.resize({status_size}, queue_idx);
+        sign_status_size = status_size;
+        sign_status.memset(0, queue_idx);
+        sign_epoch = 0;
+      }
+    }
+  }
+
+  static size_t EstimateMemoryFootprint(std::vector<SIZE> shape) {
+    Hierarchy<D, T_data, DeviceType> hierarchy(shape, Config());
+    SIZE max_level_num_elems = hierarchy.level_num_elems(hierarchy.l_target());
+    size_t size = 0;
+    size += hierarchy.EstimateMemoryFootprint(shape);
+    size +=
+        (MAX_BITPLANES + 1) * num_blocks(max_level_num_elems) * sizeof(T_error);
+    for (int level_idx = 0; level_idx < hierarchy.l_target() + 1; level_idx++) {
+      size += hierarchy.level_num_elems(level_idx) * sizeof(bool);
+    }
+    return size;
+  }
+
+  // Layout of the bitplane words (Config::mdr_bitplane_layout, recorded in
+  // the metadata). The negabinary encoding always uses the Register Block
+  // layout.
+  void SetLayout(bitplane_layout_type layout) { this->layout = layout; }
+  bitplane_layout_type Layout() const {
+    return NegaBinary ? bitplane_layout_type::RegisterBlock : layout;
+  }
+
+  // Significance-coded signs with groups of group_size bitplanes (0: a sign
+  // row). Binary encoding in the Locality Block layout only.
+  void SetSignCoding(int group_size) {
+    sign_group_size =
+        Layout() == bitplane_layout_type::LocalityBlock ? group_size : 0;
+  }
+  bool SignCoding() const { return sign_group_size > 0; }
+
+  static bool PortableSigns() { return portable_kernels(); }
+
+  // TODO: remove num_bitplanes in the future
+  void encode(SIZE n, int num_bitplanes,
+              SubArray<1, T_data, DeviceType> abs_max,
+              SubArray<1, T_data, DeviceType> v,
+              SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+              SubArray<1, T_error, DeviceType> level_errors, int queue_idx) {
+    encode(n, num_bitplanes, abs_max, v, encoded_bitplanes, level_errors,
+           queue_idx, SubArray<1, uint32_t, DeviceType>());
+  }
+
+  // ze_bitmaps (may be empty): zero-elimination chunk bitmaps of every row,
+  // written along with the rows when the encoder supports it, and ze_bits
+  // (may be empty) their sparse-word payload bits. Returns whether they were
+  // written. With significance-coded signs (SetSignCoding), row 0 gets the
+  // packed signs and sign_counts, sign_segment_bits their counts
+  // (SignificanceCoding.hpp).
+  bool encode(SIZE n, int num_bitplanes,
+              SubArray<1, T_data, DeviceType> abs_max,
+              SubArray<1, T_data, DeviceType> v,
+              SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+              SubArray<1, T_error, DeviceType> level_errors, int queue_idx,
+              SubArray<1, uint32_t, DeviceType> ze_bitmaps,
+              SubArray<1, uint32_t, DeviceType> ze_bits = {},
+              SubArray<1, uint32_t, DeviceType> sign_counts = {},
+              SubArray<1, uint32_t, DeviceType> sign_segment_bits = {}) {
+    if (SignCoding()) {
+      MemoryManager<DeviceType>::Memset1D(
+          sign_segment_bits.data(),
+          significance::num_groups(MAX_BITPLANES, sign_group_size) *
+              significance::num_segments(encoded_bitplanes.shape(1)),
+          0, queue_idx);
+    }
+    bool signs_packed = false;
+    bool bitmaps_written = encode_rows(
+        n, abs_max, v, encoded_bitplanes, level_errors, queue_idx, ze_bitmaps,
+        ze_bits, sign_counts, sign_segment_bits, signs_packed);
+    if (SignCoding() && !signs_packed) {
+      DeviceLauncher<DeviceType>::Execute(
+          significance::SignPackKernel<T_bitplane, DeviceType>(
+              MAX_BITPLANES, sign_group_size, encoded_bitplanes, sign_counts,
+              sign_segment_bits),
+          queue_idx);
+    }
+    return bitmaps_written;
+  }
+
+private:
+  bool encode_rows(SIZE n, SubArray<1, T_data, DeviceType> abs_max,
+                   SubArray<1, T_data, DeviceType> v,
+                   SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+                   SubArray<1, T_error, DeviceType> level_errors, int queue_idx,
+                   SubArray<1, uint32_t, DeviceType> ze_bitmaps,
+                   SubArray<1, uint32_t, DeviceType> ze_bits,
+                   SubArray<1, uint32_t, DeviceType> sign_counts,
+                   SubArray<1, uint32_t, DeviceType> sign_segment_bits,
+                   bool &signs_packed) {
+
+    if (n % BATCH_SIZE != 0) {
+      throw std::runtime_error(
+          "BPEncoderWarpTranspose: n is not a multiple of BATCH_SIZE");
+    }
+    SubArray<2, T_error, DeviceType> level_errors_work(level_errors_work_array);
+
+    if (Layout() == bitplane_layout_type::RegisterBlock) {
+      DeviceLauncher<DeviceType>::Execute(
+          BPEncoderRegisterBlockKernel<T_data, T_fp, T_sfp, T_bitplane, T_error,
+                                       MAX_BITPLANES, NegaBinary, ControlL2,
+                                       DeviceType>(
+              n, abs_max, v, encoded_bitplanes, level_errors_work),
+          queue_idx);
+    } else if constexpr (std::is_same<DeviceType, CUDA>::value &&
+                         sizeof(T_bitplane) == 4) {
+      using WarpKernel =
+          BPEncoderWarpTransposeKernel<T_data, T_fp, T_bitplane, T_error,
+                                       MAX_BITPLANES, ControlL2, DeviceType>;
+      signs_packed = SignCoding() && !PortableSigns();
+      DeviceLauncher<DeviceType>::Execute(
+          WarpKernel(n, abs_max, v, encoded_bitplanes, level_errors_work,
+                     ze_bitmaps, ze_bits, signs_packed ? sign_group_size : 0,
+                     sign_counts, sign_segment_bits),
+          queue_idx);
+      if constexpr (ControlL2) {
+        DeviceLauncher<DeviceType>::Execute(
+            BPErrorSumKernel<T_error, DeviceType>(
+                MAX_BITPLANES + 1, WarpKernel::num_blocks(n), level_errors_work,
+                level_errors),
+            queue_idx);
+      }
+      return ze_bitmaps.data() != nullptr;
+    } else {
+      DeviceLauncher<DeviceType>::Execute(
+          BPEncoderWarpTransposePortableKernel<T_data, T_fp, T_bitplane,
+                                               T_error, MAX_BITPLANES,
+                                               ControlL2, DeviceType>(
+              n, abs_max, v, encoded_bitplanes, level_errors_work),
+          queue_idx);
+    }
+
+    if constexpr (ControlL2) {
+      SIZE reduce_size = num_blocks(n);
+      for (int i = 0; i < MAX_BITPLANES + 1; i++) {
+        SubArray<1, T_error, DeviceType> curr_errors({reduce_size},
+                                                     level_errors_work(i, 0));
+        SubArray<1, T_error, DeviceType> sum_error({1}, level_errors(i));
+        DeviceCollective<DeviceType>::Sum(reduce_size, curr_errors, sum_error,
+                                          level_error_sum_work_array, true,
+                                          queue_idx);
+      }
+    }
+    return false;
+  }
+
+public:
+  void decode(SIZE n, int num_bitplanes,
+              SubArray<1, T_data, DeviceType> abs_max,
+              SubArray<2, T_bitplane, DeviceType> encoded_bitplanes, int level,
+              SubArray<1, T_data, DeviceType> v, int queue_idx) {}
+
+  void progressive_decode(SIZE n, int starting_bitplane, int num_bitplanes,
+                          SubArray<1, T_data, DeviceType> abs_max,
+                          SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+                          SubArray<1, bool, DeviceType> level_signs, int level,
+                          SubArray<1, T_data, DeviceType> v, int queue_idx) {
+    progressive_decode(n, starting_bitplane, num_bitplanes, abs_max,
+                       encoded_bitplanes, level_signs, level, v, queue_idx,
+                       SubArray<1, uint64_t, DeviceType>());
+  }
+
+  // decode the data and record necessary information for progressiveness.
+  // sign_sections: with significance-coded signs, the device addresses of
+  // the sign sections of the groups decoded.
+  void progressive_decode(SIZE n, int starting_bitplane, int num_bitplanes,
+                          SubArray<1, T_data, DeviceType> abs_max,
+                          SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+                          SubArray<1, bool, DeviceType> level_signs, int level,
+                          SubArray<1, T_data, DeviceType> v, int queue_idx,
+                          SubArray<1, uint64_t, DeviceType> sign_sections) {
+
+#define WT_DECODE(NUM_BITPLANES)                                               \
+  if (num_bitplanes == NUM_BITPLANES) {                                        \
+    decode_with<NUM_BITPLANES>(n, starting_bitplane, abs_max,                  \
+                               encoded_bitplanes, level_signs, v, queue_idx,   \
+                               sign_sections);                                 \
+  }
+    WT_DECODE(1);
+    WT_DECODE(2);
+    WT_DECODE(3);
+    WT_DECODE(4);
+    WT_DECODE(5);
+    WT_DECODE(6);
+    WT_DECODE(7);
+    WT_DECODE(8);
+    WT_DECODE(9);
+    WT_DECODE(10);
+    WT_DECODE(11);
+    WT_DECODE(12);
+    WT_DECODE(13);
+    WT_DECODE(14);
+    WT_DECODE(15);
+    WT_DECODE(16);
+    WT_DECODE(17);
+    WT_DECODE(18);
+    WT_DECODE(19);
+    WT_DECODE(20);
+    WT_DECODE(21);
+    WT_DECODE(22);
+    WT_DECODE(23);
+    WT_DECODE(24);
+    WT_DECODE(25);
+    WT_DECODE(26);
+    WT_DECODE(27);
+    WT_DECODE(28);
+    WT_DECODE(29);
+    WT_DECODE(30);
+    WT_DECODE(31);
+    WT_DECODE(32);
+    WT_DECODE(33);
+    WT_DECODE(34);
+    WT_DECODE(35);
+    WT_DECODE(36);
+    WT_DECODE(37);
+    WT_DECODE(38);
+    WT_DECODE(39);
+    WT_DECODE(40);
+    WT_DECODE(41);
+    WT_DECODE(42);
+    WT_DECODE(43);
+    WT_DECODE(44);
+    WT_DECODE(45);
+    WT_DECODE(46);
+    WT_DECODE(47);
+    WT_DECODE(48);
+    WT_DECODE(49);
+    WT_DECODE(50);
+    WT_DECODE(51);
+    WT_DECODE(52);
+    WT_DECODE(53);
+    WT_DECODE(54);
+    WT_DECODE(55);
+    WT_DECODE(56);
+    WT_DECODE(57);
+    WT_DECODE(58);
+    WT_DECODE(59);
+    WT_DECODE(60);
+    WT_DECODE(61);
+    WT_DECODE(62);
+    WT_DECODE(63);
+    WT_DECODE(64);
+#undef WT_DECODE
+  }
+
+  void print() const {
+    std::cout << "Warp transpose bitplane encoder" << std::endl;
+  }
+
+private:
+  template <int NUM_BITPLANES>
+  void decode_with(SIZE n, int starting_bitplane,
+                   SubArray<1, T_data, DeviceType> abs_max,
+                   SubArray<2, T_bitplane, DeviceType> encoded_bitplanes,
+                   SubArray<1, bool, DeviceType> level_signs,
+                   SubArray<1, T_data, DeviceType> v, int queue_idx,
+                   SubArray<1, uint64_t, DeviceType> sign_sections) {
+    if constexpr (std::is_same<DeviceType, CUDA>::value &&
+                  sizeof(T_bitplane) == 4) {
+      if (SignCoding() && !PortableSigns()) {
+        using SignKernel =
+            BPDecoderWarpTransposeSignKernel<T_data, T_fp, T_bitplane,
+                                             NUM_BITPLANES, DeviceType>;
+        // Status words of the chained scan, tagged with an epoch per launch
+        // (zeroed when allocated or when the epoch wraps around).
+        SIZE status_size =
+            SignKernel::num_blocks(n) *
+            significance::num_groups(NUM_BITPLANES, sign_group_size);
+        if (++sign_epoch == 0 || status_size > sign_status_size) {
+          if (status_size > sign_status_size) {
+            sign_status.resize({status_size}, queue_idx);
+            sign_status_size = status_size;
+          }
+          sign_status.memset(0, queue_idx);
+          sign_epoch = 1;
+        }
+        DeviceLauncher<DeviceType>::Execute(
+            SignKernel(n, starting_bitplane, sign_group_size, abs_max,
+                       encoded_bitplanes, level_signs, sign_sections,
+                       SubArray(sign_status), sign_epoch, v),
+            queue_idx);
+        return;
+      }
+    }
+    if (SignCoding()) {
+      // The signs of the coefficients that become nonzero, into the state;
+      // then decoded with every sign from the state.
+      DeviceLauncher<DeviceType>::Execute(
+          significance::SignResolveKernel<T_bitplane, DeviceType>(
+              n, starting_bitplane, NUM_BITPLANES, sign_group_size,
+              encoded_bitplanes, level_signs, sign_sections),
+          queue_idx);
+      DeviceLauncher<DeviceType>::Execute(
+          BPDecoderWarpTransposePortableKernel<T_data, T_fp, T_bitplane,
+                                               NUM_BITPLANES, DeviceType, true>(
+              n, starting_bitplane, abs_max, encoded_bitplanes, level_signs, v),
+          queue_idx);
+    } else if (Layout() == bitplane_layout_type::RegisterBlock) {
+      DeviceLauncher<DeviceType>::Execute(
+          BPDecoderRegisterBlockKernel<T_data, T_fp, T_sfp, T_bitplane,
+                                       NUM_BITPLANES, NegaBinary, DeviceType>(
+              n, starting_bitplane, abs_max, encoded_bitplanes, level_signs, v),
+          queue_idx);
+    } else if constexpr (std::is_same<DeviceType, CUDA>::value &&
+                         sizeof(T_bitplane) == 4) {
+      DeviceLauncher<DeviceType>::Execute(
+          BPDecoderWarpTransposeKernel<T_data, T_fp, T_bitplane, NUM_BITPLANES,
+                                       DeviceType>(
+              n, starting_bitplane, abs_max, encoded_bitplanes, level_signs, v),
+          queue_idx);
+    } else {
+      DeviceLauncher<DeviceType>::Execute(
+          BPDecoderWarpTransposePortableKernel<T_data, T_fp, T_bitplane,
+                                               NUM_BITPLANES, DeviceType>(
+              n, starting_bitplane, abs_max, encoded_bitplanes, level_signs, v),
+          queue_idx);
+    }
+  }
+
+  bitplane_layout_type layout = bitplane_layout_type::LocalityBlock;
+  int sign_group_size = 0;
+  Array<1, uint64_t, DeviceType> sign_status;
+  SIZE sign_status_size = 0;
+  uint32_t sign_epoch = 0;
+  bool initialized;
+  Hierarchy<D, T_data, DeviceType> *hierarchy;
+  Array<2, T_error, DeviceType> level_errors_work_array;
+  Array<1, Byte, DeviceType> level_error_sum_work_array;
 };
 
 } // namespace MDR

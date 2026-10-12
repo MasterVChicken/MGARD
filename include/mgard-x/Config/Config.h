@@ -37,13 +37,14 @@ struct Config {
   // MDR-X: store bitplane groups with zero elimination instead of
   // Huffman/RLE (experimental).
   bool mdr_zero_elimination;
-  // MDR-X: bitplane words of 32 consecutive coefficients (better locality
-  // for the lossless stage) instead of 32 coefficients strided over a level.
-  bool mdr_contiguous_words;
-  // MDR-X, with zero elimination and contiguous words: store the sign of a
-  // coefficient with the bitplane group in which it becomes nonzero instead
-  // of in a sign row of the first group, so that retrievals read only the
-  // signs of the coefficients they reconstruct as nonzero.
+  // MDR-X: layout of the bitplane words. LocalityBlock (words of 32
+  // consecutive coefficients, better locality for the lossless stage) or
+  // HP-MDR's RegisterBlock (32 coefficients strided over a level).
+  enum bitplane_layout_type mdr_bitplane_layout;
+  // MDR-X, with zero elimination and the Locality Block layout: store the
+  // sign of a coefficient with the bitplane group in which it becomes nonzero
+  // instead of in a sign row of the first group, so that retrievals read only
+  // the signs of the coefficients they reconstruct as nonzero.
   bool mdr_significance_signs;
   // MDR-X, with zero elimination: rows may store their nonzero words as a
   // 3-bit code and the positions of their one bits (when that is smaller).

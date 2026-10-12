@@ -38,10 +38,7 @@ public:
   constexpr static bool ProfileBPEncoder = false;
   // using Encoder = GroupedBPEncoder<D, T_data, T_bitplane, T_error,
   //                                ControlL2, DeviceType>;
-  // using Encoder = BPEncoderLocalityBlock<D, T_data, T_bitplane, T_error,
-  // NegaBinary,
-  //                                ControlL2, DeviceType>;
-  using Encoder = BPEncoderRegisterBlock<D, T_data, T_bitplane, T_error,
+  using Encoder = BPEncoderWarpTranspose<D, T_data, T_bitplane, T_error,
                                          NegaBinary, ControlL2, DeviceType>;
   // using Encoder = BPEncoderRegisterShift<D, T_data, T_bitplane, T_error,
   // NegaBinary,
@@ -388,13 +385,16 @@ public:
                     int queue_idx) {
     mdr_metadata.CheckFormatVersion();
     compressor.SetGroupSize(mdr_metadata.group_size);
-    encoder.SetWordOrder(mdr_metadata.word_order == 1);
+    encoder.SetLayout(mdr_metadata.bitplane_layout == 1
+                          ? bitplane_layout_type::LocalityBlock
+                          : bitplane_layout_type::RegisterBlock);
     sign_coding = mdr_metadata.sign_coding == 1;
     compressor.SetSignCoding(sign_coding);
     encoder.SetSignCoding(sign_coding ? mdr_metadata.group_size : 0);
     if (sign_coding && !encoder.SignCoding()) {
       throw std::runtime_error("MDR-X: significance-coded signs need the "
-                               "binary encoding and contiguous words.");
+                               "binary encoding and the Locality Block "
+                               "layout.");
     }
     // All levels, not just up to CurrFinalLevel(): levels with no bitplanes
     // must get level_num_bitplanes = 0 rather than keep a value from a

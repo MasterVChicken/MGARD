@@ -112,6 +112,15 @@ enum class operation_type : uint8_t { Compression, MDR };
 
 enum class bitplane_encoding_type : uint8_t { GroupedBitplaneEncoding };
 
+// MDR-X bitplane word layouts, named after the HP-MDR encoders that write
+// them (the values are stored in the refactored data). RegisterBlock: word w
+// of a bitplane holds 32 coefficients strided over the level; LocalityBlock:
+// word w holds the 32 consecutive coefficients [32 w, 32 w + 32).
+enum class bitplane_layout_type : uint8_t {
+  RegisterBlock = 0,
+  LocalityBlock = 1
+};
+
 enum class compress_status_type : uint8_t {
   Success,
   Failure,

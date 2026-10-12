@@ -26,7 +26,8 @@ macro(mgard_x_add_test SRC_NAME DEVICE_TYPE)
   list(APPEND MGARD_X_TEST_SOURCES ${_gen})
 endmacro()
 
-# BPEncoderRegisterBlock's progressive_decode() unconditionally macro-unrolls
+# BPEncoderRegisterBlock's and BPEncoderWarpTranspose's progressive_decode()
+# unconditionally macro-unroll
 # 64 kernel variants per (T_data, T_bitplane, NegaBinary, ControlL2)
 # configuration it is instantiated with. Templating across all of them in one
 # translation unit (as test_Compressor etc. do for their own axes) overwhelms
@@ -34,7 +35,8 @@ endmacro()
 # own small file instead -- the same reason the library itself generates
 # e.g. Compressor_1D_double_CUDA.cpp per type/dim combination rather than
 # templating across them.
-set(BP_ENCODER_LIST BPEncoderLocalityBlock BPEncoderRegisterBlock)
+set(BP_ENCODER_LIST BPEncoderLocalityBlock BPEncoderRegisterBlock
+                    BPEncoderWarpTranspose)
 set(BP_DATA_TYPE_LIST float double)
 set(BP_BITPLANE_TYPE_LIST uint32_t uint64_t)
 set(BP_BOOL_LIST true false)
@@ -44,8 +46,9 @@ macro(mgard_x_add_bitplane_encoder_tests DEVICE_TYPE)
     # BPEncoderLocalityBlock has no batch-alignment requirement on n (its
     # encode/decode loops guard every element access with `< n`), so it is
     # deliberately tested with a size that is not a multiple of either
-    # bitplane word's batch size (32 or 64). BPEncoderRegisterBlock requires n
-    # to be a multiple of its batch size; 4096 is a multiple of both.
+    # bitplane word's batch size (32 or 64). BPEncoderRegisterBlock and
+    # BPEncoderWarpTranspose require n to be a multiple of their batch size;
+    # 4096 is a multiple of both.
     if(ENCODER_NAME STREQUAL "BPEncoderLocalityBlock")
       set(BP_TEST_N 4001)
     else()
@@ -76,7 +79,7 @@ macro(mgard_x_add_bitplane_encoder_tests DEVICE_TYPE)
 endmacro()
 
 # Same reasoning as mgard_x_add_bitplane_encoder_tests: ComposedRefactor/
-# Reconstructor pull in BPEncoderRegisterBlock's 64-way macro-unrolled decode
+# Reconstructor pull in BPEncoderWarpTranspose's 64-way macro-unrolled decode
 # kernels too, so each (D, T_data, Basis, ControlL2, NegaBinary) configuration
 # gets its own file. Hierarchical + ControlL2 is skipped: L2 error tracking
 # needs an orthogonal basis to be meaningful.

@@ -41,7 +41,7 @@ public:
   // have sparse-word rows (Config::mdr_sparse_words, identified by the group
   // signature). 4: as 3, with the sign coding
   // recorded (sign_coding). 3: as 2, with the word layout
-  // recorded (word_order). 2: as 1, with the number of
+  // recorded (bitplane_layout). 2: as 1, with the number of
   // bitplanes per merged group recorded (group_size). 1: signs in their own
   // row (part of the first bitplane group), groups of 4 bitplanes. 0
   // (absent): signs shared row 0 with bitplane 0 in rows twice as long; no
@@ -50,9 +50,11 @@ public:
   uint32_t format_version = FORMAT_VERSION;
   // Bitplanes per merged group (Config::mdr_bitplane_group_size).
   uint32_t group_size = 4;
-  // Bitplane words: 0 = 32 coefficients strided over the level (versions
-  // 1-2), 1 = 32 consecutive coefficients (Config::mdr_contiguous_words).
-  uint32_t word_order = 0;
+  // Layout of the bitplane words (bitplane_layout_type,
+  // Config::mdr_bitplane_layout): 0 = Register Block, 32 coefficients strided
+  // over the level (versions 1-2), 1 = Locality Block, 32 consecutive
+  // coefficients.
+  uint32_t bitplane_layout = 0;
   // Signs: 0 = a sign row in the first bitplane group (versions 1-3), 1 =
   // significance-coded: stored with the group in which each coefficient
   // becomes nonzero (Config::mdr_significance_signs, zero elimination only).
@@ -212,7 +214,7 @@ public:
     uint32_t version = FORMAT_VERSION;
     Serialize(ptr, &version, sizeof(uint32_t));
     Serialize(ptr, &group_size, sizeof(uint32_t));
-    Serialize(ptr, &word_order, sizeof(uint32_t));
+    Serialize(ptr, &bitplane_layout, sizeof(uint32_t));
     Serialize(ptr, &sign_coding, sizeof(uint32_t));
     return serialize_metadata;
   }
@@ -240,9 +242,9 @@ public:
     if (format_version >= 2 && ptr + sizeof(uint32_t) <= end) {
       Deserialize(ptr, &group_size, sizeof(uint32_t));
     }
-    word_order = 0;
+    bitplane_layout = 0;
     if (format_version >= 3 && ptr + sizeof(uint32_t) <= end) {
-      Deserialize(ptr, &word_order, sizeof(uint32_t));
+      Deserialize(ptr, &bitplane_layout, sizeof(uint32_t));
     }
     sign_coding = 0;
     if (format_version >= 4 && ptr + sizeof(uint32_t) <= end) {

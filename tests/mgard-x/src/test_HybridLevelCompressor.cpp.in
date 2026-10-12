@@ -6,7 +6,7 @@
 
 // HybridLevelCompressor (include/mgard-x/MDR-X/LosslessCompressor/
 // HybridLevelCompressor.hpp) is the lossless back end ComposedRefactor uses
-// on the bitplanes BPEncoder{LocalityBlock,RegisterBlock} produce (see
+// on the bitplanes the BPEncoder* classes produce (see
 // test_BitplaneEncoder*): every num_merged_bitplanes (4) consecutive rows of
 // the encoded_bitplanes 2D buffer are byte-reinterpreted as one flat stream
 // and, if large enough, compressed with RLE first, then Huffman, falling

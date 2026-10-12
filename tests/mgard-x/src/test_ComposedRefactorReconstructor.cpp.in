@@ -7,7 +7,7 @@
 // One (D, T_data, Basis, ControlL2, NegaBinary) configuration per generated
 // file -- see tests/mgard-x/CMakeLists.txt. ComposedRefactor/Reconstructor
 // pull in the full decompose/interleave/encode/compress pipeline (including
-// BPEncoderRegisterBlock's 64-way macro-unrolled decode kernels), so
+// BPEncoderWarpTranspose's 64-way macro-unrolled decode kernels), so
 // combining more than one configuration in a translation unit risks the same
 // CUDA/HIP compile-time blowup test_BitplaneEncoderConfig.cpp.in works
 // around.

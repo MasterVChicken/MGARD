@@ -50,7 +50,7 @@ void print_usage_message(std::string error) {
 \t\t\t (optional) -gl / --global-levels <int>: global levels, -1 = as many as possible (default: -1)\n\
 \t\t (optional) -gs / --group-size <1-4>: bitplanes per merged group, the unit of compression and retrieval (default: 2)\n\
 \t\t (optional) -ze / --zero-elimination: store bitplane groups with zero elimination (experimental)\n\
-\t\t (optional) -sw / --strided-words: bitplane words of strided coefficients (the version 1-2 layout)\n\
+\t\t (optional) -sw / --strided-words: HP-MDR's Register Block bitplane layout, words of strided coefficients (the version 1-2 layout), instead of the Locality Block layout\n\
 \t\t (optional) -rs / --row-signs: with -ze, keep the signs in a row of the first bitplane group (the version 3 layout) instead of with the group where each coefficient becomes nonzero\n\
 \t\t (optional) -dw / --dense-words: with -ze, store nonzero words whole (the version 4 layout) instead of choosing per row the sparse-word coding of their one bits\n\
 \n\
@@ -325,7 +325,9 @@ int launch_refactor(mgard_x::DIM D, enum mgard_x::data_type dtype,
   mgard_x::Config config;
   config.mdr_bitplane_group_size = group_size;
   config.mdr_zero_elimination = zero_elimination;
-  config.mdr_contiguous_words = !strided_words;
+  config.mdr_bitplane_layout =
+      strided_words ? mgard_x::bitplane_layout_type::RegisterBlock
+                    : mgard_x::bitplane_layout_type::LocalityBlock;
   config.mdr_significance_signs = !row_signs;
   config.mdr_sparse_words = !dense_words;
   config.normalize_coordinates = false;

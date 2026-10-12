@@ -14,8 +14,8 @@
 namespace mgard_x {
 namespace MDR {
 
-// Significance-coded signs (format version 4; binary encoding, contiguous
-// words, zero elimination). Instead of a sign row in the first bitplane
+// Significance-coded signs (format version 4; binary encoding, Locality
+// Block layout, zero elimination). Instead of a sign row in the first bitplane
 // group, the sign of a coefficient is stored in the group where it becomes
 // significant (the group of its first nonzero bit), so a retrieval reads the
 // signs of the coefficients it reconstructs as nonzero and no others.

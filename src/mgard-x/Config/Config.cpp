@@ -55,7 +55,7 @@ Config::Config() {
   mdr_adaptive_resolution = false;
   mdr_bitplane_group_size = 2;
   mdr_zero_elimination = false;
-  mdr_contiguous_words = true;
+  mdr_bitplane_layout = bitplane_layout_type::LocalityBlock;
   mdr_significance_signs = true;
   mdr_sparse_words = true;
   adjust_shape = false;
