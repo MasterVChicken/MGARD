@@ -29,8 +29,8 @@ namespace MDR {
 // each lane one word, which shared memory then stores coalesced. Other
 // backends, and 64-bit words, use portable kernels with one thread per word.
 // The Register Block layout of HP-MDR (words of strided coefficients; mdr-x
-// -sw, version 1-2 data, and always with the negabinary encoding) is written
-// with the kernels of BPEncoderRegisterBlock.hpp.
+// -sw, and always with the negabinary encoding) is written with the kernels
+// of BPEncoderRegisterBlock.hpp.
 
 // Transposes a 32 x 32 bit matrix held one row per lane: on return, bit c of
 // lane l is bit l of lane c on entry.

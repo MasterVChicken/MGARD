@@ -37,25 +37,18 @@ public:
   }
 
   using T_error = double;
-  // Layout of the refactored bitplanes. 5: as 4; zero-elimination groups may
-  // have sparse-word rows (Config::mdr_sparse_words, identified by the group
-  // signature). 4: as 3, with the sign coding
-  // recorded (sign_coding). 3: as 2, with the word layout
-  // recorded (bitplane_layout). 2: as 1, with the number of
-  // bitplanes per merged group recorded (group_size). 1: signs in their own
-  // row (part of the first bitplane group), groups of 4 bitplanes. 0
-  // (absent): signs shared row 0 with bitplane 0 in rows twice as long; no
-  // longer readable.
+  // Version of the refactored data format. Only this version is read: data
+  // of any other version (0 when absent, as with earlier MDR-X builds) has
+  // to be refactored again.
   static constexpr uint32_t FORMAT_VERSION = 5;
   uint32_t format_version = FORMAT_VERSION;
   // Bitplanes per merged group (Config::mdr_bitplane_group_size).
   uint32_t group_size = 4;
   // Layout of the bitplane words (bitplane_layout_type,
   // Config::mdr_bitplane_layout): 0 = Register Block, 32 coefficients strided
-  // over the level (versions 1-2), 1 = Locality Block, 32 consecutive
-  // coefficients.
+  // over the level, 1 = Locality Block, 32 consecutive coefficients.
   uint32_t bitplane_layout = 0;
-  // Signs: 0 = a sign row in the first bitplane group (versions 1-3), 1 =
+  // Signs: 0 = a sign row in the first bitplane group, 1 =
   // significance-coded: stored with the group in which each coefficient
   // becomes nonzero (Config::mdr_significance_signs, zero elimination only).
   uint32_t sign_coding = 0;
@@ -209,8 +202,8 @@ public:
       Serialize(ptr, level_sizes[i].data(), sizeof(SIZE) * (num_bitplanes));
     }
     Serialize(ptr, level_num_elems.data(), sizeof(SIZE) * num_levels);
-    // Appended last, so metadata written before it existed still parses
-    // (as version 0).
+    // Appended last, so that metadata without it (earlier MDR-X builds)
+    // still parses, as version 0.
     uint32_t version = FORMAT_VERSION;
     Serialize(ptr, &version, sizeof(uint32_t));
     Serialize(ptr, &group_size, sizeof(uint32_t));
@@ -238,26 +231,20 @@ public:
     if (ptr + sizeof(uint32_t) <= end) {
       Deserialize(ptr, &format_version, sizeof(uint32_t));
     }
-    group_size = 4;
-    if (format_version >= 2 && ptr + sizeof(uint32_t) <= end) {
+    // The other fields of this version (CheckFormatVersion rejects others).
+    if (format_version == FORMAT_VERSION && ptr + 3 * sizeof(uint32_t) <= end) {
       Deserialize(ptr, &group_size, sizeof(uint32_t));
-    }
-    bitplane_layout = 0;
-    if (format_version >= 3 && ptr + sizeof(uint32_t) <= end) {
       Deserialize(ptr, &bitplane_layout, sizeof(uint32_t));
-    }
-    sign_coding = 0;
-    if (format_version >= 4 && ptr + sizeof(uint32_t) <= end) {
       Deserialize(ptr, &sign_coding, sizeof(uint32_t));
     }
   }
 
   void CheckFormatVersion() const {
-    if (format_version < 1 || format_version > FORMAT_VERSION) {
+    if (format_version != FORMAT_VERSION) {
       throw std::runtime_error(
-          "MDR-X: this data was refactored with bitplane layout version " +
-          std::to_string(format_version) + "; this build reads versions 1-" +
-          std::to_string(FORMAT_VERSION) + ". Refactor it again.");
+          "MDR-X: this data was refactored with format version " +
+          std::to_string(format_version) + "; this build reads version " +
+          std::to_string(FORMAT_VERSION) + " only. Refactor it again.");
     }
   }
 };

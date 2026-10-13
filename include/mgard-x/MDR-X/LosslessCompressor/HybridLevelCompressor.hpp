@@ -414,7 +414,7 @@ public:
         queue_idx);
   }
 
-  // Sizes the groups of a level (two-level or sparse rows) from its row
+  // Sizes the groups of a level (sparse rows or not) from its row
   // totals of nonzero words, chunks and region words (choosing raw and sparse
   // rows) and sign words (sign_coding), resizes compressed_bitplanes and
   // appends the level's write tasks.
@@ -427,7 +427,7 @@ public:
     using namespace zero_elimination;
     const bool signs = sign_words != nullptr;
     const uint32_t kind =
-        ZE | TWO_LEVEL | (signs ? SIGNS : 0) | (sparse_words ? SPARSE : 0);
+        ZE | (signs ? SIGNS : 0) | (sparse_words ? SPARSE : 0);
     for (SIZE b = 0; b < num_bitplanes; b++) {
       if (b % num_merged_bitplanes != 0) {
         compressed_bitplanes[b].resize({0}, queue_idx);
@@ -441,17 +441,16 @@ public:
         counts[r] = totals[first + r];
         chunks[r] = chunk_totals[first + r];
         uint32_t region = sparse_words ? region_totals[first + r] : 0;
-        if (region > 0 && row_bytes(counts[r], chunks[r], num_words, true,
-                                    region) <
-                              row_bytes(counts[r], chunks[r], num_words, true)) {
+        if (region > 0 && row_bytes(counts[r], chunks[r], num_words, region) <
+                              row_bytes(counts[r], chunks[r], num_words)) {
           payload[r] = region;
         }
-        if (row_bytes(counts[r], chunks[r], num_words, true, payload[r]) >=
-            row_bytes(RAW_ROW, 0, num_words, true)) {
+        if (row_bytes(counts[r], chunks[r], num_words, payload[r]) >=
+            row_bytes(RAW_ROW, 0, num_words)) {
           counts[r] = RAW_ROW;
           payload[r] = 0;
         }
-        size += row_bytes(counts[r], chunks[r], num_words, true, payload[r]);
+        size += row_bytes(counts[r], chunks[r], num_words, payload[r]);
       }
       SIZE sign_section = size;
       uint32_t words = signs ? sign_words[b / num_merged_bitplanes] : 0;
@@ -466,8 +465,7 @@ public:
                                  (uint64_t)section, (uint32_t)(first + r),
                                  counts[r], chunks[r], (uint32_t)r,
                                  (uint32_t)rows, kind, payload[r]});
-        section +=
-            row_bytes(counts[r], chunks[r], num_words, true, payload[r]);
+        section += row_bytes(counts[r], chunks[r], num_words, payload[r]);
       }
       if (signs) {
         // The sign words are the last header word.
@@ -624,7 +622,7 @@ public:
                                       SIZE num_words) {
     using namespace zero_elimination;
     const uint32_t kind = group_kind(host);
-    const bool two_level = kind & TWO_LEVEL, sparse = kind & SPARSE;
+    const bool sparse = kind & SPARSE;
     uint32_t rows, words;
     std::memcpy(&rows, host + SIGNATURE_BYTES, sizeof(uint32_t));
     std::memcpy(&words, host + SIGNATURE_BYTES + sizeof(uint32_t),
@@ -635,18 +633,16 @@ public:
     const uint32_t *header = (const uint32_t *)(host + SIGNATURE_BYTES);
     SIZE section = header_bytes(rows, kind);
     for (uint32_t r = 0; r < rows; r++) {
-      uint32_t count, chunks = 0, payload = 0;
+      uint32_t count, chunks, payload = 0;
       std::memcpy(&count, header + 2 + r, sizeof(uint32_t));
-      if (two_level) {
-        std::memcpy(&chunks, header + 2 + rows + r, sizeof(uint32_t));
-      }
+      std::memcpy(&chunks, header + 2 + rows + r, sizeof(uint32_t));
       if (sparse) {
         std::memcpy(&payload, header + 2 + 2 * rows + r, sizeof(uint32_t));
       }
       ze_tasks_host.push_back({(uint64_t)compressed.data(), (uint64_t)section,
                                (uint32_t)(first_row + r), count, chunks, r,
                                rows, kind, payload});
-      section += row_bytes(count, chunks, num_words, two_level, payload);
+      section += row_bytes(count, chunks, num_words, payload);
     }
     return (kind & SIGNS) ? (uint64_t)(compressed.data() + section) : 0;
   }

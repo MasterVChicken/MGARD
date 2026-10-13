@@ -31,28 +31,26 @@ inline bool portable_kernels() {
 // Zero elimination of encoded bitplane rows: a single-pass, data-parallel
 // alternative to Huffman/RLE. A row of 32-bit words is split into chunks of
 // 32 words; each chunk has a 32-bit bitmap of its nonzero words (bit j for
-// word j), and only the nonzero words are stored. Two-level rows also mark
-// the chunks with a nonzero bitmap (one bit per chunk) and store only those
-// bitmaps, so that sparse rows cost little more than their nonzero words. A
-// row is stored raw when that is not smaller.
+// word j), and only the nonzero words are stored. The chunks with a nonzero
+// bitmap are marked (one bit per chunk) and only those bitmaps are stored, so
+// that sparse rows cost little more than their nonzero words. A row is stored
+// raw when that is not smaller.
 //
-// Sparse words (groups of kind SPARSE): a two-level row may instead store
-// each nonzero word as a 3-bit code and a payload: k <= SPARSE_MAX_ONES one
-// bits as k 5-bit positions (ascending), more as the 32 bits (RAW_CODE). The
-// codes and payloads of a super-chunk form its region, word aligned: the
-// codes of its stored words in order, then their payloads in order. A row is
-// sparse when that is smaller (payload > 0: its region words).
+// Sparse words (groups of kind SPARSE): a row may instead store each nonzero
+// word as a 3-bit code and a payload: k <= SPARSE_MAX_ONES one bits as k
+// 5-bit positions (ascending), more as the 32 bits (RAW_CODE). The codes and
+// payloads of a super-chunk form its region, word aligned: the codes of its
+// stored words in order, then their payloads in order. A row is sparse when
+// that is smaller (payload > 0: its region words).
 //
 // Merged group stream (all fields uint32 unless noted, 4-byte aligned):
 //   signature (8 bytes), num_rows, num_words,
 //   count[num_rows]            nonzero words of each row, RAW_ROW if raw
-//   chunks[num_rows]           (two-level) chunks with a nonzero bitmap
+//   chunks[num_rows]           chunks with a nonzero bitmap
 //   payload[num_rows]          (sparse words) region words, 0: not sparse
 //   sign_words                 (with signs) words of the sign section
 //   then for each row, raw:    words[num_words]
-//                  one-level:  word_offsets[num_super], bitmaps[num_chunks],
-//                              words[count]
-//                  two-level:  word_offsets[num_super],
+//                  packed:     word_offsets[num_super],
 //                              bitmap_offsets[num_super],
 //                              marks[num_level2] (bit c of mark i: chunk
 //                              32 i + c has a nonzero bitmap),
@@ -64,9 +62,8 @@ inline bool portable_kernels() {
 //   then (with signs) the sign section (SignificanceCoding.hpp).
 // A super-chunk is SUPER chunks (one thread block); its offsets (first
 // nonzero word, first stored bitmap, region) let every block decode
-// independently. Signatures: "MGXZELM" one-level, "MGXZESG" one-level with
-// signs (versions 3-4, read only), "MGXZ2LM" two-level, "MGXZ2SG" two-level
-// with signs, "MGXZ3LM" / "MGXZ3SG" the same with sparse words.
+// independently. Signatures: "MGXZ2LM", "MGXZ2SG" with signs, "MGXZ3LM" /
+// "MGXZ3SG" the same with sparse words.
 namespace zero_elimination {
 
 static constexpr SIZE CHUNK = 32;  // words per bitmap
@@ -74,9 +71,8 @@ static constexpr SIZE SUPER = 256; // chunks per super-chunk (= block size)
 static constexpr uint32_t RAW_ROW = 0xffffffffu;
 static constexpr SIZE SIGNATURE_BYTES = 8;
 
-// Group kinds (flags; 0: not a zero-elimination group). SPARSE only with
-// TWO_LEVEL.
-static constexpr uint32_t ZE = 1, SIGNS = 2, TWO_LEVEL = 4, SPARSE = 8;
+// Group kinds (flags; 0: not a zero-elimination group).
+static constexpr uint32_t ZE = 1, SIGNS = 2, SPARSE = 4;
 
 // Sparse words: codes and payload bits.
 static constexpr uint32_t SPARSE_MAX_ONES = 6, RAW_CODE = 7, CODE_BITS = 3;
@@ -85,14 +81,13 @@ static constexpr SIZE MAX_REGION =
     (CODE_BITS * SUPER * CHUNK + 32 * SUPER * CHUNK) / 32;
 
 MGARDX_CONT_EXEC void write_signature(Byte *stream, uint32_t kind) {
-  const bool signs = kind & SIGNS, two = kind & TWO_LEVEL,
-             sparse = kind & SPARSE;
+  const bool signs = kind & SIGNS, sparse = kind & SPARSE;
   const Byte sig[SIGNATURE_BYTES] = {
       'M',
       'G',
       'X',
       'Z',
-      sparse ? (Byte)'3' : (two ? (Byte)'2' : (Byte)'E'),
+      sparse ? (Byte)'3' : (Byte)'2',
       signs ? (Byte)'S' : (Byte)'L',
       signs ? (Byte)'G' : (Byte)'M',
       0};
@@ -101,11 +96,7 @@ MGARDX_CONT_EXEC void write_signature(Byte *stream, uint32_t kind) {
   }
 }
 inline uint32_t group_kind(const Byte *header) {
-  for (uint32_t kind = ZE; kind <= (ZE | SIGNS | TWO_LEVEL | SPARSE);
-       kind += 2) {
-    if ((kind & SPARSE) && !(kind & TWO_LEVEL)) {
-      continue;
-    }
+  for (uint32_t kind = ZE; kind <= (ZE | SIGNS | SPARSE); kind += 2) {
     Byte sig[SIGNATURE_BYTES];
     write_signature(sig, kind);
     if (std::memcmp(header, sig, SIGNATURE_BYTES) == 0) {
@@ -175,29 +166,22 @@ MGARDX_CONT_EXEC uint32_t get_bits(const uint32_t *words, P pos, int k) {
 // Size in bytes of a row's section (payload: region words of a sparse row,
 // 0 otherwise).
 inline SIZE row_bytes(uint32_t count, uint32_t chunks, SIZE num_words,
-                      bool two_level, uint32_t payload = 0) {
+                      uint32_t payload = 0) {
   if (count == RAW_ROW) {
     return num_words * sizeof(uint32_t);
   }
-  if (two_level && payload) {
+  if (payload) {
     return (3 * num_super(num_words) + num_level2(num_words) + chunks +
             payload) *
            sizeof(uint32_t);
   }
-  if (two_level) {
-    return (2 * num_super(num_words) + num_level2(num_words) + chunks +
-            count) *
-           sizeof(uint32_t);
-  }
-  return (num_super(num_words) + num_chunks(num_words) + count) *
+  return (2 * num_super(num_words) + num_level2(num_words) + chunks + count) *
          sizeof(uint32_t);
 }
-// Header words: count[] from word 2, then chunks[] (two-level), payload[]
-// (sparse words), then the sign words (with signs).
+// Header words: count[] from word 2, then chunks[], payload[] (sparse
+// words), then the sign words (with signs).
 MGARDX_CONT_EXEC SIZE header_words(SIZE num_rows, uint32_t kind) {
-  return 2 +
-         num_rows * (1 + ((kind & TWO_LEVEL) ? 1 : 0) +
-                     ((kind & SPARSE) ? 1 : 0)) +
+  return 2 + num_rows * (2 + ((kind & SPARSE) ? 1 : 0)) +
          ((kind & SIGNS) ? 1 : 0);
 }
 inline SIZE header_bytes(SIZE num_rows, uint32_t kind) {
@@ -210,14 +194,14 @@ struct RowTask {
   uint64_t section; // byte offset of the row's section in the stream
   uint32_t row;     // row of the encoded bitplanes
   uint32_t count;   // nonzero words, or RAW_ROW
-  uint32_t chunks;  // (two-level) chunks with a nonzero bitmap
+  uint32_t chunks;  // chunks with a nonzero bitmap
   uint32_t index;   // row index within the group
   uint32_t group_rows;
   uint32_t kind;    // of the group
   uint32_t payload; // sparse row: region words; 0 otherwise
 };
 
-// Words before the marks of a two-level row's section (super-chunk offsets).
+// Words before the marks of a row's section (super-chunk offsets).
 MGARDX_CONT_EXEC SIZE offset_words(const RowTask &task, SIZE nsuper) {
   return (task.payload ? 3 : 2) * nsuper;
 }
@@ -233,9 +217,7 @@ MGARDX_EXEC void write_header(const RowTask &task, SIZE num_words) {
     header[1] = (uint32_t)num_words;
   }
   header[2 + task.index] = task.count;
-  if (task.kind & TWO_LEVEL) {
-    header[2 + task.group_rows + task.index] = task.chunks;
-  }
+  header[2 + task.group_rows + task.index] = task.chunks;
   if (task.kind & SPARSE) {
     header[2 + 2 * task.group_rows + task.index] = task.payload;
   }
@@ -460,7 +442,7 @@ MGARDX_EXEC uint32_t super_count(const uint32_t *section, const RowTask &task,
   return (s + 1 < nsuper ? section[s + 1] : task.count) - section[s];
 }
 
-// Writes each row's two-level section (and the group headers) into the group
+// Writes each row's section (and the group headers) into the group
 // streams (portable; thread per chunk). super_offsets: the scanned counts of
 // CountKernel (word offsets of rows [0, num_rows), then bitmap offsets, then
 // region offsets); chunk_bits: the payload bits of each chunk (sparse rows).
@@ -658,8 +640,8 @@ private:
   SIZE region_capacity;
 };
 
-// Decodes row sections (one- or two-level, sparse) back into rows of the
-// encoded bitplanes (portable; thread per chunk).
+// Decodes row sections (sparse or not) back into rows of the encoded
+// bitplanes (portable; thread per chunk).
 template <typename T_bitplane, typename DeviceType>
 class DecodeFunctor : public Functor<DeviceType> {
 public:
@@ -679,27 +661,21 @@ public:
     nsuper = num_super(num_words);
     chunk = FunctorBase<DeviceType>::GetBlockIdX() * SUPER + tid;
     section = (const uint32_t *)((const Byte *)task.stream + task.section);
-    two_level = task.kind & TWO_LEVEL;
     bitmap = 0;
     marked = false;
     if (task.count != RAW_ROW) {
-      if (two_level) {
-        const uint32_t *marks = section + offset_words(task, nsuper);
-        marked = chunk < nchunks && ((marks[chunk / 32] >> (chunk % 32)) & 1u);
-        prefix[tid] = marked;
-      } else {
-        bitmap = chunk < nchunks ? section[nsuper + chunk] : 0;
-        prefix[tid] = popcount32(bitmap);
-      }
+      const uint32_t *marks = section + offset_words(task, nsuper);
+      marked = chunk < nchunks && ((marks[chunk / 32] >> (chunk % 32)) & 1u);
+      prefix[tid] = marked;
     }
   }
   MGARDX_EXEC void Operation2() {
-    if (task.count != RAW_ROW && two_level && tid == 0) {
+    if (task.count != RAW_ROW && tid == 0) {
       exclusive_scan(prefix);
     }
   }
   MGARDX_EXEC void Operation3() {
-    if (task.count != RAW_ROW && two_level) {
+    if (task.count != RAW_ROW) {
       const uint32_t *bitmaps =
           section + offset_words(task, nsuper) + num_level2(num_words);
       bitmap = marked ? bitmaps[section[nsuper +
@@ -709,7 +685,7 @@ public:
     }
   }
   MGARDX_EXEC void Operation4() {
-    if (task.count != RAW_ROW && two_level) {
+    if (task.count != RAW_ROW) {
       prefix[tid] = popcount32(bitmap);
     }
   }
@@ -767,10 +743,8 @@ public:
       return;
     }
     const uint32_t *words =
-        two_level
-            ? section + 2 * nsuper + num_level2(num_words) + task.chunks
-            : section + nsuper + nchunks;
-    words += section[FunctorBase<DeviceType>::GetBlockIdX()] + prefix[tid];
+        section + 2 * nsuper + num_level2(num_words) + task.chunks +
+        section[FunctorBase<DeviceType>::GetBlockIdX()] + prefix[tid];
     uint32_t k = 0;
     for (SIZE j = 0; j < end; j++) {
       out[j] = (bitmap >> j) & 1u ? words[k++] : 0;
@@ -796,7 +770,7 @@ private:
   const uint32_t *section, *region;
   uint32_t bitmap;
   SIZE payload_start;
-  bool two_level, marked;
+  bool marked;
   SIZE tid, num_words, nchunks, nsuper, chunk;
 };
 
@@ -1355,35 +1329,29 @@ public:
     s = FunctorBase<DeviceType>::GetBlockIdX();
     chunk = s * SUPER + tid;
     section = (const uint32_t *)((const Byte *)task.stream + task.section);
-    two_level = task.kind & TWO_LEVEL;
     if (task.count == RAW_ROW) {
       return;
     }
-    if (two_level) {
-      SIZE first = s * SUPER + warp * CHUNK;
-      marks.begin(lane, warp,
-                  first < nchunks
-                      ? section[offset_words(task, nsuper) + first / CHUNK]
-                      : 0);
-      if (task.payload) {
-        // The region into shared memory (independent of the marks).
-        const uint32_t *src =
-            section + 3 * nsuper + num_level2(num_words) + task.chunks;
-        uint32_t offset = section[2 * nsuper + s];
-        uint32_t end =
-            s + 1 < nsuper ? section[2 * nsuper + s + 1] : task.payload;
-        for (uint32_t i = (uint32_t)tid; i < end - offset;
-             i += (uint32_t)SUPER) {
-          region[i] = src[offset + i];
-        }
-        payload_start = CODE_BITS * super_count(section, task, nsuper, s);
+    SIZE first = s * SUPER + warp * CHUNK;
+    marks.begin(lane, warp,
+                first < nchunks
+                    ? section[offset_words(task, nsuper) + first / CHUNK]
+                    : 0);
+    if (task.payload) {
+      // The region into shared memory (independent of the marks).
+      const uint32_t *src =
+          section + 3 * nsuper + num_level2(num_words) + task.chunks;
+      uint32_t offset = section[2 * nsuper + s];
+      uint32_t end =
+          s + 1 < nsuper ? section[2 * nsuper + s + 1] : task.payload;
+      for (uint32_t i = (uint32_t)tid; i < end - offset; i += (uint32_t)SUPER) {
+        region[i] = src[offset + i];
       }
-    } else {
-      scan.begin(sg, lane, warp, chunk < nchunks ? section[nsuper + chunk] : 0);
+      payload_start = CODE_BITS * super_count(section, task, nsuper, s);
     }
   }
   MGARDX_EXEC void Operation2() {
-    if (task.count == RAW_ROW || !two_level) {
+    if (task.count == RAW_ROW) {
       return;
     }
     SubGroup<DeviceType> sg;
@@ -1444,10 +1412,7 @@ public:
       return;
     }
     const uint32_t *words =
-        two_level
-            ? section + 2 * nsuper + num_level2(num_words) + task.chunks
-            : section + nsuper + nchunks;
-    words += section[s];
+        section + 2 * nsuper + num_level2(num_words) + task.chunks + section[s];
     for (int k = 0; k < chunks; k++) {
       uint32_t bitmap = sg.shfl(scan.bitmap, k);
       uint32_t offset = sg.shfl(scan.offset, k);
@@ -1511,7 +1476,6 @@ private:
   const uint32_t *section;
   uint32_t *warp_bits, *region;
   SIZE payload_start;
-  bool two_level;
   int lane;
   SIZE tid, warp, num_words, nchunks, nsuper, s, chunk;
 };

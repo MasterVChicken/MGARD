@@ -13,8 +13,8 @@ namespace MDR {
 // coefficients of its word strided over the level (coalesced across the
 // threads). Word w of a row holds coefficients w, w + n / 32, ..., coefficient
 // d * n / 32 + w at bit 31 - d (the Register Block layout). MDR-X uses these
-// kernels through BPEncoderWarpTranspose for this layout (mdr-x -sw, version
-// 1-2 data) and for the negabinary encoding.
+// kernels through BPEncoderWarpTranspose for this layout (mdr-x -sw) and for
+// the negabinary encoding.
 template <typename T_data, typename T_fp, typename T_sfp, typename T_bitplane,
           typename T_error, int NUM_BITPLANES, bool NegaBinary, bool ControlL2,
           typename DeviceType>
