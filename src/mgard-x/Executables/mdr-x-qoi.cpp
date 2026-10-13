@@ -325,12 +325,12 @@ size_t read_mdr(mgard_x::MDR::RefactoredMetadata &refactored_metadata,
       if (initialize_signs) {
         // level sign
         refactored_data.level_signs[subdomain_id][level_idx] =
-            (bool *)malloc(sizeof(bool) * metadata.level_num_elems[level_idx]);
+            (bool *)malloc(metadata.level_sign_bytes(level_idx));
         memset(refactored_data.level_signs[subdomain_id][level_idx], 0,
-               sizeof(bool) * metadata.level_num_elems[level_idx]);
+               metadata.level_sign_bytes(level_idx));
         mgard_x::pin_memory(
             refactored_data.level_signs[subdomain_id][level_idx],
-            sizeof(bool) * metadata.level_num_elems[level_idx], config);
+            metadata.level_sign_bytes(level_idx), config);
       }
     }
   }

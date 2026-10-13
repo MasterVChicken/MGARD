@@ -116,7 +116,7 @@ public:
       }
       MemoryManager<DeviceType>::Copy1D(
           level_signs[level_idx].data(), refactored_level_signs[level_idx],
-          mdr_metadata.level_num_elems[level_idx], queue_idx);
+          mdr_metadata.level_sign_bytes(level_idx), queue_idx);
     }
   }
 
@@ -155,7 +155,7 @@ public:
     for (int level_idx = 0; level_idx < mdr_metadata.num_levels; level_idx++) {
       MemoryManager<DeviceType>::Copy1D(
           refactored_level_signs[level_idx], level_signs[level_idx].data(),
-          mdr_metadata.level_num_elems[level_idx], queue_idx);
+          mdr_metadata.level_sign_bytes(level_idx), queue_idx);
     }
   }
 
@@ -168,15 +168,15 @@ public:
                                  ") No allocation found.\n");
       }
       // level_signs is allocated rounded up to the decoder's batch size (see
-      // Resize above), so it is expected to be >= the raw element count, not
+      // Resize above), so it is expected to be >= the state size, not
       // exactly equal to it.
       if (level_signs[level_idx].shape(0) <
-          mdr_metadata.level_num_elems[level_idx]) {
+          mdr_metadata.level_sign_bytes(level_idx)) {
         throw std::runtime_error(
             "Bitplane verification failed. level_signs(" +
             std::to_string(level_idx) + ") Insufficient buffer space " +
             std::to_string(level_signs[level_idx].shape(0)) + " vs. " +
-            std::to_string(mdr_metadata.level_num_elems[level_idx]));
+            std::to_string(mdr_metadata.level_sign_bytes(level_idx)));
       }
       for (int bitplane_idx =
                mdr_metadata.prev_used_level_num_bitplanes[level_idx];

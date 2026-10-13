@@ -239,6 +239,16 @@ public:
     }
   }
 
+  // Bytes of the reconstruction state of a level (MDRData::level_signs and
+  // its host copy in RefactoredData::level_signs): a byte per coefficient,
+  // rounded up to whole words of 32 coefficients. With significance-coded
+  // signs the state of such a word is in its first 8 bytes
+  // (SignificanceCoding.hpp), which a level ending in a partial word would
+  // otherwise cut off.
+  SIZE level_sign_bytes(int level_idx) const {
+    return (level_num_elems[level_idx] + 31) / 32 * 32;
+  }
+
   void CheckFormatVersion() const {
     if (format_version != FORMAT_VERSION) {
       throw std::runtime_error(
