@@ -55,24 +55,6 @@ MGARDX_CONT_EXEC SIZE num_groups(SIZE num_bitplanes, SIZE group_size) {
   return (num_bitplanes + group_size - 1) / group_size;
 }
 
-MGARDX_CONT_EXEC int ctz32(uint32_t x) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-  return __ffs(x) - 1;
-#else
-  return __builtin_ctz(x);
-#endif
-}
-
-// k (1-32) bits of words[] starting at bit pos.
-MGARDX_CONT_EXEC uint32_t read_bits(const uint32_t *words, SIZE pos, int k) {
-  SIZE w = pos / 32;
-  int s = (int)(pos % 32);
-  uint32_t x = words[w] >> s;
-  if (s > 0 && s + k > 32) {
-    x |= words[w + 1] << (32 - s);
-  }
-  return k == 32 ? x : x & ((1u << k) - 1);
-}
 
 // Description of a group's sign section for the sign writer.
 struct SignTask {
@@ -134,7 +116,7 @@ public:
             continue;
           }
           while (fresh) {
-            int c = ctz32(fresh);
+            int c = Math<DeviceType>::ffs(fresh) - 1;
             out[pos[g] / 32] |= ((signs[w] >> c) & 1u) << (pos[g] % 32);
             pos[g]++;
             fresh &= fresh - 1;
@@ -195,19 +177,6 @@ private:
   SubArray<1, uint32_t, DeviceType> counts, segment_bits;
 };
 
-// Inclusive prefix sum of c over the lanes of a sub-group.
-template <typename DeviceType>
-MGARDX_EXEC uint32_t subgroup_inclusive_scan(SubGroup<DeviceType> &sg, int lane,
-                                             uint32_t c) {
-  for (int d = 1; d < sg.size(); d *= 2) {
-    uint32_t t = sg.shfl(c, lane >= d ? lane - d : lane);
-    if (lane >= d) {
-      c += t;
-    }
-  }
-  return c;
-}
-
 // Word offsets of the segments in each group's words[] (exclusive scan of
 // the segments' words) and the words of each group: block per group, thread
 // per run of consecutive segments, block scan of the runs' sums.
@@ -242,7 +211,7 @@ public:
   MGARDX_EXEC void Operation2() {
     SubGroup<DeviceType> sg;
     const int lane = sg.lane();
-    inclusive = subgroup_inclusive_scan(sg, lane, sum);
+    inclusive = zero_elimination::subgroup_inclusive_scan(sg, lane, sum);
     if (lane == sg.size() - 1) {
       partial[tid / sg.size()] = inclusive;
     }
@@ -336,7 +305,7 @@ public:
   MGARDX_EXEC void Operation2() {
     SubGroup<DeviceType> sg;
     const int lane = sg.lane();
-    inclusive = subgroup_inclusive_scan(sg, lane, count);
+    inclusive = zero_elimination::subgroup_inclusive_scan(sg, lane, count);
     if (lane == sg.size() - 1) {
       prefix[tid / sg.size()] = inclusive;
     }
@@ -367,7 +336,8 @@ public:
     SIZE dst = prefix[tid / sg.size()] + inclusive - count;
     for (uint32_t k = 0; k < count; k += 32) {
       int take = count - k < 32 ? (int)(count - k) : 32;
-      uint32_t bits = read_bits((const uint32_t *)src, start + k, take);
+      uint32_t bits =
+          zero_elimination::get_bits((const uint32_t *)src, start + k, take);
       SIZE d = dst + k;
       int s = (int)(d % 32);
       Atomic<uint32_t, AtomicSharedMemory, AtomicDeviceScope, DeviceType>::Or(
@@ -492,8 +462,8 @@ public:
         sig |= orr;
         const uint32_t *words = (const uint32_t *)*sections(i) + nseg;
         while (fresh) {
-          int c = ctz32(fresh);
-          sgn |= read_bits(words, pos[i], 1) << c;
+          int c = Math<DeviceType>::ffs(fresh) - 1;
+          sgn |= zero_elimination::get_bits(words, pos[i], 1) << c;
           pos[i]++;
           fresh &= fresh - 1;
         }

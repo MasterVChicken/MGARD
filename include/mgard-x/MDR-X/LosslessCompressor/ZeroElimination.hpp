@@ -142,14 +142,6 @@ MGARDX_CONT_EXEC uint32_t sparse_bits(uint32_t x) {
 MGARDX_CONT_EXEC uint32_t region_words(uint32_t count, uint32_t bits) {
   return (CODE_BITS * count + bits + 31) / 32;
 }
-// Index of the lowest one bit of x (x != 0).
-MGARDX_CONT_EXEC uint32_t lowest_bit(uint32_t x) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-  return __ffs(x) - 1;
-#else
-  return popcount32((x & (0u - x)) - 1);
-#endif
-}
 // Bits [pos, pos + k) of a little-endian bit stream of words (k <= 32); P:
 // an unsigned position type (32 bits within a region).
 template <typename P>
@@ -249,7 +241,7 @@ MGARDX_EXEC void put_sparse_word(uint32_t *region, uint32_t index, SIZE pos,
     payload = 0;
     int shift = 0;
     for (uint32_t m = x; m; m &= m - 1, shift += 5) {
-      payload |= lowest_bit(m) << shift;
+      payload |= (uint32_t)(Math<DeviceType>::ffs(m) - 1) << shift;
     }
   }
   put_bits<DeviceType>(region, pos, payload, (int)code_bits(code));
@@ -803,12 +795,12 @@ private:
 // kernels above.
 static constexpr SIZE WARPS = SUPER / CHUNK; // warps per super-chunk block
 
-// Inclusive prefix sum of c over the 32 lanes.
+// Inclusive prefix sum of c over the lanes of a sub-group.
 template <typename DeviceType>
-MGARDX_EXEC uint32_t warp_inclusive_scan(SubGroup<DeviceType> &sg, int lane,
-                                         uint32_t c) {
+MGARDX_EXEC uint32_t subgroup_inclusive_scan(SubGroup<DeviceType> &sg, int lane,
+                                             uint32_t c) {
 #pragma unroll
-  for (int d = 1; d < (int)CHUNK; d *= 2) {
+  for (int d = 1; d < sg.size(); d *= 2) {
     uint32_t t = sg.shfl(c, lane >= d ? lane - d : lane);
     if (lane >= d) {
       c += t;
@@ -1029,7 +1021,7 @@ template <typename DeviceType> struct WarpChunkScan {
                          uint32_t chunk_bitmap) {
     bitmap = chunk_bitmap;
     uint32_t c = popcount32(bitmap);
-    uint32_t inclusive = warp_inclusive_scan(sg, lane, c);
+    uint32_t inclusive = subgroup_inclusive_scan(sg, lane, c);
     offset = inclusive - c;
     if (lane == (int)CHUNK - 1) {
       warp_totals[warp] = inclusive;
@@ -1066,7 +1058,7 @@ template <typename DeviceType> struct WarpSumScan {
   uint32_t offset;
   MGARDX_EXEC void begin(SubGroup<DeviceType> &sg, int lane, SIZE warp,
                          uint32_t value) {
-    uint32_t inclusive = warp_inclusive_scan(sg, lane, value);
+    uint32_t inclusive = subgroup_inclusive_scan(sg, lane, value);
     offset = inclusive - value;
     if (lane == (int)CHUNK - 1) {
       warp_totals[warp] = inclusive;

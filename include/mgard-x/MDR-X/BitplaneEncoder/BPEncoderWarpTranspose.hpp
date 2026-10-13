@@ -126,12 +126,6 @@ MGARDX_EXEC int count_leading_zeros(uint64_t x) {
 #endif
 }
 
-MGARDX_EXEC void sync_block() {
-#if defined(__CUDA_ARCH__)
-  __syncthreads();
-#endif
-}
-
 // Bits 0, 8, 16, 24 of x as bits 0-3.
 MGARDX_EXEC uint32_t gather_byte_bits(uint32_t x) {
   return ((x & 0x01010101u) * 0x01020408u) >> 24 & 0xfu;
@@ -240,8 +234,8 @@ public:
                                                 sign_group_size);
     // Group ends: inclusive scan of the counts (two per lane).
     uint32_t c0 = count[lane], c1 = count[lane + 32];
-    uint32_t s0 = zero_elimination::warp_inclusive_scan(sg, lane, c0);
-    uint32_t s1 = zero_elimination::warp_inclusive_scan(sg, lane, c1) +
+    uint32_t s0 = zero_elimination::subgroup_inclusive_scan(sg, lane, c0);
+    uint32_t s1 = zero_elimination::subgroup_inclusive_scan(sg, lane, c1) +
                   sg.shfl(s0, 31);
     for (int k = 0; k < 2; k++) {
       int g = lane + 32 * k;
@@ -993,7 +987,7 @@ public:
           }
         }
       }
-      sync_block();
+      SyncBlock<DeviceType>::Sync();
       // Thread (g, p): the prefix of warp p in the block, the block's count
       // (published by p = 0, as soon as counted), and the count of the p-th
       // block of the segment if it is before this one.
@@ -1023,7 +1017,7 @@ public:
           }
         }
       }
-      sync_block();
+      SyncBlock<DeviceType>::Sync();
       // The warp's signs of a group are at most 1024 bits (two cache lines):
       // prefetched for the reads below.
       for (SIZE g = lane; g < G; g += WORDS) {
@@ -1049,12 +1043,13 @@ public:
             continue;
           }
           uint32_t k = zero_elimination::popcount32(fresh);
-          uint32_t inclusive = zero_elimination::warp_inclusive_scan(sg, lane, k);
+          uint32_t inclusive =
+              zero_elimination::subgroup_inclusive_scan(sg, lane, k);
           SIZE pos =
               position[g] + before[warp * MAX_GROUPS + g] + inclusive - k;
           if (k) {
             const uint32_t *section = (const uint32_t *)*sections(g) + nseg;
-            uint32_t bits = significance::read_bits(section, pos, (int)k);
+            uint32_t bits = zero_elimination::get_bits(section, pos, (int)k);
             // Bit i of bits to the i-th coefficient of fresh, four at a time.
             for (uint32_t m = fresh; m; bits >>= 4) {
 #pragma unroll

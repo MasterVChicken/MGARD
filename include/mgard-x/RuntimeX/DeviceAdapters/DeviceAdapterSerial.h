@@ -57,7 +57,7 @@ template <> struct Math<SERIAL> {
     return std::max(a, b);
   }
 
-  MGARDX_EXEC static int ffs(unsigned int a) { return ffs(a); }
+  MGARDX_EXEC static int ffs(unsigned int a) { return __builtin_ffs((int)a); }
   MGARDX_EXEC static int ffsll(long long unsigned int a) {
     // return ffsll(a);
     int pos = 0;

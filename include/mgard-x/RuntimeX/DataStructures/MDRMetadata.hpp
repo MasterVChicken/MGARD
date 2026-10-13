@@ -246,7 +246,7 @@ public:
   // (SignificanceCoding.hpp), which a level ending in a partial word would
   // otherwise cut off.
   SIZE level_sign_bytes(int level_idx) const {
-    return (level_num_elems[level_idx] + 31) / 32 * 32;
+    return round_up(level_num_elems[level_idx], (SIZE)32);
   }
 
   void CheckFormatVersion() const {
