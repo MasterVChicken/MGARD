@@ -148,10 +148,16 @@ public:
                  SubArray<1, uint32_t, DeviceType> sign_counts = {},
                  SubArray<1, uint32_t, DeviceType> sign_segment_bits = {}) {
     if (config.mdr_zero_elimination) {
-      compress_level_zero_elimination(encoded_bitplanes, compressed_bitplanes,
-                                      queue_idx, sign_rows, ze_bitmaps, ze_bits,
-                                      sign_counts, sign_segment_bits);
-      return;
+      // Zero elimination works on 32-bit bitplane words only.
+      if constexpr (sizeof(T_bitplane) == sizeof(uint32_t)) {
+        compress_level_zero_elimination(
+            encoded_bitplanes, compressed_bitplanes, queue_idx, sign_rows,
+            ze_bitmaps, ze_bits, sign_counts, sign_segment_bits);
+        return;
+      } else {
+        throw std::runtime_error(
+            "MDR-X: zero elimination needs 32-bit bitplane words.");
+      }
     }
 
     std::vector<float> cr, time;

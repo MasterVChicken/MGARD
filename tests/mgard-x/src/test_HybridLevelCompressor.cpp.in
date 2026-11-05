@@ -7,11 +7,13 @@
 // HybridLevelCompressor (include/mgard-x/MDR-X/LosslessCompressor/
 // HybridLevelCompressor.hpp) is the lossless back end ComposedRefactor uses
 // on the bitplanes the BPEncoder* classes produce (see
-// test_BitplaneEncoder*): every num_merged_bitplanes (4) consecutive rows of
-// the encoded_bitplanes 2D buffer are byte-reinterpreted as one flat stream
-// and, if large enough, compressed with RLE first, then Huffman, falling
-// back to a raw copy if neither reaches cr_threshold or the stream is too
-// small to bother. decompress_level must invert whichever of the three it
+// test_BitplaneEncoder*): every num_merged_bitplanes (Config::
+// mdr_bitplane_group_size, default 2) consecutive rows of the
+// encoded_bitplanes 2D buffer are byte-reinterpreted as one flat stream and,
+// if the level is large enough (its rows times MAX_GROUP_SIZE bytes above
+// size_threshold), compressed with RLE first, then Huffman, falling back to a
+// raw copy if neither reaches cr_threshold or the level is too small to
+// bother. decompress_level must invert whichever of the three it
 // picked. It has no dimensionality of its own (it operates on a flat
 // 2D bitplane buffer, not the D-dimensional decomposed data), so the only
 // type axis here is T_bitplane.
@@ -67,13 +69,14 @@ void run_hybrid_level_compressor_roundtrip(SIZE num_bitplanes,
                                            SIZE stream_length,
                                            BitplaneContent content) {
   using Compressor = MDR::HybridLevelCompressor<T_bitplane, DevType>;
-  constexpr SIZE merge = Compressor::num_merged_bitplanes;
-  REQUIRE(num_bitplanes % merge == 0);
 
   Config config;
   Compressor compressor;
   compressor.Adapt(stream_length, num_bitplanes, config, 0);
   DeviceRuntime<DevType>::SyncQueue(0);
+  // The group size is set from the config by Adapt.
+  const SIZE merge = compressor.num_merged_bitplanes;
+  REQUIRE(num_bitplanes % merge == 0);
 
   std::vector<T_bitplane> original =
       make_bitplane_data<T_bitplane>(num_bitplanes, stream_length, content);
@@ -89,13 +92,17 @@ void run_hybrid_level_compressor_roundtrip(SIZE num_bitplanes,
 
   const SIZE merged_bytes = stream_length * sizeof(T_bitplane) * merge;
   const SIZE size_threshold = compressor.size_threshold;
+  // compress_level tries RLE/Huffman from the level size (a full group of
+  // MAX_GROUP_SIZE rows, no sign rows here), whatever the group size.
+  const bool attempted =
+      stream_length * sizeof(T_bitplane) * Compressor::MAX_GROUP_SIZE >
+      size_threshold;
   for (SIZE bp = 0; bp < num_bitplanes; bp++) {
     if (bp % merge == 0) {
       SIZE compressed_size = compressed[bp].shape(0);
-      CAPTURE(bp, compressed_size, merged_bytes, size_threshold);
+      CAPTURE(bp, compressed_size, merged_bytes, size_threshold, attempted);
       REQUIRE(compressed_size > 0);
-      if (content == BitplaneContent::Compressible &&
-          merged_bytes > size_threshold) {
+      if (content == BitplaneContent::Compressible && attempted) {
         // Large and genuinely compressible: RLE or Huffman must have been
         // used, not the raw-copy fallback.
         REQUIRE(compressed_size < merged_bytes);
@@ -126,10 +133,11 @@ void run_hybrid_level_compressor_roundtrip(SIZE num_bitplanes,
   REQUIRE(mismatches == 0);
 }
 
-// num_bitplanes must be a multiple of num_merged_bitplanes (4); stream_length
-// is chosen so merged_bytes = stream_length * sizeof(T_bitplane) * 4 lands
-// clearly above (100000) or below (100) HybridLevelCompressor's
-// size_threshold (1e6 bytes) for every T_bitplane this is instantiated with.
+// num_bitplanes must be a multiple of num_merged_bitplanes (the default group
+// size, 2); stream_length is chosen so stream_length * sizeof(T_bitplane) *
+// MAX_GROUP_SIZE (4) lands clearly above (100000) or below (100)
+// HybridLevelCompressor's size_threshold (1e6 bytes) for every T_bitplane
+// this is instantiated with.
 TEMPLATE_TEST_CASE("MDR-X HybridLevelCompressor round trip",
                   "[mgard-x][mdr-x][hybrid-level-compressor][@DEVICE_TYPE@]",
                   uint32_t, uint64_t) {
@@ -148,7 +156,8 @@ TEMPLATE_TEST_CASE("MDR-X HybridLevelCompressor round trip",
   }
   SECTION("single merged group (num_bitplanes == num_merged_bitplanes)") {
     run_hybrid_level_compressor_roundtrip<TestType, TestDevice>(
-        4, 100000, BitplaneContent::Compressible);
+        Config().mdr_bitplane_group_size, 100000,
+        BitplaneContent::Compressible);
   }
 }
 
