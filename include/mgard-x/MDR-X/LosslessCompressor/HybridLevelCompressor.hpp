@@ -6,7 +6,6 @@
 #include "../../Lossless/Zstd.hpp"
 // #include "../RefactorUtils.hpp"
 #include "../BitplaneEncoder/SignificanceCoding.hpp"
-#include "GroupStatistics.hpp"
 #include "ZeroElimination.hpp"
 #include "LevelCompressorInterface.hpp"
 #include "LosslessCompressor.hpp"
@@ -30,10 +29,6 @@ public:
   // compression and of retrieval. Set from the config when refactoring and
   // from the metadata when reconstructing.
   static constexpr int MAX_GROUP_SIZE = 4;
-  // Queues for concurrent Huffman decoding (the MDR pipelines use 0-2).
-  static constexpr int FIRST_DECODE_QUEUE = 3;
-  static constexpr int DECODE_QUEUES = 8;
-  static_assert(FIRST_DECODE_QUEUE + DECODE_QUEUES <= MGARDX_NUM_QUEUES);
   int num_merged_bitplanes = MAX_GROUP_SIZE;
   void SetGroupSize(int group_size) {
     if (group_size < 1 || group_size > MAX_GROUP_SIZE) {
@@ -170,11 +165,6 @@ public:
     // e.g. the finest level of a 128^3 subdomain, would be stored raw).
     SIZE threshold_size = encoded_bitplanes.shape(1) * byte_ratio *
                           MAX_GROUP_SIZE * (sign_rows > 0 ? 2 : 1);
-    bool try_rle_huffman = threshold_size > size_threshold &&
-                           config.lossless != lossless_type::Huffman_Zstd;
-    if (try_rle_huffman) {
-      group_statistics(encoded_bitplanes, num_bitplanes, sign_rows, queue_idx);
-    }
     for (SIZE bitplane_idx = 0; bitplane_idx < num_bitplanes; bitplane_idx++) {
       if (bitplane_idx % num_merged_bitplanes == 0) {
         SIZE merged_bitplane_size =
@@ -198,28 +188,23 @@ public:
           zstd_success =
               compress_zstd((Byte *)bitplane, merged_bitplane_size,
                             compressed_bitplanes[bitplane_idx], queue_idx);
-        } else if (try_rle_huffman) {
-          // Decide from the group's statistics before compressing: RLE only
-          // when its own estimate passes (same formula, from the run count),
-          // Huffman only when the entropy bound can reach the target. Skips
-          // exactly the attempts that would fail.
-          SIZE group = bitplane_idx / num_merged_bitplanes;
-          const unsigned int *freq = &group_freqs[group * _huff_dict_size];
-          if (rle.CRFromRuns(merged_bitplane_size, group_runs[group]) >=
-              cr_threshold) {
-            rle.Compress(encoded_bitplane, compressed_bitplanes[bitplane_idx],
-                         (SIZE)group_runs[group], queue_idx);
-            rle_success = true;
-          }
+        } else if (threshold_size > size_threshold) {
+          rle_success =
+              rle.Compress(encoded_bitplane, compressed_bitplanes[bitplane_idx],
+                           cr_threshold, queue_idx);
           if (rle_success) {
             rle.Serialize(compressed_bitplanes[bitplane_idx], queue_idx);
-          } else if (huffman_may_reach(freq, merged_bitplane_size,
-                                       cr_threshold)) {
-            // Primary data only: no outliers.
-            huffman.outlier_count = 0;
+          } else {
+            ATOMIC_IDX zero = 0;
+            MemoryManager<DeviceType>::Copy1D(
+                huffman.workspace.outlier_count_subarray.data(), &zero, 1,
+                queue_idx);
+            MemoryManager<DeviceType>::Copy1D(
+                &huffman.outlier_count,
+                huffman.workspace.outlier_count_subarray.data(), 1, queue_idx);
             huffman_success = huffman.CompressPrimary(
                 encoded_bitplane, compressed_bitplanes[bitplane_idx],
-                cr_threshold, freq, queue_idx);
+                cr_threshold, queue_idx);
             if (huffman_success) {
               huffman.Serialize(compressed_bitplanes[bitplane_idx], queue_idx);
             }
@@ -647,56 +632,6 @@ public:
     return (kind & SIGNS) ? (uint64_t)(compressed.data() + section) : 0;
   }
 
-  // Upper bound on the CR that Huffman::CompressPrimary estimates (and tests
-  // against target_cr): with two or more symbols every codeword has >= 1 bit
-  // and the total length is >= n * entropy, so the encoded bits are at least
-  // n * max(H, 1).
-  static bool huffman_may_reach(const unsigned int *freq, SIZE n,
-                                float target_cr) {
-    int num_symbols = 0;
-    double entropy = 0;
-    for (int s = 0; s < _huff_dict_size; s++) {
-      if (freq[s] > 0) {
-        num_symbols++;
-        double p = (double)freq[s] / n;
-        entropy -= p * std::log2(p);
-      }
-    }
-    if (num_symbols < 2) {
-      return true;
-    }
-    double min_bits = n * std::max(entropy, 1.0) * (1.0 - 1e-9);
-    double max_cr = (double)(n * sizeof(T_compress)) / (min_bits / 8 + 2000);
-    return max_cr >= target_cr;
-  }
-
-  // Run counts and byte histograms of all merged groups of a level, in one
-  // kernel and one transfer (group_runs, group_freqs on the host).
-  void group_statistics(SubArray<2, T_bitplane, DeviceType> &encoded_bitplanes,
-                        SIZE num_bitplanes, int sign_rows, int queue_idx) {
-    SIZE num_groups =
-        (num_bitplanes + num_merged_bitplanes - 1) / num_merged_bitplanes;
-    group_runs_array.resize({num_groups}, queue_idx);
-    group_freqs_array.resize({num_groups * _huff_dict_size}, queue_idx);
-    group_runs_array.memset(0, queue_idx);
-    group_freqs_array.memset(0, queue_idx);
-    SIZE max_run = (SIZE)1 << (sizeof(u_int32_t) * 8);
-    DeviceLauncher<DeviceType>::Execute(
-        GroupStatisticsKernel<T_bitplane, DeviceType>(
-            encoded_bitplanes, num_bitplanes, num_merged_bitplanes, sign_rows,
-            max_run, num_groups, SubArray(group_runs_array),
-            SubArray(group_freqs_array)),
-        queue_idx);
-    group_runs.resize(num_groups);
-    group_freqs.resize(num_groups * _huff_dict_size);
-    MemoryManager<DeviceType>::Copy1D(
-        group_runs.data(), group_runs_array.data(), num_groups, queue_idx);
-    MemoryManager<DeviceType>::Copy1D(group_freqs.data(),
-                                      group_freqs_array.data(),
-                                      num_groups * _huff_dict_size, queue_idx);
-    DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-  }
-
   // decompress level, create new buffer and overwrite original streams; will
   // not change stream sizes
   void decompress_level(
@@ -706,20 +641,16 @@ public:
       int queue_idx, int sign_rows,
       const std::vector<Byte *> *host_bitplanes = nullptr,
       std::vector<uint64_t> *sign_sections = nullptr) {
-    // With host_bitplanes (host copies of compressed_bitplanes), each group's
-    // format and header are read on the host and the decoding stays queued:
-    // no transfer or synchronization per group. Huffman decoding of a group
-    // is latency bound (one thread per 1024-symbol chunk) and groups write
-    // disjoint rows, so the Huffman groups of the level are decoded
-    // concurrently on DECODE_QUEUES queues of their own, which are joined
-    // before returning. With sign_coding, sign_sections gets the device
+    // With host_bitplanes (host copies of compressed_bitplanes), the
+    // zero-elimination headers are read on the host: no transfer or
+    // synchronization per group. Huffman and RLE groups are decoded with the
+    // Lossless library as is. With sign_coding, sign_sections gets the device
     // address of each decoded group's sign section, in order.
     if (sign_sections) {
       sign_sections->clear();
     }
     std::vector<float> time;
     SIZE total_bitplanes = encoded_bitplanes.shape(0) - sign_rows;
-    int huffman_groups = 0;
     ze_tasks_host.clear();
     for (SIZE bitplane_idx = starting_bitplane;
          bitplane_idx < starting_bitplane + num_bitplanes; bitplane_idx++) {
@@ -764,30 +695,12 @@ public:
             sign_sections->push_back(section);
           }
           // Huffman
-        } else if (host ? huffman.Verify(host)
-                        : huffman.Verify(compressed, queue_idx)) {
-          if (host) {
-            if (huffman_groups == 0) {
-              // The compressed groups are uploaded on queue_idx.
-              DeviceRuntime<DeviceType>::SyncQueue(queue_idx);
-            }
-            huffman.Deserialize(compressed, host);
-            huffman.DecompressPrimary(
-                compressed, encoded_bitplane,
-                FIRST_DECODE_QUEUE + huffman_groups % DECODE_QUEUES, false);
-            huffman_groups++;
-          } else {
-            huffman.Deserialize(compressed, queue_idx);
-            huffman.DecompressPrimary(compressed, encoded_bitplane, queue_idx);
-          }
+        } else if (huffman.Verify(compressed, queue_idx)) {
+          huffman.Deserialize(compressed, queue_idx);
+          huffman.DecompressPrimary(compressed, encoded_bitplane, queue_idx);
           // RLE
-        } else if (host ? rle.Verify(host)
-                        : rle.Verify(compressed, queue_idx)) {
-          if (host) {
-            rle.Deserialize(compressed, host);
-          } else {
-            rle.Deserialize(compressed, queue_idx);
-          }
+        } else if (rle.Verify(compressed, queue_idx)) {
+          rle.Deserialize(compressed, queue_idx);
           rle.Decompress(compressed, encoded_bitplane, queue_idx);
         } else if (host
                        ? is_zstd(host, compressed.shape(0),
@@ -830,9 +743,6 @@ public:
                 encoded_bitplanes, SubArray(ze_tasks), ze_tasks_host.size()),
             queue_idx);
       }
-    }
-    for (int q = 0; q < std::min(huffman_groups, DECODE_QUEUES); q++) {
-      DeviceRuntime<DeviceType>::SyncQueue(FIRST_DECODE_QUEUE + q);
     }
     // std::string time_string = "";
     // for (auto x : time) {
@@ -904,11 +814,6 @@ public:
       rle;
   Zstd<DeviceType> zstd;
   Config config;
-  // Per-group run counts and byte histograms of the level being compressed
-  // (group_statistics); Huffman::CompressPrimary builds its codebook from the
-  // host histogram.
-  Array<1, unsigned int, DeviceType> group_runs_array, group_freqs_array;
-  std::vector<unsigned int> group_runs, group_freqs;
   // Zero elimination workspaces and per-row tasks of the current level.
   Array<1, uint32_t, DeviceType> ze_chunk_counts, ze_chunk_bits,
       ze_super_counts, ze_totals;
